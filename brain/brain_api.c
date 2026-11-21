@@ -5,9 +5,11 @@
  *  - 한쪽에서 다가오면 반대쪽으로 돌려 하고, 셀수록 도주가 커진다.
  *  - 양쪽에서 다가오면 방향 전환이 꺼지고 뒤로 물러난다.
  *  - 단맛은 일정 세기를 넘어야 먹고, 쓴맛과 짠맛은 먹기를 줄인다.
- * 진짜 뇌는 나중에 이 파일 뒤에 붙인다. 스테이지 코드는 바뀌지 않는다. */
+ * 진짜 뇌(BRAIN_REAL)를 고르면 반응을 brain_real.c가 실제 배선으로 계산한다.
+ * 어느 쪽이든 스테이지 코드는 같다. */
 #include "brain.h"
 #include "brain/brain_host.h"
+#include "brain/brain_real.h"
 #include "core/log.h"
 
 #include <string.h>
@@ -61,6 +63,8 @@ static void fake_targets(const float *s, float *t)
     t[BR_AROUSAL] = clamp01(sum * 0.5f);
 }
 
+int brain_host_open_real(const char *dir) { return brain_real_open(dir); }
+
 void brain_host_reset(uint32_t seed, brain_mode_t m)
 {
     memset(stim_now, 0, sizeof stim_now);
@@ -69,7 +73,8 @@ void brain_host_reset(uint32_t seed, brain_mode_t m)
     memset(history, 0, sizeof history);
     hist_pos = 0;
     in_tick = 0;
-    mode = m;
+    mode = (m == BRAIN_REAL && !brain_real_ready()) ? BRAIN_FAKE_FAST : m;
+    if (mode == BRAIN_REAL) brain_real_reset(seed);
     noise_state = ((uint64_t)seed << 1) | 1ULL;
     stim_ticks = fired_ticks = 0;
     next_rate[BR_FORWARD] = 1.0f;
@@ -89,6 +94,11 @@ void brain_host_end_tick(void)
     in_tick = 0;
     stim_ticks += stim_this_tick;
     fired_ticks += fired_this_tick;
+
+    if (mode == BRAIN_REAL) {
+        brain_real_tick(stim_now, next_rate);
+        return;
+    }
 
     fake_targets(stim_now, target);
     memcpy(history[hist_pos], target, sizeof target);

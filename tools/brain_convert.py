@@ -1,0 +1,84 @@
+"""배선 파일을 C가 읽는 바이너리로 바꾼다. 한 번만 돌리면 된다.
+
+    python3 tools/brain_convert.py <받은 파일 폴더> <결과 폴더>
+
+받은 파일 폴더에 있어야 하는 것
+    Connectivity_783.parquet   뉴런 사이의 연결 (FlyWire v783, Shiu 등 2024의 공개 자료)
+    Completeness_783.csv       뉴런 목록. 줄 순서가 뉴런 번호다
+    annotations.tsv            뉴런의 세포 유형 표 (flywire_annotations의 공개 자료)
+
+만드는 것
+    brain.bin          머리말 24바이트, 그 뒤로 줄 시작 위치(뉴런 수 + 1개, 4바이트씩),
+                       받는 뉴런 번호(연결 수만큼, 4바이트씩), 세기(연결 수만큼, 2바이트씩)
+    brain_groups.txt   게임이 쓰는 뉴런 집단. 한 줄에 "이름 개수 번호 번호 ..."
+"""
+import csv
+import struct
+import sys
+
+import numpy as np
+import pyarrow.parquet as pq
+
+# 집단마다 (세포 유형 표의 어느 칸, 값들, 쪽). 쪽이 None이면 좌우를 모두 넣는다.
+GROUPS = {
+    "BR_LOOM_L":   ("type", {"LC4", "LPLC2"}, "left"),
+    "BR_LOOM_R":   ("type", {"LC4", "LPLC2"}, "right"),
+    "BR_SUGAR":    ("sub",  {"sugar"}, None),
+    "BR_BITTER":   ("sub",  {"bitter"}, None),
+    "BR_SALT":     ("sub",  {"high_salt/heavy_metal"}, None),
+    "BR_WATER":    ("sub",  {"water"}, None),
+    "BR_ESCAPE":   ("type", {"DNp01"}, None),
+    "BR_TURN_L":   ("type", {"DNa02", "DNa01"}, "left"),
+    "BR_TURN_R":   ("type", {"DNa02", "DNa01"}, "right"),
+    "BR_BACKWARD": ("type", {"MDN"}, None),
+    "BR_FEED":     ("type", {"CB0701"}, None),      # 주둥이를 내미는 운동 뉴런(MN9)
+}
+
+
+def main(src, dst):
+    ids = [int(line.split(",")[0]) for line in open(f"{src}/Completeness_783.csv").read().split("\n")[1:] if line]
+    index_of = {root: i for i, root in enumerate(ids)}
+    n = len(ids)
+
+    t = pq.read_table(f"{src}/Connectivity_783.parquet",
+                      columns=["Presynaptic_ID", "Presynaptic_Index", "Postsynaptic_Index", "Excitatory x Connectivity"])
+    pre_id = t["Presynaptic_ID"].to_numpy()
+    pre = t["Presynaptic_Index"].to_numpy()
+    post = t["Postsynaptic_Index"].to_numpy()
+    w = t["Excitatory x Connectivity"].to_numpy()
+
+    # 뉴런 번호가 목록의 줄 순서와 같은지, 보내는 뉴런 순서로 정렬돼 있는지, 세기가 2바이트에 들어가는지 확인한다.
+    assert all(index_of[int(pre_id[k])] == int(pre[k]) for k in range(0, len(pre), 9973))
+    assert (np.diff(pre) >= 0).all()
+    assert pre.max() < n and post.max() < n
+    assert -32768 <= w.min() and w.max() <= 32767
+
+    row = np.zeros(n + 1, dtype=np.uint32)
+    row[1:] = np.cumsum(np.bincount(pre, minlength=n))
+    with open(f"{dst}/brain.bin", "wb") as f:
+        f.write(struct.pack("<8sIIII", b"SSPBRAIN", 1, n, len(pre), 0))
+        row.tofile(f)
+        post.astype(np.uint32).tofile(f)
+        w.astype(np.int16).tofile(f)
+
+    rows = list(csv.DictReader(open(f"{src}/annotations.tsv"), delimiter="\t"))
+    with open(f"{dst}/brain_groups.txt", "w") as f:
+        for name, (column, values, side) in GROUPS.items():
+            members = []
+            for r in rows:
+                if column == "type":
+                    hit = r["cell_type"] in values or r["hemibrain_type"] in values
+                else:
+                    hit = r["cell_class"] == "gustatory" and r["cell_sub_class"] in values
+                if hit and (side is None or r["side"] == side) and int(r["root_id"]) in index_of:
+                    members.append(index_of[int(r["root_id"])])
+            members = sorted(set(members))
+            f.write(" ".join([name, str(len(members))] + [str(m) for m in members]) + "\n")
+            print(f"{name:12s} {len(members)}개")
+    print(f"뉴런 {n}개, 연결 {len(pre)}개")
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        sys.exit(__doc__)
+    main(sys.argv[1], sys.argv[2])

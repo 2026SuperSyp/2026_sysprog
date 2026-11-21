@@ -2,11 +2,13 @@
 #
 #   make                         전부 빌드
 #   make test                    자동 검사
-#   make run STAGE=이름          스테이지 하나를 3분할 화면으로 실행 (SEED=, PLAYERS=, BRAIN=fast|slow)
+#   make run STAGE=이름          스테이지 하나를 3분할 화면으로 실행 (SEED=, PLAYERS=, BRAIN=fast|slow|real)
 #   make bot STAGE=이름          화면 없이 여러 판을 돌려 검사
 #   make screen SCREEN=이름      화면 하나를 예시 상태로 띄움 (CASE=)
 #   make log STAGE=이름          스테이지 로그를 따라 읽음
 #   make termbench               터미널 속도 측정
+#   make brain-data              진짜 뇌에 필요한 자료를 받아 data/ 에 준비 (한 번만)
+#   make brainprobe              진짜 뇌에 자극을 넣어 보고 반응과 계산 시간을 표로 봄
 #
 # 경로는 전부 상대 경로다. 저장소 폴더 이름에 공백이 있어도 깨지지 않게 하려는 것이다.
 
@@ -54,15 +56,21 @@ endif
 ifneq ($(wildcard tools/termbench.c),)
 TOOL_BIN   += $(B)/termbench
 endif
+ifneq ($(wildcard tools/brainprobe.c),)
+TOOL_BIN   += $(B)/brainprobe
+endif
 
 ALL_SRC := $(KIT_SRC) $(HOST_SRC) $(SCREEN_SRC) $(TEST_SRC) $(STAGE_SRC) $(wildcard tools/*.c)
 
-.PHONY: all test run bot screen log termbench clean need-stage need-screen
+.PHONY: all test run bot screen log termbench brain-data brainprobe clean need-stage need-screen
 all: $(KIT_OBJ) $(STAGE_BIN) $(TOOL_BIN)
 
 # ---- 컴파일 ----------------------------------------------------------------
 # 스테이지와 화면 코드는 쓰지 않는 인자가 흔하다(t, dt 등). 그 경고는 끈다.
 $(B)/stages/%.o $(B)/screens/%.o: CFLAGS += -Wno-unused-parameter
+
+# 뇌 시뮬레이터는 속도가 중요하다. 검사 옵션 없이 최적화해서 컴파일한다.
+$(B)/brain/lif.o: CFLAGS := -std=gnu11 -Wall -Wextra -g -O2 -D_GNU_SOURCE -Iinclude -I. -MMD -MP
 
 $(B)/%.o: %.c
 	@mkdir -p $(@D)
@@ -81,6 +89,10 @@ $(B)/screen_preview: $(B)/tools/screen_preview.o $(B)/core/default_screens.o $(K
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(B)/termbench: $(B)/tools/termbench.o $(KIT_OBJ)
+	@mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(B)/brainprobe: $(B)/tools/brainprobe.o $(B)/brain/lif.o
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
@@ -119,6 +131,13 @@ screen: need-screen
 termbench:
 	@$(MAKE) --no-print-directory $(B)/termbench
 	@$(B)/termbench; st=$$?; $(RESTORE); exit $$st
+
+brain-data:
+	@sh tools/brain_data.sh
+
+brainprobe:
+	@$(MAKE) --no-print-directory $(B)/brainprobe
+	@$(B)/brainprobe data
 
 log: need-stage
 	@tail -n 50 -f build/logs/stage_$(STAGE).log

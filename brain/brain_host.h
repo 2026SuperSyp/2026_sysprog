@@ -12,8 +12,12 @@
 
 typedef enum {
     BRAIN_FAKE_FAST,             /* 모든 반응이 다음 틱에 나온다 */
-    BRAIN_FAKE_SLOW              /* 방향 전환과 후진이 여러 틱에 걸쳐 오른다 */
+    BRAIN_FAKE_SLOW,             /* 방향 전환과 후진이 여러 틱에 걸쳐 오른다 */
+    BRAIN_REAL                   /* 진짜 배선으로 계산한다. 먼저 brain_host_open_real이 성공해야 한다 */
 } brain_mode_t;
+
+/* 진짜 뇌의 자료(brain.bin, brain_groups.txt)가 있는 폴더를 연다. 0이면 성공. */
+int  brain_host_open_real(const char *dir);
 
 void brain_host_reset(uint32_t seed, brain_mode_t mode);   /* 판을 시작할 때 한 번 */
 void brain_host_begin_tick(void);

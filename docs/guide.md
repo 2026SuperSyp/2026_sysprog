@@ -26,6 +26,22 @@ cd ~/2026_sysprog
 | `make bot STAGE=example` | 화면 없이 여러 판을 돌려 검사한다. "통과"가 나와야 한다 |
 | `make screen SCREEN=lobby CASE=2` | 화면 하나를 예시 상태로 띄운다(`lobby`, `result`, `ranking`, `spectate`). 아무 키나 누르면 끝난다 |
 | `make log STAGE=example` | 스테이지의 `printf` 출력과 경고를 본다 |
+| `make run STAGE=example BRAIN=real` | 진짜 초파리 뇌 배선으로 돌린다. 아래 "진짜 뇌"의 준비를 먼저 한다 |
+
+## 진짜 뇌
+
+가짜 뇌 대신 실제 초파리 뇌 배선(FlyWire v783, 뉴런 138,639개)으로 반응을 계산할 수 있다. 스테이지 코드는 그대로다.
+
+```
+make brain-data                      (한 번만. 약 135MB를 받아 data/ 에 준비한다)
+make brainprobe                      (자극별 반응과 계산 시간을 표로 본다)
+make run STAGE=example BRAIN=real    (진짜 뇌로 실행)
+```
+
+- 지금 진짜 뇌가 계산하는 것: 다가옴(`BR_LOOM_L/R`) → 도주, 방향 전환, 후진. 맛(`BR_SUGAR`, `BR_BITTER`, `BR_SALT`, `BR_WATER`) → 먹기.
+- 냄새(`BR_ODOR_*`, `BR_REPEL_*`)와 착지는 진짜 뇌에 연결하지 않았다. 전진은 규칙으로 둔다.
+- 짠맛은 가짜 뇌와 다르다. 진짜 배선에서는 짠맛 뉴런이 먹기를 줄이지 않고 오히려 늘렸다.
+- 스테이지를 만들 때는 가짜 뇌(`fast`, `slow`)로 충분하다. 올리기 전에 `BRAIN=real`로도 한 번 돌려 본다.
 
 ## 스테이지를 새로 만드는 순서
 
@@ -59,4 +75,4 @@ cd ~/2026_sysprog
 ## 아직 안 되는 것
 
 - 한글 글자: 글꼴을 넣기 전이라 한글은 빈 네모로 보인다. 지금은 영문 대문자와 숫자를 쓴다.
-- 서버 접속, 진짜 뇌, 보스전은 아직 없다. 지금은 혼자 돌려 보는 것만 된다.
+- 서버 접속, 보스전은 아직 없다. 지금은 혼자 돌려 보는 것만 된다.

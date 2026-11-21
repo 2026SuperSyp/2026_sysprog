@@ -1,6 +1,7 @@
 /* 스테이지 실행 파일의 시작점. 스테이지마다 실행 파일이 하나씩 만들어진다.
- *   build/dev/stage_<이름> --local [--seed=N] [--players=N] [--brain=fast|slow]
- *   build/dev/stage_<이름> --bot   [--seed=N] [--players=N] [--brain=fast|slow] [--draws=N] [--solo=I] */
+ *   build/dev/stage_<이름> --local [--seed=N] [--players=N] [--brain=fast|slow|real]
+ *   build/dev/stage_<이름> --bot   [--seed=N] [--players=N] [--brain=fast|slow|real] [--draws=N] [--solo=I]
+ * --brain=real은 진짜 배선으로 계산한다. 먼저 make brain-data로 data/ 를 만들어 두어야 한다. */
 #include "core/host.h"
 
 #include <stdio.h>
@@ -32,6 +33,7 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--solo=", 7) == 0)      solo = atoi(a + 7);
         else if (strcmp(a, "--brain=slow") == 0)     o.brain = BRAIN_FAKE_SLOW;
         else if (strcmp(a, "--brain=fast") == 0)     o.brain = BRAIN_FAKE_FAST;
+        else if (strcmp(a, "--brain=real") == 0)     o.brain = BRAIN_REAL;
         else {
             fprintf(stdout, "모르는 옵션: %s\n", a);
             return 2;
@@ -42,6 +44,10 @@ int main(int argc, char **argv)
     if (o.n_ticks < 1) o.n_ticks = 1;
     if (o.draws_per_tick < 0) o.draws_per_tick = 0;
     if (solo >= 0) o.n_players = 1;
+    if (o.brain == BRAIN_REAL && brain_host_open_real("data") != 0) {
+        fprintf(stdout, "진짜 뇌의 자료가 없습니다. 먼저 make brain-data 를 실행하세요.\n");
+        return 2;
+    }
 
     return bot ? host_bot_main(&o, solo) : host_local_main(&o, argc, argv);
 }
