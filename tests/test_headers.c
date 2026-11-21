@@ -10,7 +10,7 @@ int main(void)
     T_EQ_INT(SK_LEFT, 1);
     T_EQ_INT(SK_9, 15);
     T_EQ_INT(BR_SUGAR, 0);
-    T_EQ_INT(BRAIN_GROUP_COUNT, 18);
+    T_EQ_INT(BRAIN_GROUP_COUNT, 19);
     T_EQ_INT(C_NONE, 0);
     T_EQ_INT(C_BROWN, 23);
     T_EQ_INT(SPR_MISSING, 0);
