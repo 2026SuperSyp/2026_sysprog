@@ -1,0 +1,25 @@
+/* brain_host.h : 실행기가 뇌 창구를 움직일 때 쓰는 함수
+ *
+ * 스테이지는 include/brain.h의 세 함수만 쓴다. 이 헤더는 코어 전용이다.
+ * 뇌의 시간은 게임 틱이다. 한 틱은 아래 순서로 돈다.
+ *   brain_host_begin_tick()  반응 값을 고정한다
+ *   stage_tick()             이 안에서만 brain_*를 부를 수 있다
+ *   brain_host_end_tick()    이번 틱의 자극을 확정하고 뇌를 한 틱 전진시킨다 */
+#ifndef SSP_BRAIN_HOST_H
+#define SSP_BRAIN_HOST_H
+
+#include <stdint.h>
+
+typedef enum {
+    BRAIN_FAKE_FAST,             /* 모든 반응이 다음 틱에 나온다 */
+    BRAIN_FAKE_SLOW              /* 방향 전환과 후진이 여러 틱에 걸쳐 오른다 */
+} brain_mode_t;
+
+void brain_host_reset(uint32_t seed, brain_mode_t mode);   /* 판을 시작할 때 한 번 */
+void brain_host_begin_tick(void);
+void brain_host_end_tick(void);
+
+int  brain_host_stim_ticks(void);    /* 자극이 하나라도 들어온 틱의 수 */
+int  brain_host_fired_ticks(void);   /* brain_fired가 1을 돌려준 틱의 수 */
+
+#endif
