@@ -16,7 +16,7 @@
 
 typedef enum {
     /* 입력(자극) */
-    BR_SUGAR, BR_BITTER, BR_SOUR, BR_WATER,
+    BR_SUGAR, BR_BITTER, BR_SALT, BR_WATER,      /* 단맛, 쓴맛, 약한 짠맛, 물 */
     BR_LOOM_L, BR_LOOM_R,
     BR_ODOR_L, BR_ODOR_R,
     BR_REPEL_L, BR_REPEL_R,

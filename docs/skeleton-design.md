@@ -376,7 +376,7 @@ int      stage_rng_range(stage_rng_t *r, int lo, int hi);   /* lo 이상 hi 이�
 ```c
 typedef enum {
     /* 입력(자극) */
-    BR_SUGAR, BR_BITTER, BR_SOUR, BR_WATER,
+    BR_SUGAR, BR_BITTER, BR_SALT, BR_WATER,
     BR_LOOM_L, BR_LOOM_R,
     BR_ODOR_L, BR_ODOR_R,
     BR_REPEL_L, BR_REPEL_R,
@@ -415,7 +415,7 @@ if (brain_fired(BR_ESCAPE) && since_flap >= cfg_get("flap_cooldown", 0.25f)) fla
 
 | 스테이지 | 주는 자극 | 읽는 반응 |
 |---|---|---|
-| 음식 골라 먹기 | `BR_SUGAR`(단것), `BR_BITTER`(쓴것), `BR_SOUR`(신것). 음식은 모양이 보이게 그린다 | `brain_fired(BR_FEED)` |
+| 음식 골라 먹기 | `BR_SUGAR`(단것), `BR_BITTER`(쓴것), `BR_SALT`(짠것). 음식은 모양이 보이게 그린다 | `brain_fired(BR_FEED)` |
 | 파리채 피하기 | `BR_LOOM_L`, `BR_LOOM_R` | `brain_fired(BR_ESCAPE)`, 방향은 `BR_TURN_L`, `BR_TURN_R` |
 | 플래핑 플라이 | `BR_LOOM_L` + `BR_LOOM_R` | `brain_fired(BR_ESCAPE)` |
 | 거미줄 미로 | `BR_LOOM_L`, `BR_LOOM_R` | `brain_rate(BR_TURN_L)`, `brain_rate(BR_TURN_R)`, `brain_rate(BR_FORWARD)` |
@@ -433,7 +433,8 @@ if (brain_fired(BR_ESCAPE) && since_flap >= cfg_get("flap_cooldown", 0.25f)) fla
 | `BR_SUGAR` | 일정 세기를 넘어야 `BR_FEED`가 켜진다 | 18장 |
 | `BR_SUGAR` + `BR_BITTER` | 쓴맛이 셀수록 `BR_FEED`가 줄어든다 | 18장 |
 | `BR_BITTER`만 | `BR_FEED`는 0 | 18장 |
-| `BR_SOUR` | 미확인 ★. 진짜 배선에서 신맛 뉴런 집단을 찾지 못했다(전체 정리 6장). 가짜 뇌에서는 쓴맛의 절반 세기로 `BR_FEED`를 줄인다 | 전체 정리 6장 |
+| `BR_SALT` | 약한 짠맛(Ir94e 뉴런)이다. `BR_FEED`를 줄인다. 단맛이 아주 세면 그래도 조금 먹는다. 원 논문(Shiu 등 2024)에 나온 반응이고, 우리 탐침으로는 아직 돌려 보지 않았다 ★ | Shiu 등 2024 |
+| 신맛 | 쓰지 않는다. 뇌 데이터에 신맛 뉴런이 따로 표시돼 있지 않다 | 전체 정리 6장 |
 | `BR_WATER` | 미확인 ★. 가짜 뇌에서는 단맛보다 약하게 `BR_FEED`를 올린다. 지금 스테이지에서는 쓰지 않는다 | 탐침 표에 물이 없음 |
 | `BR_FORWARD` | 대응 뉴런이 없다. 두 뇌가 같은 식으로 만든다: 1에서 `BR_LOOM_L`과 `BR_LOOM_R` 중 큰 값을 뺀 것. 스테이지는 기본 속도를 따로 둔다 | 19장 |
 | 반응이 오르는 빠르기 | `BR_ESCAPE`와 `BR_FEED`는 자극을 준 다음 틱부터 오른다. `BR_TURN_*`은 평균 구간 때문에 4~8틱에 걸쳐 오른다 | 18장 |
@@ -773,7 +774,7 @@ typedef struct {
 - 단계는 `LOBBY`, `CARD`, `READY`, `PLAY`, `VERDICT`, `BOSS`, `RANK`다. 단계마다 마감 시각을 가진다.
 - **진행자와 화면 흐름은 UI 구상안대로 한다.** 진행자는 칼리코 고양이 "시프봇"이고 말풍선으로 안내한다. 흐름은 입장 화면(파티장 앞에서 시프봇이 인사, 입장과 지난 랭킹 보기와 나가기), 라운드 소개(`CARD` 단계: 시프봇이 그 게임의 `rule`을 말해 준다, 3초), 카운트다운(`READY` 단계: 3, 2, 1, GO, 2초 ★), 게임, 판정, 그리고 마지막의 1등 시상이다. 시프봇 장면은 코어가 그리고, 그림은 구상안을 색 블록 픽셀 그림으로 옮긴다.
 - **색은 아직 확정하지 않았다.** 구상안의 7색보다 화려하게 가도 된다. 색 번호는 1바이트라 256색까지 늘릴 수 있고, 새 색은 이름표 끝에 추가한다.
-- **미니게임은 4종을 모두 한다. 4라운드이고 순서만 무작위다.** 파리채 피하기와 닿으면 안 되는 미로는 강연우, 음식 골라 먹기(단것, 쓴것, 신것)와 플래핑 플라이는 김고은이 맡는다.
+- **미니게임은 4종을 모두 한다. 4라운드이고 순서만 무작위다.** 파리채 피하기와 닿으면 안 되는 미로는 강연우, 음식 골라 먹기(단것, 쓴것, 짠것)와 플래핑 플라이는 김고은이 맡는다.
 - **4라운드를 거친 뒤 대왕 초파리 보스전을 한다.** 아이템은 파리채(기본), 스프레이(장거리), 끈끈이(투척, 초파리를 잠시 무력화)다. 초파리의 공격은 단순 공격과 날개 파동이다.
 - 단계가 바뀔 때 클라이언트에 메시지 하나를 보낸다(어느 단계인지, 마감까지 얼마인지, 규칙 카드 문구, 남은 기회).
 - 게임 마스터에 들어오는 사건은 접속과 끊김, 클라이언트 메시지, 틱, 스테이지의 답, 자식 프로세스 종료, 뇌 멈춤이다. 시연용 운영자 명령(단계 건너뛰기 등)이 필요해지면 사건 종류 하나로 더한다.
