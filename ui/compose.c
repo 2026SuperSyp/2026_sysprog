@@ -24,91 +24,52 @@ static void frame_rect(canvas_t *c, int x, int y, int w, int h, color_t col)
     ui_line(c, x + w - 1, y, x + w - 1, y + h - 1, col);
 }
 
-/* 초파리 뇌 그림(47x54). 앞에서 본 모습이고 화면의 왼쪽이 게임의 왼쪽이다.
- * 왼쪽 절반(24칸)만 적는다. 오른쪽은 뒤집어 만들고, 그때 소문자는 대문자가 된다.
- * 글자 하나가 뇌의 한 부위다. 부위의 뜻은 아래 regions 표에 있다.
- *   .  빈 곳     #  테두리     -  부위 사이의 틈     x  나머지 뇌 조직 */
-#define BRAIN_HALF 24
-static const char *const brain_map[OTHER_H] = {
-    "........................",
-    "........................",
-    "...............#####....",
-    ".............##kkkkk##..",
-    "............#xkkkkkkkx#.",
-    "...........#xxkkkkkkkxx#",
-    "...........#xxxkkkkkxxxx",
-    "...........#hhxxkkxxxxxx",
-    "...........#hhhxkkxxxxxx",
-    ".....####..#hhhxkkxxxxxx",
-    "...##oooo#.#hhhxkkxfffff",
-    "..#ooo-mmm#-hhxxkkffffff",
-    ".#oo-mmm-ll-xxxxkkffffff",
-    "#oo-mmm-lll-xxxxkkfffxxx",
-    "#oo-mmm-lll-xxxxkkxxxxxx",
-    "#oo-mmm-lll-xxxxkkxxxeee",
-    "#oo-mmm-lll-xxxxkkxxeexx",
-    "#oo-mmm-lllgggxxkkxxexxx",
-    "#oo-mmm-lllgggxxkkxxeexx",
-    "#oo-mmm-lll-xgxxkkxxxeee",
-    "#oo-mmm-lll-xgxxkkxxxxxx",
-    "#oo-mmm-lll-xgxxkkkkkkkx",
-    "#oo-mmm-lll-xgxxkkkkkkkx",
-    "#oo-mmm-lll-xgxxxxxxxxxx",
-    "#oo-mmm-lll-xgxxxttttxxx",
-    "#oo-mmm-lll-xgxxxttttxxx",
-    "#oo-mmm-lll-xgxxxttttxxx",
-    "#oo-mmm-lll-xgxxxxxxxxxx",
-    "#oo-mmm-lll-xgxxxxxaaaxx",
-    "#oo-mmm-lll-xgxxxxaaaaax",
-    "#oo-mmm-lll-xgxxxaaaaaax",
-    "#oo-mmm-lll-xgxxxaaaaaax",
-    ".#oo-mmm-ll-xxgxxaaaaaax",
-    "..#ooo-mmm#-xxxgxxaaaaax",
-    "...##oooo#..#xxxgxxaaaxx",
-    ".....####....#xxxgxxxx--",
-    "..............#xxxgxxx--",
-    "..............#xxxxgxx--",
-    "..............#xxxxxgxxx",
-    "..............#ssssxgxxx",
-    "..............#ssssxgxpp",
-    "..............#ssssxgxpp",
-    "..............#xxxxxgxpp",
-    "..............#bbbbxgxpp",
-    "..............#bbbbxgxpp",
-    "..............#bbbbxgxpp",
-    "...............#xxxxgxpp",
-    ".................#xxgxxx",
-    "...................#gxxx",
-    "...................#gxxx",
-    "...................#gxxx",
-    "...................#gxxx",
-    "...................#gxxx",
-    "...................#gxxx",
+/* 초파리 뇌 표시(47x54): 점 격자. 점 하나는 2x2픽셀이고 가로 16개, 세로 18개다.
+ * 앞에서 본 모습이고 화면의 왼쪽이 게임의 왼쪽이다.
+ * 왼쪽 절반(8개)만 적는다. 오른쪽은 뒤집어 만들고, 그때 소문자는 대문자가 된다.
+ * 글자 하나가 뇌의 한 부위다. 부위의 뜻은 아래 regions 표에 있다. */
+#define DOT_COLS  16
+#define DOT_ROWS  18
+#define BAR_TOP   6           /* 가운데 막대가 시작하는 줄 */
+#define BAR_ROWS  5
+static const char *const brain_map[DOT_ROWS] = {
+    "..o.....",
+    ".oooo...",
+    ".oooo.kk",
+    "ooooohkk",
+    "ooooo.kk",
+    "oooooaaa",
+    "oooootfg",
+    "oooootfg",
+    "oooootfg",
+    "oooootfg",
+    "oooootfg",
+    "ooooo...",
+    ".oooossb",
+    ".oooossb",
+    "..oo..pp",
+    ".......n",
+    ".......n",
+    ".......n",
 };
 
 /* 부위마다 어느 값을 보여 주는지. is_rate가 0이면 들어가는 자극, 1이면 나오는 반응이다.
- * hot은 켜졌을 때의 색, rest는 조용할 때의 색이다. */
-static const struct { char ch; uint8_t group, is_rate; color_t hot, rest; } regions[] = {
-    /* 눈 뒤의 세 겹: 다가오는 것을 본다 */
-    { 'o', BR_LOOM_L, 0, C_ORANGE, C_GRAY1 },    { 'O', BR_LOOM_R, 0, C_ORANGE, C_GRAY1 },
-    { 'm', BR_LOOM_L, 0, C_YELLOW, C_FLY_BODY }, { 'M', BR_LOOM_R, 0, C_YELLOW, C_FLY_BODY },
-    { 'l', BR_LOOM_L, 0, C_RED,    C_GRAY1 },    { 'L', BR_LOOM_R, 0, C_RED,    C_GRAY1 },
-    /* 냄새: 아래 가운데의 둥근 덩어리(끌리는 냄새), 위쪽 바깥(싫은 냄새) */
-    { 'a', BR_ODOR_L,  0, C_YELLOW, C_FLY_BODY }, { 'A', BR_ODOR_R,  0, C_YELLOW, C_FLY_BODY },
-    { 'h', BR_REPEL_L, 0, C_PINK,   C_FLY_BODY }, { 'H', BR_REPEL_R, 0, C_PINK,   C_FLY_BODY },
-    /* 맛: 맨 아래. 왼쪽이 단맛과 쓴맛, 오른쪽이 짠맛과 물 */
-    { 's', BR_SUGAR,  0, C_GREEN,  C_GRAY1 },     { 'S', BR_SALT,  0, C_CYAN, C_GRAY1 },
-    { 'b', BR_BITTER, 0, C_PURPLE, C_FLY_BODY },  { 'B', BR_WATER, 0, C_BLUE, C_FLY_BODY },
-    /* 반응 */
-    { 'k', BR_AROUSAL,  1, C_PURPLE, C_GRAY1 },    { 'K', BR_AROUSAL,  1, C_PURPLE, C_GRAY1 },     /* 버섯 모양: 각성 */
-    { 'f', BR_FORWARD,  1, C_GREEN,  C_FLY_BODY }, { 'F', BR_FORWARD,  1, C_GREEN,  C_FLY_BODY },  /* 부채: 전진 */
-    { 'e', BR_BACKWARD, 1, C_ORANGE, C_GRAY1 },    { 'E', BR_BACKWARD, 1, C_ORANGE, C_GRAY1 },     /* 고리: 후진 */
-    { 't', BR_TURN_L,   1, C_CYAN,   C_GRAY1 },    { 'T', BR_TURN_R,   1, C_CYAN,   C_GRAY1 },     /* 방향 전환 */
-    { 'p', BR_FEED,     1, C_PINK,   C_GRAY1 },    { 'P', BR_FEED,     1, C_PINK,   C_GRAY1 },     /* 먹기 */
-    { 'g', BR_ESCAPE,   1, C_RED,    C_GRAY1 },    { 'G', BR_ESCAPE,   1, C_RED,    C_GRAY1 },     /* 몸으로 내려가는 굵은 줄: 도주 */
+ * bar가 1이면 점이 아니라 막대이고, 값만큼 아래에서부터 차오른다. */
+static const struct { char ch; uint8_t group, is_rate, bar; } regions[] = {
+    { 'o', BR_LOOM_L,  0, 0 }, { 'O', BR_LOOM_R,  0, 0 },     /* 양옆의 큰 덩어리: 다가오는 것을 본다 */
+    { 'h', BR_REPEL_L, 0, 0 }, { 'H', BR_REPEL_R, 0, 0 },     /* 싫은 냄새 */
+    { 'a', BR_ODOR_L,  0, 0 }, { 'A', BR_ODOR_R,  0, 0 },     /* 끌리는 냄새 */
+    { 's', BR_SUGAR,   0, 0 }, { 'S', BR_SALT,    0, 0 },     /* 맛: 왼쪽이 단맛과 쓴맛, 오른쪽이 짠맛과 물 */
+    { 'b', BR_BITTER,  0, 0 }, { 'B', BR_WATER,   0, 0 },
+    { 'k', BR_AROUSAL, 1, 0 }, { 'K', BR_AROUSAL, 1, 0 },     /* 위 가운데: 각성 */
+    { 't', BR_TURN_L,  1, 1 }, { 'T', BR_TURN_R,  1, 1 },     /* 막대: 방향 전환 */
+    { 'f', BR_FORWARD, 1, 1 }, { 'F', BR_BACKWARD, 1, 1 },    /* 막대: 왼쪽이 전진, 오른쪽이 후진 */
+    { 'g', BR_ESCAPE,  1, 1 }, { 'G', BR_ESCAPE,  1, 1 },     /* 막대: 도주 */
+    { 'p', BR_FEED,    1, 0 }, { 'P', BR_FEED,    1, 0 },     /* 먹기 */
+    { 'n', BR_ESCAPE,  1, 0 }, { 'N', BR_ESCAPE,  1, 0 },     /* 몸으로 내려가는 줄: 도주 */
 };
 
-/* 좌표와 프레임 번호를 고르게 섞은 수. 픽셀마다 켜지는 순서와 반짝임을 정한다. */
+/* 좌표와 프레임 번호를 고르게 섞은 수. 점마다 켜지는 순서와 반짝임을 정한다. */
 static uint32_t mix(uint32_t x, uint32_t y, uint32_t f)
 {
     uint32_t h = (x * 73856093u) ^ (y * 19349663u) ^ (f * 83492791u);
@@ -118,38 +79,40 @@ static uint32_t mix(uint32_t x, uint32_t y, uint32_t f)
     return h;
 }
 
-/* 초파리 뇌 표시. 값이 클수록 그 부위의 픽셀이 더 많이 켜지고, 켜진 픽셀은 가끔 하얗게 반짝인다. */
+/* 초파리 뇌 표시. 값이 클수록 그 부위의 점이 더 많이, 더 밝게 켜진다. */
 static void draw_brain(canvas_t *c, int x, int y, const float *stim, const float *rate, int frame)
 {
     static const float zero[BRAIN_GROUP_COUNT];
     if (!stim) stim = zero;
     if (!rate) rate = zero;
 
-    ui_rect(c, x, y, OTHER_W, OTHER_H, C_BLACK);
+    ui_rect(c, x, y, OTHER_W, OTHER_H, C_BG);
     frame_rect(c, x - 1, y - 1, OTHER_W + 1, OTHER_H + 1, C_GRAY2);
 
-    int busy = (int)(rate[BR_AROUSAL] * 15.0f);
-    for (int py = 0; py < OTHER_H; py++) {
-        for (int px = 0; px < OTHER_W; px++) {
-            char ch = brain_map[py][px < BRAIN_HALF ? px : OTHER_W - 1 - px];
-            if (px >= BRAIN_HALF && ch >= 'a' && ch <= 'z') ch = (char)(ch - 'a' + 'A');
-            uint32_t now = mix((uint32_t)px, (uint32_t)py, (uint32_t)frame + 1u);
-
-            if (ch == '#') { ui_px(c, x + px, y + py, C_GRAY2); continue; }
-            if (ch == 'x' || ch == 'X') {
-                /* 나머지 조직: 조용할 때도 조금씩 깜빡이고, 각성하면 파랗게 더 자주 깜빡인다 */
-                color_t col = C_BG;
-                if ((int)(now % 100u) < 2 + busy) col = busy > 1 ? C_BLUE : C_GRAY1;
-                ui_px(c, x + px, y + py, col);
-                continue;
-            }
+    for (int row = 0; row < DOT_ROWS; row++) {
+        for (int col = 0; col < DOT_COLS; col++) {
+            char ch = brain_map[row][col < DOT_COLS / 2 ? col : DOT_COLS - 1 - col];
+            if (col >= DOT_COLS / 2 && ch >= 'a' && ch <= 'z') ch = (char)(ch - 'a' + 'A');
             for (size_t i = 0; i < sizeof regions / sizeof regions[0]; i++) {
                 if (regions[i].ch != ch) continue;
                 float v = (regions[i].is_rate ? rate : stim)[regions[i].group];
-                color_t col = regions[i].rest;
-                if (v >= 0.05f && (float)(mix((uint32_t)px, (uint32_t)py, 0u) % 100u) < 25.0f + 75.0f * v)
-                    col = (now % 8u == 0u) ? C_WHITE : regions[i].hot;
-                ui_px(c, x + px, y + py, col);
+                int px = x + col * 3, py = y + row * 3;
+                if (regions[i].bar) {
+                    int from_bottom = BAR_TOP + BAR_ROWS - 1 - row;
+                    int lit = v >= 0.05f && v * BAR_ROWS > (float)from_bottom;
+                    ui_rect(c, px, py, 2, from_bottom == 0 ? 2 : 3, lit ? C_CYAN : CX_SLATE);
+                } else {
+                    uint32_t order = mix((uint32_t)col, (uint32_t)row, 0u) % 100u;
+                    uint32_t bright = mix((uint32_t)col, (uint32_t)row, 7u) % 100u;
+                    uint32_t now = mix((uint32_t)col, (uint32_t)row, (uint32_t)frame + 9u);
+                    color_t dot = CX_SLATE;
+                    if (v < 0.05f) {
+                        if (now % 50u == 0u) dot = CX_TEAL;                  /* 조용할 때도 가끔 깜빡인다 */
+                    } else if ((float)order < 30.0f + 70.0f * v) {
+                        dot = ((float)bright < 100.0f * v || now % 5u == 0u) ? C_CYAN : CX_TEAL;
+                    }
+                    ui_rect(c, px, py, 2, 2, dot);
+                }
                 break;
             }
         }

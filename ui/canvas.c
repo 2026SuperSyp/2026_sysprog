@@ -133,6 +133,11 @@ static const uint8_t palette[][3] = {
     [C_PURPLE]   = {150,  90, 210},
     [C_PINK]     = {245, 130, 180},
     [C_BROWN]    = {140,  95,  60},
+    [CX_TAN]     = {235, 188, 140},
+    [CX_CLAY]    = {193, 137,  88},
+    [CX_MAROON]  = {130,  40,  60},
+    [CX_TEAL]    = { 38, 140, 135},
+    [CX_SLATE]   = { 42,  58,  75},
 };
 
 void ui_palette_rgb(color_t c, uint8_t rgb[3])

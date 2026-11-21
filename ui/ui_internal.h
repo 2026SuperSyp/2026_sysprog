@@ -19,6 +19,12 @@ void canvas_blit(canvas_t *dst, int dx, int dy, const canvas_t *src);        /* 
 void canvas_blit_half(canvas_t *dst, int dx, int dy, const canvas_t *src);   /* 가로세로 절반으로 줄여서 놓는다 */
 
 /* ---- 색 (palette.c) ---- */
+/* 코어의 그림에만 쓰는 색. 스테이지가 쓰는 색(ui.h) 뒤에 이어 붙인다. */
+#define CX_TAN    ((color_t)24)   /* 밝은 황토 */
+#define CX_CLAY   ((color_t)25)   /* 황토 */
+#define CX_MAROON ((color_t)26)   /* 어두운 빨강 */
+#define CX_TEAL   ((color_t)27)   /* 어두운 청록 */
+#define CX_SLATE  ((color_t)28)   /* 어두운 남회색 */
 void ui_palette_rgb(color_t c, uint8_t rgb[3]);
 
 /* ---- 그림 (sprite.c) ---- */
