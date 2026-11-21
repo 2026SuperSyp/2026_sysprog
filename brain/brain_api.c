@@ -110,6 +110,12 @@ void brain_host_end_tick(void)
 int brain_host_stim_ticks(void)  { return stim_ticks; }
 int brain_host_fired_ticks(void) { return fired_ticks; }
 
+void brain_host_peek(const float **stim, const float **r)
+{
+    *stim = stim_now;          /* 다음 틱이 시작될 때까지는 방금 틱의 자극이 남아 있다 */
+    *r = next_rate;
+}
+
 static int valid_group(brain_group_t g) { return (int)g >= 0 && (int)g < N; }
 
 void brain_stimulate(brain_group_t in, float level)

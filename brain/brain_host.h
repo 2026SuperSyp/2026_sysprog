@@ -22,4 +22,7 @@ void brain_host_end_tick(void);
 int  brain_host_stim_ticks(void);    /* 자극이 하나라도 들어온 틱의 수 */
 int  brain_host_fired_ticks(void);   /* brain_fired가 1을 돌려준 틱의 수 */
 
+/* 화면의 뇌 표시용. 방금 틱의 자극과 지금의 반응을 넘겨준다(각각 BRAIN_GROUP_COUNT개). */
+void brain_host_peek(const float **stim, const float **rate);
+
 #endif

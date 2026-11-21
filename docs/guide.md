@@ -21,7 +21,7 @@ cd ~/2026_sysprog
 
 | 명령 | 하는 일 |
 |---|---|
-| `make run STAGE=example` | 스테이지를 3분할 화면으로 실행한다. 가운데가 나, 왼쪽이 초파리, 오른쪽이 무작위로 움직이는 두 명이다. `q`로 나간다 |
+| `make run STAGE=example` | 스테이지를 실행한다. 왼쪽이 초파리, 가운데가 나다. 오른쪽 위에는 무작위로 움직이는 다른 참가자 한 명이 보이고 `Tab`으로 바꾼다. 오른쪽 아래는 초파리 뇌 표시다. `q`로 나간다 |
 | `make run STAGE=example SEED=7 PLAYERS=1 BRAIN=slow` | 같은 문제로 다시, 한 명만, 느린 가짜 뇌로 |
 | `make bot STAGE=example` | 화면 없이 여러 판을 돌려 검사한다. "통과"가 나와야 한다 |
 | `make screen SCREEN=lobby CASE=2` | 화면 하나를 예시 상태로 띄운다(`lobby`, `result`, `ranking`, `spectate`). 아무 키나 누르면 끝난다 |

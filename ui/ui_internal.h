@@ -39,8 +39,11 @@ typedef struct {
     int my_score;                /* 아래 띠 */
     int fly_score;               /* 아래 띠 */
     int lives;                   /* 아래 띠: 남은 기회 */
+    int watch;                   /* 오른쪽 위에 보여 줄 다른 참가자. 없으면 -1 */
+    const float *brain_stim;     /* 오른쪽 아래 뇌 표시: 집단별 자극(BRAIN_GROUP_COUNT개). 없으면 NULL */
+    const float *brain_rate;     /* 오른쪽 아래 뇌 표시: 집단별 반응 */
 } hud_t;
-/* 전체 화면에 위 띠, 초파리 칸, 내 칸, 다른 두 명의 칸(절반 크기), 아래 띠를 놓는다.
+/* 전체 화면에 위 띠, 초파리 칸, 내 칸, 다른 참가자 한 명(절반 크기), 뇌 표시, 아래 띠를 놓는다.
  * panes[i]는 참가자 i의 칸이고 me는 가운데에 크게 놓을 참가자다. */
 void compose_stage_frame(canvas_t *full, const canvas_t *fly, canvas_t *const panes[],
                          int n_players, int me, const hud_t *hud);

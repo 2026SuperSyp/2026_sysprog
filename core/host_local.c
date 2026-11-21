@@ -26,6 +26,7 @@ typedef struct {
     size_t in_len;
     const stage_info_t *info;
     int notice_shown;
+    int watch;                 /* 오른쪽 위에 보여 줄 다른 참가자. Tab으로 바꾼다 */
 } local_t;
 
 static void write_all(const char *buf, size_t n)
@@ -106,7 +107,11 @@ static int local_inputs(host_frontend_t *fe, int tick, host_input_t *out, int ma
     wait_tick(L);
     term_size(&cols, &rows);
     while (n < max - 6 && next_event(L, &ev)) {
-        if (ev.kind == IN_KEY) {
+        if (ev.kind == IN_KEY && ev.code == '\t') {
+            /* Tab: 오른쪽 위에 보이는 참가자를 다음 사람으로 바꾼다 */
+            if (L->o->n_players > 1)
+                L->watch = (L->watch < 1 || L->watch >= L->o->n_players - 1) ? 1 : L->watch + 1;
+        } else if (ev.kind == IN_KEY) {
             int key = input_stage_key(&ev);
             if (key != SK_NONE) out[n++] = (host_input_t){ .player = 0, .key = key };
         } else if (ev.kind == IN_POINTER) {
@@ -126,6 +131,8 @@ static void local_frame(host_frontend_t *fe, int tick, const canvas_t *fly,
                         canvas_t *const panes[], const stage_result_t *res)
 {
     local_t *L = fe->self;
+    const float *stim, *rate;
+    brain_host_peek(&stim, &rate);
     hud_t hud = {
         .title = L->info->title,
         .ticks_left = L->o->n_ticks - tick - 1,
@@ -133,6 +140,9 @@ static void local_frame(host_frontend_t *fe, int tick, const canvas_t *fly,
         .my_score = (int)(res->score[0] + 0.5f),
         .fly_score = (int)(res->fly_score + 0.5f),
         .lives = 3,
+        .watch = L->watch,
+        .brain_stim = stim,
+        .brain_rate = rate,
     };
     compose_stage_frame(L->full, fly, panes, L->o->n_players, 0, &hud);
     show(L);
@@ -189,7 +199,7 @@ static void draw_verdict(local_t *L, int tick, void *arg)
 int host_local_main(const host_opts_t *o, int argc, char **argv)
 {
     (void)argc; (void)argv;
-    local_t L = { .o = o };
+    local_t L = { .o = o, .watch = o->n_players > 1 ? 1 : -1 };
     if (term_enter() != 0) {
         fprintf(stdout, "터미널에서 실행해 주세요 (make run STAGE=이름)\n");
         return 2;
