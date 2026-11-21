@@ -36,7 +36,7 @@ static int    n_players, tick_no;
 static sprite_id_t spr_rock;
 
 /* config.ini에서 읽는 숫자들 */
-static float rock_speed, step, loom_gain, fly_hop, score_per_dodge;
+static float rock_speed, step, loom_gain, fly_hop, score_per_dodge, wall_gain, wall_range;
 static int   move_gap, hop_cooldown;
 
 static const stage_info_t info = {
@@ -60,6 +60,8 @@ void stage_start(const stage_ctx_t *ctx)
     fly_hop         = cfg_get("fly_hop", 16.0f);
     hop_cooldown    = (int)cfg_get("hop_cooldown_ticks", 8.0f);
     score_per_dodge = cfg_get("score_per_dodge", 10.0f);
+    wall_gain       = cfg_get("wall_gain", 0.8f);
+    wall_range      = cfg_get("wall_range", 20.0f);
 
     /* 문제는 씨앗에서만 만든다. 미리 다 만들어 두면 진행 속도가 달라도 같은 문제를 받는다. */
     stage_rng_t rng;
@@ -116,18 +118,28 @@ static void fall(side_t *s, int pane)
     s->rock_y = 0;
 }
 
-/* 초파리: 돌이 다가오는 쪽을 자극으로 주고, 뇌의 반응대로 움직인다. */
+/* 초파리: 다가오는 것을 자극으로 주고, 뇌의 반응대로 움직인다.
+ * 다가오는 것은 두 가지다. 돌, 그리고 가까운 벽. 벽을 넣지 않으면 초파리는
+ * 돌을 피해 한쪽 벽까지 가서 거기에 붙어 버린다. */
 static void fly_think(void)
 {
     float dx = rock_x[fly.rock % MAX_ROCKS] - fly.x;
     float near = fly.rock_y / (float)FLOOR_Y;          /* 0: 멀다, 1: 코앞 */
     float adx = dx < 0 ? -dx : dx;
+    float from_left = 0.0f, from_right = 0.0f;         /* 왼쪽, 오른쪽에서 다가오는 정도 */
 
     if (adx < (ROCK_W + BODY_W) / 2.0f + 6) {
-        /* 한 틱에 한쪽만 준다. 양쪽을 같이 주면 방향 전환이 꺼진다. */
-        int from_left = dx < 0 || (dx == 0 && fly.rock % 2 == 0);
-        brain_stimulate(from_left ? BR_LOOM_L : BR_LOOM_R, loom_gain * near);
+        if (dx < 0 || (dx == 0 && fly.rock % 2 == 0)) from_left = loom_gain * near;
+        else                                           from_right = loom_gain * near;
     }
+    float gap_l = fly.x - BODY_W / 2.0f;               /* 왼쪽 벽까지의 거리 */
+    float gap_r = PANE_W - BODY_W / 2.0f - fly.x;
+    if (gap_l < wall_range) from_left  += wall_gain * (1.0f - gap_l / wall_range);
+    if (gap_r < wall_range) from_right += wall_gain * (1.0f - gap_r / wall_range);
+
+    /* 한 틱에 한쪽만 준다. 양쪽을 같이 주면 방향 전환이 꺼진다. */
+    if (from_left > from_right)      brain_stimulate(BR_LOOM_L, from_left);
+    else if (from_right > from_left) brain_stimulate(BR_LOOM_R, from_right);
 
     /* brain_fired는 반응하는 동안 계속 1이다. 한 번씩만 뛰게 하려고 쿨다운을 둔다. */
     if (brain_fired(BR_ESCAPE) && tick_no - fly.last_move >= hop_cooldown) {
