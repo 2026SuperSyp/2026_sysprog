@@ -38,6 +38,11 @@ typedef struct {
  * 한 틱의 순서: 입력 넘기기 -> 뇌 값 고정 -> stage_tick -> 자극 확정과 뇌 전진
  *              -> 점수 읽기 -> 그리기와 이펙트 입히기 -> 앞단으로 넘기기 -> 이펙트 시간 줄이기 */
 int host_play(const host_opts_t *o, host_frontend_t *fe, stage_result_t *final);
+int host_fly_mismatch(void);     /* 초파리 칸의 그림이 참가자마다 달랐으면 1 */
+
+/* 무작위 입력. stream마다 줄기가 다르다. 0과 1은 톡톡 누르고, 2는 같은 키를 계속 누른다.
+ * 같은 (seed, stream, tick)이면 항상 같은 입력이 나온다. */
+int host_bot_inputs(uint32_t seed, int stream, int player, int tick, host_input_t *out, int max);
 
 /* 앞단 (host_bot.c, host_local.c) */
 int host_bot_main(const host_opts_t *o, int solo);     /* 화면 없이 돌리고 RESULT, STATS 줄을 찍는다 */

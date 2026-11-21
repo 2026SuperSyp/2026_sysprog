@@ -56,6 +56,9 @@ void present_invalidate(present_state_t *st);    /* 다음 번에 전부 다시 
  * 터미널이 240x67칸보다 작으면 0을 돌려준다. 돌려주는 값은 out에 쓴 바이트 수다. */
 size_t present_encode(present_state_t *st, const canvas_t *full, int cols, int rows,
                       char *out, size_t cap);
+/* 터미널 글자 칸(0부터)을 전체 화면(240x134) 픽셀로 바꾼다. 화면은 터미널 가운데에 놓인다.
+ * 화면 밖이면 0을 돌려준다. 글자 한 칸은 가로 1픽셀, 세로 2픽셀이고 위쪽 픽셀을 준다. */
+int  present_cell_to_screen(int cols, int rows, int cell_x, int cell_y, int *sx, int *sy);
 
 /* ---- 터미널 (term.c) ---- */
 int  term_enter(void);           /* 원시 입력, 대체 화면, 커서 숨김, 마우스 보고를 켠다. 0이면 성공 */
@@ -70,7 +73,7 @@ typedef struct {
     uint8_t  kind;               /* IN_KEY 또는 IN_POINTER */
     uint8_t  flags;
     uint16_t code;               /* IN_KEY: 글자 코드 또는 IN_K_* */
-    int16_t  x, y;               /* IN_POINTER: 전체 화면(240x134) 기준 픽셀 */
+    int16_t  x, y;               /* IN_POINTER: 터미널 글자 칸(0부터). 화면 픽셀로는 present_cell_to_screen으로 바꾼다 */
 } in_event_t;
 /* buf에서 사건 하나를 꺼낸다. 1: 꺼냈다(used에 쓴 바이트 수), 0: 바이트가 더 필요하다.
  * 모르는 바이트는 사건 없이 건너뛴다(used만 늘고 kind는 0). */
