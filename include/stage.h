@@ -34,9 +34,9 @@
 #define STAGE_TICK_DT     0.05     /* 초 */
 
 typedef struct {
-    const char *title;      /* 규칙 카드 제목. 15자까지. 예: "WEB MAZE" */
-    const char *rule;       /* 규칙 한 줄. 39자까지. 예: "DON'T TOUCH THE WEB!" */
-    const char *controls;   /* 조작 한 줄. 31자까지. 예: "MOUSE" */
+    const char *title;      /* 게임 이름. 한글 8자(영문 16자)까지. 예: "거미줄 미로" */
+    const char *rule;       /* 시프봇이 말해 주는 규칙. 두 줄까지('\n'으로 나눔), 한 줄에 한글 14자까지 */
+    const char *controls;   /* 조작 한 줄. 한글 14자까지. 예: "마우스" */
 } stage_info_t;
 
 typedef struct {

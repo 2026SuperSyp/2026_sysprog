@@ -20,7 +20,8 @@ int main(void)
     T_EQ_INT(SCREEN_W, 240);
     T_EQ_INT(SCREEN_H, 134);
     T_EQ_INT(STAGE_MAX_PLAYERS, 8);
-    T_EQ_INT(sizeof(((ranking_t *)0)->best_stage[0]), 16);
+    T_EQ_INT(sizeof(((ranking_t *)0)->best_stage[0]), 32);
+    T_EQ_INT(UI_KFONT_W, 12);
     T_EQ_INT(sizeof(((stage_result_t *)0)->score) / sizeof(float), STAGE_MAX_PLAYERS);
     T_CHECK(STAGE_TICK_DT > 0.049 && STAGE_TICK_DT < 0.051);
     T_DONE();

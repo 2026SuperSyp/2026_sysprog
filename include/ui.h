@@ -13,14 +13,16 @@
 #define SCREEN_H  134
 #define PANE_W    94       /* 스테이지가 그리는 칸 */
 #define PANE_H    108
-#define UI_FONT_W 6        /* 글자 한 칸의 크기(자간, 행간 포함) */
+#define UI_FONT_W 6        /* 영문, 숫자 한 글자의 칸 크기(자간, 행간 포함) */
 #define UI_FONT_H 8
+#define UI_KFONT_W 12      /* 한글 한 글자의 칸 크기 */
+#define UI_KFONT_H 12
 
 typedef struct canvas canvas_t;    /* 속을 보지 않는다. ui_* 함수로만 그린다 */
 typedef uint8_t color_t;           /* 아래 이름표만 쓴다 */
 typedef int sprite_id_t;
 
-enum {                             /* 새 색은 끝에만 추가한다 */
+enum {                             /* 색은 아직 확정 전이다. 새 색은 끝에만 추가한다 */
     C_NONE = 0,                    /* 투명. 그리지 않는다 */
     C_BG, C_TEXT,
     C_FLY_BODY, C_FLY_EYE, C_WING, C_WEB,
@@ -37,9 +39,10 @@ void ui_rect  (canvas_t *c, int x, int y, int w, int h, color_t col);        /* 
 void ui_line  (canvas_t *c, int x0, int y0, int x1, int y1, color_t col);
 void ui_bar   (canvas_t *c, int x, int y, int w, float ratio, color_t col);  /* 높이 4픽셀 */
 
-/* 글자. 대문자, 숫자, 공백, 그리고 ' ! ? / : . , - + % 를 그린다.
+/* 글자. 픽셀로 그린다. 문자열은 UTF-8이다.
+ * 한글, 영문 대문자, 숫자, 공백, 그리고 ' ! ? / : . , - + % ~ 를 그린다.
  * 소문자는 대문자로 바뀌고 없는 글자는 빈칸이 된다.
- * 칸 안에서는 한 줄에 15자, 전체 화면에서는 40자가 들어간다. */
+ * 영문과 숫자는 6x8칸, 한글은 12x12칸을 차지한다. 가로 길이는 ui_text_w로 얻는다. */
 void ui_text  (canvas_t *c, int x, int y, const char *s, color_t col);
 int  ui_text_w(const char *s);                                               /* 글자열의 가로 픽셀 수 */
 

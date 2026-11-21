@@ -38,7 +38,7 @@ typedef struct {
 typedef struct {
     int n; char name[16][16];
     int total[16];             /* 코어가 계산한 정수 점수 */
-    char best_stage[16][16];   /* 가장 잘한 스테이지의 제목 */
+    char best_stage[16][32];   /* 가장 잘한 스테이지의 제목 */
     int me; double t;
 } ranking_t;
 
