@@ -219,8 +219,9 @@ int host_local_main(const host_opts_t *o, int argc, char **argv)
     scene(&L, 40, draw_verdict, &rr);
 
     term_leave();
-    printf("%s  YOU %.0f  FLY %.0f  %s\n", L.info->title ? L.info->title : "", (double)rr.score[0],
-           (double)rr.fly_score, rr.passed[0] ? "WIN" : "LOSE");
+    /* 결과는 로그로 보낸다. make run이 끝나면서 로그의 마지막 줄들을 보여 준다. */
+    fprintf(stderr, "결과: %s  YOU %.0f  FLY %.0f  %s\n", L.info->title ? L.info->title : "",
+            (double)rr.score[0], (double)rr.fly_score, rr.passed[0] ? "WIN" : "LOSE");
     canvas_free(L.full);
     present_free(L.ps);
     free(L.out);
