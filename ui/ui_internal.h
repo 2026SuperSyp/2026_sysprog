@@ -31,6 +31,11 @@ void fx_tick(void);                          /* 남은 시간을 한 틱 줄인�
 int  fx_call_count(void);                    /* 지금까지 fx_*가 불린 횟수 */
 void fx_set_in_draw(int on);                 /* 켜져 있는 동안 fx_*가 불리면 경고를 남긴다 */
 
+/* ---- 키보드 치는 초파리 (flycam.c) ---- */
+#define WATCH_FLY (-2)
+/* (x, y)부터 47x54 크기로 그린다. rate는 뇌의 집단별 반응이고 없으면 NULL이다. */
+void flycam_draw(canvas_t *c, int x, int y, const float *rate, int frame);
+
 /* ---- 합성 (compose.c) ---- */
 typedef struct {
     const char *title;           /* 위 띠: 게임 이름 */
@@ -39,7 +44,7 @@ typedef struct {
     int my_score;                /* 아래 띠 */
     int fly_score;               /* 아래 띠 */
     int lives;                   /* 아래 띠: 남은 기회 */
-    int watch;                   /* 오른쪽 위에 보여 줄 다른 참가자. 없으면 -1 */
+    int watch;                   /* 오른쪽 위에 보여 줄 다른 참가자. 없으면 -1, 키보드 치는 초파리는 WATCH_FLY */
     const float *brain_stim;     /* 오른쪽 아래 뇌 표시: 집단별 자극(BRAIN_GROUP_COUNT개). 없으면 NULL */
     const float *brain_rate;     /* 오른쪽 아래 뇌 표시: 집단별 반응 */
 } hud_t;

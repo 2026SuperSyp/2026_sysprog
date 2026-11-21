@@ -177,9 +177,11 @@ void compose_stage_frame(canvas_t *full, const canvas_t *fly, canvas_t *const pa
         canvas_blit(full, ME_X, TOP_H, panes[me]);
     frame_rect(full, ME_X - 1, TOP_H - 1, PANE_W + 2, PANE_H + 2, C_YELLOW);
 
-    /* 오른쪽 위: 다른 참가자 한 명을 절반 크기로. 누구를 볼지는 hud->watch가 정한다 */
+    /* 오른쪽 위: 다른 참가자 한 명을 절반 크기로, 또는 키보드 치는 초파리. hud->watch가 정한다 */
     frame_rect(full, OTHER_X - 1, TOP_H - 1, OTHER_W + 1, OTHER_H + 1, C_GRAY2);
-    if (hud->watch >= 0 && hud->watch < n_players && hud->watch != me) {
+    if (hud->watch == WATCH_FLY) {
+        flycam_draw(full, OTHER_X, TOP_H, hud->brain_rate, hud->ticks_left / 2);
+    } else if (hud->watch >= 0 && hud->watch < n_players && hud->watch != me) {
         canvas_blit_half(full, OTHER_X, TOP_H, panes[hud->watch]);
         snprintf(buf, sizeof buf, "P%d", hud->watch + 1);
         ui_text(full, OTHER_X + 2, TOP_H + 2, buf, C_WHITE);

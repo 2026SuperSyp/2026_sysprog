@@ -26,7 +26,7 @@ typedef struct {
     size_t in_len;
     const stage_info_t *info;
     int notice_shown;
-    int watch;                 /* 오른쪽 위에 보여 줄 다른 참가자. Tab으로 바꾼다 */
+    int watch;                 /* 오른쪽 위에 보여 줄 것: 다른 참가자 또는 WATCH_FLY. Tab으로 바꾼다 */
 } local_t;
 
 static void write_all(const char *buf, size_t n)
@@ -108,9 +108,11 @@ static int local_inputs(host_frontend_t *fe, int tick, host_input_t *out, int ma
     term_size(&cols, &rows);
     while (n < max - 6 && next_event(L, &ev)) {
         if (ev.kind == IN_KEY && ev.code == '\t') {
-            /* Tab: 오른쪽 위에 보이는 참가자를 다음 사람으로 바꾼다 */
-            if (L->o->n_players > 1)
-                L->watch = (L->watch < 1 || L->watch >= L->o->n_players - 1) ? 1 : L->watch + 1;
+            /* Tab: 오른쪽 위를 다음 사람으로 바꾼다. 마지막 사람 다음은 키보드 치는 초파리다 */
+            if (L->watch == WATCH_FLY)
+                L->watch = L->o->n_players > 1 ? 1 : WATCH_FLY;
+            else
+                L->watch = L->watch >= L->o->n_players - 1 ? WATCH_FLY : L->watch + 1;
         } else if (ev.kind == IN_KEY) {
             int key = input_stage_key(&ev);
             if (key != SK_NONE) out[n++] = (host_input_t){ .player = 0, .key = key };
@@ -199,7 +201,7 @@ static void draw_verdict(local_t *L, int tick, void *arg)
 int host_local_main(const host_opts_t *o, int argc, char **argv)
 {
     (void)argc; (void)argv;
-    local_t L = { .o = o, .watch = o->n_players > 1 ? 1 : -1 };
+    local_t L = { .o = o, .watch = o->n_players > 1 ? 1 : WATCH_FLY };
     if (term_enter() != 0) {
         fprintf(stdout, "터미널에서 실행해 주세요 (make run STAGE=이름)\n");
         return 2;
