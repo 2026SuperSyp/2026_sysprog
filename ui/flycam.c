@@ -9,7 +9,9 @@
  *   아래 화살표         : 후진           긴 키     : 먹기
  * 보여 주기용 그림이다. 초파리가 실제로 키 입력을 보내는 것은 아니다.
  *
- * 좌표: 초파리는 원점 근처에 서서 +z 쪽(키보드)을 본다. +y가 위, +x가 초파리의 왼쪽이다. */
+ * 초파리 앞의 작은 모니터에는 초파리 칸의 게임 화면이 나온다.
+ *
+ * 좌표: 초파리는 원점 근처에 서서 +z 쪽(키보드와 모니터)을 본다. +y가 위, +x가 초파리의 왼쪽이다. */
 #include "ui/ui_internal.h"
 #include "brain.h"
 
@@ -18,9 +20,9 @@
 #define FW 47
 #define FH 54
 
-#define CAM_YAW    45.0f    /* 초파리의 정면에서 옆으로 돈 각도(도). 0이면 정면 */
-#define CAM_PITCH  40.0f    /* 위에서 내려다보는 각도(도). 0이면 눈높이 */
-#define CAM_ZOOM   4.0f     /* 길이 1이 화면에서 몇 픽셀인가 */
+#define CAM_YAW  (-135.0f)   /* 초파리의 정면에서 옆으로 돈 각도(도). 0이면 정면, 180이면 바로 뒤 */
+#define CAM_PITCH  45.0f    /* 위에서 내려다보는 각도(도). 0이면 눈높이 */
+#define CAM_ZOOM   2.75f     /* 길이 1이 화면에서 몇 픽셀인가 */
 #define CAM_FAR    100.0f
 
 typedef struct { float x, y, z; } v3;
@@ -31,13 +33,13 @@ static v3 mul(v3 a, float s)    { return (v3){ a.x * s, a.y * s, a.z * s }; }
 static float dot(v3 a, v3 b)    { return a.x * b.x + a.y * b.y + a.z * b.z; }
 static v3 unit(v3 a)            { return mul(a, 1.0f / sqrtf(dot(a, a))); }
 
-static const v3 CAM_AT = { 0.0f, 2.2f, 3.3f };       /* 화면 가운데에 오는 점 */
-static const v3 LIGHT  = { -0.30f, 0.80f, 0.52f };   /* 빛이 오는 쪽 */
+static const v3 CAM_AT = { 0.0f, 3.5f, 3.1f };       /* 화면 가운데에 오는 점 */
+static const v3 LIGHT  = { 0.35f, 0.80f, -0.45f };   /* 빛이 오는 쪽 */
 
 enum { M_BODY, M_THORAX, M_ABDOMEN, M_EYE, M_WING };
 
 typedef struct { v3 c, r; int kind; color_t lit, base, dark; } ball_t;
-typedef struct { v3 lo, hi; color_t top, side; int arrow; } box_t;   /* arrow: 1 위, 2 아래, 3 왼쪽, 4 오른쪽 */
+typedef struct { v3 lo, hi; color_t top, side; int arrow; } box_t;   /* arrow: 1 위, 2 아래, 3 왼쪽, 4 오른쪽, 5 모니터 화면 */
 
 typedef struct {
     v3 to_cam, right, up;        /* 카메라의 세 방향 */
@@ -96,6 +98,22 @@ static int on_arrow(int arrow, float lx, float lz)
     return along > -0.6f && along < 0.6f && fabsf(across) < (0.6f - along) * 0.7f;
 }
 
+/* 모니터 화면의 한 점. u, v는 화면 왼쪽 위에서 잰 위치(0 ~ 1)다.
+ * 게임 화면을 아주 작게 줄이므로, 근처에서 배경이 아닌 색을 먼저 고른다. */
+static color_t screen_color(const canvas_t *src, float u, float v, int frame)
+{
+    if (u < 0.08f || u > 0.92f || v < 0.08f || v > 0.92f) return C_GRAY1;      /* 테두리 */
+    if (!src) return ((int)(v * 12.0f) + frame) % 4 == 0 ? C_CYAN : C_BLUE;
+    int cx = (int)((u - 0.08f) / 0.84f * (float)src->w), cy = (int)((v - 0.08f) / 0.84f * (float)src->h);
+    for (int k = 0; k < 9; k++) {
+        int x = cx + (k % 3 - 1) * (src->w / 30), y = cy + (k / 3 - 1) * (src->h / 30);
+        if (x < 0 || y < 0 || x >= src->w || y >= src->h) continue;
+        color_t col = src->px[y * src->w + x];
+        if (col != C_BG && col != C_BLACK && col != C_NONE) return col;
+    }
+    return C_BLUE;
+}
+
 static color_t ball_color(const ball_t *b, v3 n, v3 p, v3 half)
 {
     float lam = dot(n, LIGHT);
@@ -139,7 +157,7 @@ static void leg(view_t *v, v3 shoulder, v3 knee, v3 foot)
     line3(v, knee, foot, C_BROWN);
 }
 
-void flycam_draw(canvas_t *c, int ox, int oy, const float *rate, int frame)
+void flycam_draw(canvas_t *c, int ox, int oy, const float *rate, int frame, const canvas_t *screen)
 {
     static const float zero[BRAIN_GROUP_COUNT];
     static view_t v;
@@ -163,9 +181,9 @@ void flycam_draw(canvas_t *c, int ox, int oy, const float *rate, int frame)
     const ball_t balls[] = {
         { { 0.0f, 2.5f + bob, -3.0f }, { 1.35f, 1.25f, 2.3f }, M_ABDOMEN, C_WARN,   C_BROWN, C_FLY_BODY },
         { { 0.0f, 2.9f + bob,  0.0f }, { 1.60f, 1.50f, 1.9f }, M_THORAX,  C_ORANGE, C_BROWN, C_FLY_BODY },
-        { { 0.0f, 3.1f + bob,  2.5f }, { 1.60f, 1.50f, 1.4f }, M_BODY,    C_ORANGE, C_BROWN, C_FLY_BODY },
-        { {  1.15f, 3.4f + bob, 2.9f }, { 1.15f, 1.30f, 1.15f }, M_EYE,     C_BAD, C_FLY_EYE, C_BROWN },
-        { { -1.15f, 3.4f + bob, 2.9f }, { 1.15f, 1.30f, 1.15f }, M_EYE,     C_BAD, C_FLY_EYE, C_BROWN },
+        { { 0.0f, 3.1f + bob,  2.5f }, { 1.45f, 1.35f, 1.25f }, M_BODY,    C_ORANGE, C_BROWN, C_FLY_BODY },
+        { {  1.05f, 3.35f + bob, 2.8f }, { 1.0f, 1.15f, 1.0f }, M_EYE,     C_BAD, C_FLY_EYE, C_BROWN },
+        { { -1.05f, 3.35f + bob, 2.8f }, { 1.0f, 1.15f, 1.0f }, M_EYE,     C_BAD, C_FLY_EYE, C_BROWN },
         { { 0.0f, 2.0f + bob,  3.7f }, { 0.35f, 0.60f, 0.35f }, M_BODY,   C_WARN, C_WARN, C_BROWN },
         { { flap ?  3.0f :  1.0f, 3.9f + bob, flap ? -1.0f : -3.4f },
           { flap ? 2.6f : 0.85f, 0.10f, flap ? 1.2f : 2.9f }, M_WING, C_WING, C_WING, C_GRAY3 },
@@ -176,12 +194,16 @@ void flycam_draw(canvas_t *c, int ox, int oy, const float *rate, int frame)
 #define KEY(x0, x1, z0, z1, on, arrow) \
     { { x0, 0.6f, z0 }, { x1, (on) ? 0.80f : 1.15f, z1 }, (on) ? C_YELLOW : C_GRAY3, (on) ? C_ORANGE : C_GRAY2, arrow }
     const box_t boxes[] = {
-        { { -4.2f, 0.0f, 3.2f }, { 4.2f, 0.6f, 9.0f }, C_GRAY1, C_BLACK, 0 },
-        KEY(-3.7f,  3.7f, 3.6f, 4.8f, space, 0),
-        KEY( 1.3f,  3.7f, 5.3f, 6.7f, left,  3),
-        KEY(-1.2f,  1.2f, 5.3f, 6.7f, down,  2),
-        KEY(-3.7f, -1.3f, 5.3f, 6.7f, right, 4),
-        KEY(-1.2f,  1.2f, 7.2f, 8.6f, up,    1),
+        { { -4.2f, 0.0f, 4.6f }, { 4.2f, 0.6f, 9.5f }, C_GRAY1, C_BLACK, 0 },
+        KEY(-3.7f,  3.7f, 4.9f, 5.9f, space, 0),
+        KEY( 1.3f,  3.7f, 6.3f, 7.5f, left,  3),
+        KEY(-1.2f,  1.2f, 6.3f, 7.5f, down,  2),
+        KEY(-3.7f, -1.3f, 6.3f, 7.5f, right, 4),
+        KEY(-1.2f,  1.2f, 7.9f, 9.1f, up,    1),
+        /* 모니터: 받침, 기둥, 화면 */
+        { { -1.6f, 0.0f, 10.4f }, { 1.6f, 0.2f, 11.7f }, C_GRAY2, C_GRAY1, 0 },
+        { { -0.4f, 0.2f, 10.9f }, { 0.4f, 1.3f, 11.3f }, C_GRAY2, C_GRAY1, 0 },
+        { { -3.0f, 1.3f, 10.8f }, { 3.0f, 6.7f, 11.4f }, C_GRAY2, C_GRAY1, 5 },
     };
 #undef KEY
 
@@ -194,7 +216,7 @@ void flycam_draw(canvas_t *c, int ox, int oy, const float *rate, int frame)
             /* 책상. 초파리 아래에는 그림자가 진다 */
             float best = o.y / v.to_cam.y;
             v3 f = add(o, mul(d, best));
-            float shx = f.x / 1.9f, shz = (f.z + 1.0f) / 4.2f;
+            float shx = f.x / 1.6f, shz = (f.z + 1.0f) / 3.8f;
             color_t col = shx * shx + shz * shz < 1.0f ? C_BLACK : C_BG;
 
             for (size_t i = 0; i < sizeof boxes / sizeof boxes[0]; i++) {
@@ -202,7 +224,13 @@ void flycam_draw(canvas_t *c, int ox, int oy, const float *rate, int frame)
                 if (!hit_box(&boxes[i], o, d, &t, &axis) || t >= best) continue;
                 best = t;
                 col = axis == 1 ? boxes[i].top : boxes[i].side;
-                if (axis == 1 && boxes[i].arrow) {
+                if (boxes[i].arrow == 5) {
+                    if (axis == 2) {
+                        v3 p = add(o, mul(d, t));
+                        col = screen_color(screen, (boxes[i].hi.x - p.x) / (boxes[i].hi.x - boxes[i].lo.x),
+                                           (boxes[i].hi.y - p.y) / (boxes[i].hi.y - boxes[i].lo.y), frame);
+                    }
+                } else if (axis == 1 && boxes[i].arrow) {
                     v3 p = add(o, mul(d, t));
                     float lx = (p.x - (boxes[i].lo.x + boxes[i].hi.x) / 2.0f) / ((boxes[i].hi.x - boxes[i].lo.x) / 2.0f);
                     float lz = (p.z - (boxes[i].lo.z + boxes[i].hi.z) / 2.0f) / ((boxes[i].hi.z - boxes[i].lo.z) / 2.0f);
@@ -221,13 +249,13 @@ void flycam_draw(canvas_t *c, int ox, int oy, const float *rate, int frame)
     }
 
     /* 앞다리: 누르는 키로 뻗는다. 왼다리는 왼쪽, 위, 긴 키. 오른다리는 오른쪽, 아래, 긴 키 */
-    v3 lf = { 1.8f, 1.9f, 4.6f }, rf = { -1.8f, 1.9f, 4.6f };
-    if (left)       lf = (v3){ 2.5f, 0.80f, 6.0f };
-    else if (up)    lf = (v3){ 0.5f, 0.80f, 7.9f };
-    else if (space) lf = (v3){ 1.8f, 0.80f, 4.2f };
-    if (right)      rf = (v3){ -2.5f, 0.80f, 6.0f };
-    else if (down)  rf = (v3){ -0.5f, 0.80f, 6.0f };
-    else if (space) rf = (v3){ -1.8f, 0.80f, 4.2f };
+    v3 lf = { 1.8f, 1.9f, 5.4f }, rf = { -1.8f, 1.9f, 5.4f };
+    if (left)       lf = (v3){ 2.5f, 0.80f, 6.9f };
+    else if (up)    lf = (v3){ 0.5f, 0.80f, 8.5f };
+    else if (space) lf = (v3){ 1.8f, 0.80f, 5.4f };
+    if (right)      rf = (v3){ -2.5f, 0.80f, 6.9f };
+    else if (down)  rf = (v3){ -0.5f, 0.80f, 6.9f };
+    else if (space) rf = (v3){ -1.8f, 0.80f, 5.4f };
 
     for (int s = -1; s <= 1; s += 2) {
         float fs = (float)s;

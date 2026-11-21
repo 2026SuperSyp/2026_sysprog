@@ -33,8 +33,9 @@ void fx_set_in_draw(int on);                 /* 켜져 있는 동안 fx_*가 불
 
 /* ---- 키보드 치는 초파리 (flycam.c) ---- */
 #define WATCH_FLY (-2)
-/* (x, y)부터 47x54 크기로 그린다. rate는 뇌의 집단별 반응이고 없으면 NULL이다. */
-void flycam_draw(canvas_t *c, int x, int y, const float *rate, int frame);
+/* (x, y)부터 47x54 크기로 그린다. rate는 뇌의 집단별 반응이고 없으면 NULL이다.
+ * screen은 초파리 앞의 모니터에 띄울 그림(초파리 칸)이고 없으면 NULL이다. */
+void flycam_draw(canvas_t *c, int x, int y, const float *rate, int frame, const canvas_t *screen);
 
 /* ---- 합성 (compose.c) ---- */
 typedef struct {
