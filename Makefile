@@ -37,10 +37,10 @@ LDLIBS  := -lm
 RESTORE := stty sane 2>/dev/null; printf '\033[?1003l\033[?1006l\033[?25h\033[?1049l\033[0m'
 
 # ---- 소스 목록 -------------------------------------------------------------
-KIT_SRC    := $(wildcard ui/*.c brain/*.c core/log.c core/cfg.c core/rng.c)
+KIT_SRC    := $(filter-out brain/brain_proc.c,$(wildcard ui/*.c brain/*.c core/log.c core/cfg.c core/rng.c))
 HOST_SRC   := $(wildcard core/stage_host.c core/stage_main.c core/host_bot.c core/host_local.c core/host_pipe.c \
                          core/default_screens.c core/scenes.c core/msg.c core/frame.c)
-NET_SRC    := $(wildcard core/server.c core/client.c)
+NET_SRC    := $(wildcard core/server.c core/client.c core/brain_sup.c brain/brain_proc.c)
 SCREEN_SRC := $(wildcard screens/*.c)
 TEST_SRC   := $(wildcard tests/test_*.c)
 STAGES     := $(notdir $(patsubst %/,%,$(wildcard stages/*/)))
@@ -62,7 +62,7 @@ ifneq ($(wildcard tools/termbench.c),)
 TOOL_BIN   += $(B)/termbench
 endif
 ifneq ($(wildcard core/server.c),)
-TOOL_BIN   += $(B)/server $(B)/client
+TOOL_BIN   += $(B)/server $(B)/client $(B)/brain_proc
 endif
 ifneq ($(wildcard tools/brainprobe.c),)
 TOOL_BIN   += $(B)/brainprobe
@@ -100,7 +100,13 @@ $(B)/termbench: $(B)/tools/termbench.o $(KIT_OBJ)
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-$(B)/server: $(B)/core/server.o $(B)/core/msg.o $(KIT_OBJ)
+$(B)/server: $(B)/core/server.o $(B)/core/brain_sup.o $(B)/core/msg.o $(KIT_OBJ)
+	@mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+# 뇌 프로세스. 서버가 띄운다. 모델(가짜 뇌, 진짜 뇌)과 공유 메모리 부분만 링크한다.
+# 실행 파일 이름이 brain이 아닌 것은 build/dev/brain 이 목적 파일 폴더이기 때문이다.
+$(B)/brain_proc: $(addprefix $(B)/brain/,brain_proc.o brain_model.o brain_real.o lif.o brain_shm.o)
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
@@ -118,9 +124,10 @@ $(B)/tests/%: $(B)/tests/%.o $(KIT_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # ---- 실행 ------------------------------------------------------------------
-test: $(TEST_BIN) $(STAGE_BIN) $(B)/server $(B)/client
+test: $(TEST_BIN) $(STAGE_BIN) $(B)/server $(B)/client $(B)/brain_proc
 	@sh tests/run.sh $(TEST_BIN)
 	@sh tests/e2e.sh
+	@sh tests/brain.sh
 
 need-stage:
 	@if [ -z "$(STAGE)" ]; then echo "STAGE=이름 을 주세요. 있는 스테이지: $(STAGES)"; exit 2; fi

@@ -1,7 +1,7 @@
 /* 서버. 접속을 받고, 게임의 단계를 진행하고, 라운드마다 스테이지 프로세스를 띄운다.
  *
  *   build/dev/server [--port=N] [--order=이름,이름,...] [--rounds=N] [--seed=N]
- *                    [--brain=fast|slow|real] [--fast] [--once]
+ *                    [--brain=fast|slow|real] [--fast] [--once] [--brain-inproc]
  *
  * 스레드
  *   시그널 스레드        시그널을 기다렸다가 사건으로 넘긴다
@@ -9,6 +9,7 @@
  *   접속자 읽기 스레드   메시지를 읽어 사건으로 넘긴다 (접속마다)
  *   접속자 쓰기 스레드   보낼 것을 꺼내 쓴다 (접속마다). 소켓 하나에 쓰는 스레드는 이것 하나다
  *   게임 마스터(main)    사건을 하나씩 처리한다. 게임 상태, 자식 프로세스, 파이프는 이 스레드만 만진다
+ *   감시 스레드          뇌 프로세스의 심장 박동을 보고, 멈추면 사건으로 넘긴다 (core/brain_sup.c)
  *
  * 게임 마스터가 기다리는 곳은 poll 하나다. 사건 큐를 깨우는 eventfd와 스테이지 파이프를 함께 보고,
  * 다음 마감 시각까지만 기다린다.
@@ -19,7 +20,11 @@
  *   2. 자식의 주인: fork, exec, waitpid는 게임 마스터만 한다.
  *   3. fd: 모든 fd는 exec 때 닫히게 만든다. 스테이지에 넘길 두 개만 fork 뒤에 풀어 준다.
  *
- * 아직 없는 것: 보스전(4라운드 뒤 바로 랭킹으로 간다), 뇌 프로세스, 랭킹 저장. */
+ * 뇌는 따로 뜬 프로세스(build/dev/brain_proc)가 계산하고 스테이지와는 공유 메모리로 주고받는다.
+ * --brain-inproc을 주면 전처럼 스테이지 안에서 계산한다.
+ *
+ * 아직 없는 것: 보스전(4라운드 뒤 바로 랭킹으로 간다), 랭킹 저장. */
+#include "core/brain_sup.h"
 #include "core/msg.h"
 #include "protocol.h"
 #include "stage.h"
@@ -67,7 +72,7 @@ static int64_t now_ms(void)
 }
 
 /* ---- 사건 큐: 다른 스레드가 넣고 게임 마스터가 꺼낸다 ------------------------- */
-enum { EV_JOIN, EV_LEAVE, EV_INPUT, EV_SIGNAL };
+enum { EV_JOIN, EV_LEAVE, EV_INPUT, EV_SIGNAL, EV_BRAIN };
 typedef struct {
     int type, slot, gen, signo;
     char name[PROTO_NAME_LEN];
@@ -307,6 +312,13 @@ static void *signal_main(void *arg)
     return NULL;
 }
 
+/* 감시 스레드가 부른다. 뇌가 멈췄다는 사건만 넣는다. gen 자리에 그때의 재시작 횟수를 싣는다. */
+static void brain_stall_event(uint32_t epoch)
+{
+    event_t e = { .type = EV_BRAIN, .gen = (int)epoch };
+    ev_push(&e);
+}
+
 /* ---- 스테이지 프로세스 (게임 마스터만 다룬다) ---------------------------------- */
 static struct {
     pid_t pid;
@@ -338,8 +350,10 @@ static void reap_children(void)
     int status;
     pid_t pid;
     /* SIGCHLD는 여러 개가 하나로 합쳐질 수 있다. 더 없을 때까지 거둔다 */
-    while ((pid = waitpid(-1, &status, WNOHANG)) > 0)
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
         if (pid == st.pid) st.pid = 0;
+        else brain_sup_reaped(pid, status);          /* 뇌였으면 다시 띄운다 */
+    }
 }
 
 static int stage_spawn(const char *name, uint32_t seed, int n_players)
@@ -711,6 +725,8 @@ static void game_master(void)
             int64_t left = deadline - now_ms();
             timeout = left < 0 ? 0 : (int)left;
         }
+        int brain_left = brain_sup_wait_ms();        /* 뇌를 다시 띄우기로 한 시각이 있으면 그때까지만 */
+        if (brain_left >= 0 && (timeout < 0 || brain_left < timeout)) timeout = brain_left;
         if (poll(pf, 2, timeout) < 0 && errno != EINTR) { perror("poll"); exit(1); }
 
         if (pf[0].revents) {
@@ -721,6 +737,7 @@ static void game_master(void)
                 if (e.type == EV_JOIN) on_join(&e);
                 else if (e.type == EV_LEAVE) on_leave(&e);
                 else if (e.type == EV_INPUT) on_input(&e);
+                else if (e.type == EV_BRAIN) brain_sup_stalled((uint32_t)e.gen);
                 else if (e.signo == SIGCHLD) reap_children();
                 else if (e.signo == SIGINT || e.signo == SIGTERM) { stage_kill(); exit(0); }
             }
@@ -731,11 +748,13 @@ static void game_master(void)
             if (poll(&sp, 1, 0) > 0 && sp.revents) on_stage_readable();
         }
         if (deadline && now_ms() >= deadline) on_deadline();
+        brain_sup_tick();
     }
 }
 
 int main(int argc, char **argv)
 {
+    int brain_inproc = 0;
     setvbuf(stdout, NULL, _IOLBF, 0);
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -745,6 +764,7 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--brain=", 8) == 0)   opt.brain = a + 8;
         else if (strcmp(a, "--fast") == 0)         opt.fast = 1;
         else if (strcmp(a, "--once") == 0)         opt.once = 1;
+        else if (strcmp(a, "--brain-inproc") == 0) brain_inproc = 1;
         else if (strncmp(a, "--order=", 8) == 0) {
             const char *p = a + 8;
             while (*p && opt.n_order < MAX_ORDER) {
@@ -789,6 +809,9 @@ int main(int argc, char **argv)
         perror("서버를 열 수 없습니다");
         return 1;
     }
+
+    /* 뇌 프로세스와 감시 스레드. 환경 변수를 바꾸므로 다른 스레드를 만들기 전에 한다 */
+    if (!brain_inproc && brain_sup_start(opt.brain, opt.fast, brain_stall_event) != 0) return 1;
 
     pthread_t t_sig, t_acc;
     pthread_create(&t_sig, NULL, signal_main, &set);
