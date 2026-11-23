@@ -34,6 +34,8 @@ void   lif_run(lif_t *l, int steps);
 uint32_t lif_neurons(const lif_t *l);
 uint32_t lif_count(const lif_t *l, uint32_t idx);        /* 이 뉴런이 지금까지 발화한 횟수 */
 uint64_t lif_total_spikes(const lif_t *l);               /* 모든 뉴런의 발화 횟수 합 */
+/* 마지막 lif_run 동안 발화한 뉴런 번호들. 여러 번 발화한 뉴런은 여러 번 들어 있다. 개수를 돌려준다. */
+uint32_t lif_fired(const lif_t *l, const uint32_t **idx);
 uint32_t lif_active(const lif_t *l);                     /* 지금 계산 중인(쉬지 않는) 뉴런 수 */
 
 #endif

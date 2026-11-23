@@ -126,6 +126,8 @@ void brain_host_peek(const float **stim, const float **r)
     *r = next_rate;
 }
 
+const brain_map_t *brain_host_map(void) { return mode == BRAIN_REAL ? brain_real_map() : NULL; }
+
 static int valid_group(brain_group_t g) { return (int)g >= 0 && (int)g < N; }
 
 void brain_stimulate(brain_group_t in, float level)

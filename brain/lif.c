@@ -64,6 +64,8 @@ struct lif {
     /* 스텝별 발화 목록(고리) */
     uint32_t *fired[DELAY_STEPS]; uint32_t n_fired[DELAY_STEPS], cap_fired[DELAY_STEPS];
 
+    uint32_t *recent; uint32_t n_recent, cap_recent;   /* 마지막 lif_run 동안 발화한 뉴런 */
+
     /* 외부 자극 */
     uint32_t *stim_idx; float *stim_p; uint32_t n_stim, cap_stim;
 
@@ -155,7 +157,7 @@ void lif_close(lif_t *l)
     free(l->cell); free(l->count); free(l->active);
     for (int i = 0; i < DELAY_STEPS; i++) free(l->fired[i]);
     for (int i = 0; i < l->n_groups; i++) free(l->groups[i].idx);
-    free(l->stim_idx); free(l->stim_p);
+    free(l->stim_idx); free(l->stim_p); free(l->recent);
     free(l);
 }
 
@@ -165,6 +167,7 @@ void lif_reset(lif_t *l, uint64_t seed)
     memset(l->count, 0, sizeof(uint32_t) * l->n);
     memset(l->n_fired, 0, sizeof l->n_fired);
     l->n_active = 0;
+    l->n_recent = 0;
     l->step = 0;
     l->total = 0;
     l->rng = (seed << 1) | 1ULL;
@@ -285,6 +288,11 @@ static void step_once(lif_t *l)
                 l->fired[slot] = realloc(l->fired[slot], sizeof(uint32_t) * l->cap_fired[slot]);
             }
             l->fired[slot][l->n_fired[slot]++] = i;
+            if (l->n_recent == l->cap_recent) {
+                l->cap_recent = l->cap_recent ? l->cap_recent * 2 : 4096;
+                l->recent = realloc(l->recent, sizeof(uint32_t) * l->cap_recent);
+            }
+            l->recent[l->n_recent++] = i;
             l->active[keep++] = i;
             continue;
         }
@@ -303,6 +311,7 @@ static void step_once(lif_t *l)
 
 void lif_run(lif_t *l, int steps)
 {
+    l->n_recent = 0;
     for (int s = 0; s < steps; s++) step_once(l);
 }
 
@@ -310,3 +319,9 @@ uint32_t lif_neurons(const lif_t *l)                 { return l->n; }
 uint32_t lif_count(const lif_t *l, uint32_t idx)     { return idx < l->n ? l->count[idx] : 0; }
 uint64_t lif_total_spikes(const lif_t *l)            { return l->total; }
 uint32_t lif_active(const lif_t *l)                  { return l->n_active; }
+
+uint32_t lif_fired(const lif_t *l, const uint32_t **idx)
+{
+    if (idx) *idx = l->recent;
+    return l->n_recent;
+}

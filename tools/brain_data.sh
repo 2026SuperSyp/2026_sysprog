@@ -1,7 +1,7 @@
 #!/bin/sh
 # 진짜 뇌에 필요한 자료를 받아서 data/ 아래에 준비한다. 한 번만 돌리면 된다(약 135MB를 받는다).
 #   sh tools/brain_data.sh
-# 결과: data/brain.bin, data/brain_groups.txt
+# 결과: data/brain.bin, data/brain_groups.txt, data/brain_map.bin
 # data/ 는 저장소에 올리지 않는다.
 set -e
 RAW=data/raw
@@ -29,4 +29,4 @@ fi
 "$PY" -c "import pyarrow, numpy" 2>/dev/null || "$PY" -m pip install -q pyarrow numpy
 
 "$PY" tools/brain_convert.py "$RAW" data
-ls -l data/brain.bin data/brain_groups.txt
+ls -l data/brain.bin data/brain_groups.txt data/brain_map.bin

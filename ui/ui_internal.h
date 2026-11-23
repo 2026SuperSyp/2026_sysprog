@@ -44,6 +44,7 @@ void fx_set_in_draw(int on);                 /* 켜져 있는 동안 fx_*가 불
 void flycam_draw(canvas_t *c, int x, int y, const float *rate, int frame, const canvas_t *screen);
 
 /* ---- 합성 (compose.c) ---- */
+struct brain_map;                /* brain/brain_host.h */
 typedef struct {
     const char *title;           /* 위 띠: 게임 이름 */
     int ticks_left;              /* 위 띠: 남은 틱 */
@@ -54,6 +55,7 @@ typedef struct {
     int watch;                   /* 오른쪽 위에 보여 줄 다른 참가자. 없으면 -1, 키보드 치는 초파리는 WATCH_FLY */
     const float *brain_stim;     /* 오른쪽 아래 뇌 표시: 집단별 자극(BRAIN_GROUP_COUNT개). 없으면 NULL */
     const float *brain_rate;     /* 오른쪽 아래 뇌 표시: 집단별 반응 */
+    const struct brain_map *brain_map;   /* 진짜 뇌일 때의 뇌 지도. 없으면 NULL이고 그때는 점 격자 그림을 쓴다 */
 } hud_t;
 /* 전체 화면에 위 띠, 초파리 칸, 내 칸, 다른 참가자 한 명(절반 크기), 뇌 표시, 아래 띠를 놓는다.
  * panes[i]는 참가자 i의 칸이고 me는 가운데에 크게 놓을 참가자다. */

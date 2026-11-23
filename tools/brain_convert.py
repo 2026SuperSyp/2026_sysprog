@@ -11,6 +11,8 @@
     brain.bin          머리말 24바이트, 그 뒤로 줄 시작 위치(뉴런 수 + 1개, 4바이트씩),
                        받는 뉴런 번호(연결 수만큼, 4바이트씩), 세기(연결 수만큼, 2바이트씩)
     brain_groups.txt   게임이 쓰는 뉴런 집단. 한 줄에 "이름 개수 번호 번호 ..."
+    brain_map.bin      뉴런의 위치(앞에서 본 모습). 뉴런마다 2바이트: 가로(0~255), 세로(0~254).
+                       가로세로를 같은 비율로 줄였다. 위치를 모르는 뉴런은 세로가 255다
 """
 import csv
 import struct
@@ -62,6 +64,22 @@ def main(src, dst):
         w.astype(np.int16).tofile(f)
 
     rows = list(csv.DictReader(open(f"{src}/annotations.tsv"), delimiter="\t"))
+
+    # 뉴런의 위치. 표의 x는 좌우(초파리의 왼쪽이 작은 값), y는 위아래(아래가 큰 값)다.
+    xy = np.full((n, 2), np.nan)
+    for r in rows:
+        i = index_of.get(int(r["root_id"]))
+        if i is not None and r["pos_x"] and r["pos_y"]:
+            xy[i] = (float(r["pos_x"]), float(r["pos_y"]))
+    known = ~np.isnan(xy[:, 0])
+    x0, y0 = xy[known, 0].min(), xy[known, 1].min()
+    scale = 255.0 / (xy[known, 0].max() - x0)
+    pos = np.full((n, 2), 255, dtype=np.uint8)
+    pos[known, 0] = np.clip((xy[known, 0] - x0) * scale, 0, 255).astype(np.uint8)
+    pos[known, 1] = np.clip((xy[known, 1] - y0) * scale, 0, 254).astype(np.uint8)
+    pos.tofile(f"{dst}/brain_map.bin")
+    print(f"위치를 아는 뉴런 {int(known.sum())}개, 세로 최댓값 {int(pos[known, 1].max())}")
+
     with open(f"{dst}/brain_groups.txt", "w") as f:
         for name, (column, values, side) in GROUPS.items():
             members = []

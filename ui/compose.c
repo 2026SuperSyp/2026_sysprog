@@ -6,6 +6,7 @@
  *   아래 띠 12줄 : 내 점수, 초파리 점수, 남은 기회 */
 #include "ui/ui_internal.h"
 #include "brain.h"
+#include "brain/brain_host.h"
 
 #include <stdio.h>
 
@@ -119,6 +120,39 @@ static void draw_brain(canvas_t *c, int x, int y, const float *stim, const float
     }
 }
 
+/* 진짜 뇌일 때의 뇌 표시(47x54).
+ *   위: 뇌 지도. 뉴런을 실제 위치(앞에서 본 모습)에 놓았고, 발화가 많은 칸일수록 밝다.
+ *       노란 칸은 게임이 읽는 출력 뉴런이 방금 발화한 자리다.
+ *   아래: 게임이 읽는 반응 다섯 가지. L, R 방향 전환, E 도주, B 후진, F 먹기. */
+static void draw_brain_map(canvas_t *c, int x, int y, const brain_map_t *m, const float *rate)
+{
+    static const float zero[BRAIN_GROUP_COUNT];
+    if (!rate) rate = zero;
+    ui_rect(c, x, y, OTHER_W, OTHER_H, C_BG);
+    frame_rect(c, x - 1, y - 1, OTHER_W + 1, OTHER_H + 1, C_GRAY2);
+
+    for (int my = 0; my < m->h; my++) {
+        for (int mx = 0; mx < m->w && mx < OTHER_W; mx++) {
+            int k = my * m->w + mx;
+            if (m->density[k] < 3) continue;                 /* 뉴런이 거의 없는 칸은 비운다 */
+            float h = m->heat[k];
+            color_t col = h < 0.5f ? CX_SLATE : (h < 6.0f ? CX_TEAL : (h < 25.0f ? C_CYAN : C_WHITE));
+            if (m->mark[k]) col = C_YELLOW;
+            ui_px(c, x + mx, y + 1 + my, col);
+        }
+    }
+
+    static const struct { int group; const char *label; } bars[] = {
+        { BR_TURN_L, "L" }, { BR_ESCAPE, "E" }, { BR_BACKWARD, "B" }, { BR_FEED, "F" }, { BR_TURN_R, "R" },
+    };
+    for (int i = 0; i < 5; i++) {
+        int bx = x + i * 10, lit = (int)(rate[bars[i].group] * 16.0f + 0.5f);
+        ui_rect(c, bx, y + 27, 7, 16, CX_SLATE);
+        ui_rect(c, bx, y + 27 + 16 - lit, 7, lit, rate[bars[i].group] >= 0.5f ? C_CYAN : CX_TEAL);
+        ui_text(c, bx + 1, y + 45, bars[i].label, C_GRAY3);
+    }
+}
+
 void compose_stage_frame(canvas_t *full, const canvas_t *fly, canvas_t *const panes[],
                          int n_players, int me, const hud_t *hud)
 {
@@ -151,7 +185,10 @@ void compose_stage_frame(canvas_t *full, const canvas_t *fly, canvas_t *const pa
     }
 
     /* 오른쪽 아래: 초파리 뇌 표시 */
-    draw_brain(full, OTHER_X, TOP_H + OTHER_H, hud->brain_stim, hud->brain_rate, hud->ticks_left / 2);
+    if (hud->brain_map)
+        draw_brain_map(full, OTHER_X, TOP_H + OTHER_H, hud->brain_map, hud->brain_rate);
+    else
+        draw_brain(full, OTHER_X, TOP_H + OTHER_H, hud->brain_stim, hud->brain_rate, hud->ticks_left / 2);
 
     /* 아래 띠 */
     int by = TOP_H + PANE_H + 1;

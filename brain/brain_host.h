@@ -29,4 +29,18 @@ int  brain_host_fired_ticks(void);   /* brain_fired가 1을 돌려준 틱의 수
 /* 화면의 뇌 표시용. 방금 틱의 자극과 지금의 반응을 넘겨준다(각각 BRAIN_GROUP_COUNT개). */
 void brain_host_peek(const float **stim, const float **rate);
 
+/* 진짜 뇌의 지도. 뉴런의 실제 위치를 앞에서 본 모습으로 w x h칸에 나눠 담았다.
+ *   density[칸] 그 칸에 있는 뉴런 수
+ *   heat[칸]    최근에 그 칸에서 일어난 발화 수(틱마다 절반으로 줄어든다)
+ *   mark[칸]    게임이 읽는 출력 뉴런이 방금 발화했으면 0보다 크다 */
+#define BRAIN_MAP_W 47
+#define BRAIN_MAP_H 24
+typedef struct brain_map {
+    int w, h;
+    const uint16_t *density;
+    const float *heat;
+    const uint8_t *mark;
+} brain_map_t;
+const brain_map_t *brain_host_map(void);      /* 진짜 뇌가 아니거나 위치 자료가 없으면 NULL */
+
 #endif

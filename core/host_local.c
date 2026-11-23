@@ -145,6 +145,7 @@ static void local_frame(host_frontend_t *fe, int tick, const canvas_t *fly,
         .watch = L->watch,
         .brain_stim = stim,
         .brain_rate = rate,
+        .brain_map = brain_host_map(),
     };
     compose_stage_frame(L->full, fly, panes, L->o->n_players, 0, &hud);
     show(L);
