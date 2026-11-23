@@ -2,6 +2,7 @@
  *
  *   build/dev/server [--port=N] [--order=이름,이름,...] [--rounds=N] [--seed=N]
  *                    [--brain=fast|slow|real] [--fast] [--once] [--brain-inproc]
+ *   검사용: [--tick-ms=N] 틱 사이를 N ms로 한다(--fast여도 지킨다), [--ticks=N] 한 판을 N틱으로 한다
  *
  * 스레드
  *   시그널 스레드        시그널을 기다렸다가 사건으로 넘긴다
@@ -45,6 +46,7 @@
 #include <sys/prctl.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -54,6 +56,13 @@
 #define MAX_ORDER    8
 #define TICK_MS      50
 #define STAGE_WAIT_MS 2000       /* 스테이지가 이만큼 답하지 않으면 죽인다 */
+#define HELLO_WAIT_MS 3000       /* 접속하고 이만큼 HELLO가 오지 않으면 끊는다 */
+#define SEND_WAIT_MS  3000       /* 접속자가 이만큼 하나도 받아 가지 않으면 끊는다 */
+#define SEND_BUF      65536      /* 접속자마다 커널에 쌓아 두는 보낼 것의 한도(바이트) */
+#define INPUT_WIN_MS  100        /* 접속자 한 명의 입력은 이 시간 동안 */
+#define INPUT_WIN_MAX 256        /* 이만큼만 받고 넘치는 것은 버린다 */
+#define EVQ_KEEP      64         /* 사건 큐에서 입력이 쓰지 못하게 남겨 두는 칸 */
+#define SCORE_MAX     1000000    /* 한 라운드 점수로 받아 주는 한도 */
 
 /* ---- 옵션 ------------------------------------------------------------------ */
 static struct {
@@ -63,7 +72,8 @@ static struct {
     char order[MAX_ORDER][32];
     int n_order;
     int card_ms, ready_ms, verdict_ms, rank_ms;
-} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 3000, 2000, 2000, 6000 };
+    int tick_ms, ticks;              /* 검사용. 0이면 쓰지 않는다 */
+} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 3000, 2000, 2000, 6000, 0, 0 };
 
 static int64_t now_ms(void)
 {
@@ -90,7 +100,9 @@ static void ev_push(const event_t *e)
 {
     pthread_mutex_lock(&evq_mu);
     int next = (evq_tail + 1) % EVQ_CAP;
-    if (next != evq_head) {                      /* 꽉 차면 버린다 */
+    int room = (evq_head - next + EVQ_CAP) % EVQ_CAP;    /* 이것을 넣고도 남는 칸 */
+    /* 꽉 차면 버린다. 입력은 먼저 버려서 접속, 끊김, 시그널이 들어갈 자리를 남긴다 */
+    if (next != evq_head && (e->type != EV_INPUT || room >= EVQ_KEEP)) {
         evq[evq_tail] = *e;
         evq_tail = next;
     }
@@ -133,6 +145,7 @@ static void conn_post(int slot, int gen, uint8_t type, uint8_t flags, const void
     conn_t *c = &conns[slot];
     out_msg_t *m = malloc(sizeof *m + sizeof(msg_hdr_t) + len);
     msg_hdr_t h = { len, type, flags, (uint16_t)slot };
+    if (!m) return;
     m->next = NULL;
     m->len = (uint32_t)sizeof h + len;
     memcpy(m->data, &h, sizeof h);
@@ -164,6 +177,8 @@ static int send_bytes(int fd, const uint8_t *p, size_t n)
             if (errno == EINTR) continue;
             return -1;
         }
+        /* 막히는 소켓이 일부만 보내고 돌아왔다면 SEND_WAIT_MS 동안 막혀 있었다는 뜻이다 */
+        if ((size_t)w < n) return -1;
         p += w;
         n -= (size_t)w;
     }
@@ -199,14 +214,28 @@ static void *writer_main(void *arg)
     return NULL;
 }
 
+/* 접속 하나가 서버를 붙들지 못하게 한다. 보낼 것은 조금만 쌓아 두고, 상대가 SEND_WAIT_MS 동안 하나도
+ * 받아 가지 않으면 send가 실패하게 한다. recv_ms는 읽기를 기다리는 한도다(0이면 끝없이 기다린다). */
+static void conn_limits(int fd, int recv_ms)
+{
+    int sndbuf = SEND_BUF;
+    struct timeval snd = { SEND_WAIT_MS / 1000, (SEND_WAIT_MS % 1000) * 1000 };
+    struct timeval rcv = { recv_ms / 1000, (recv_ms % 1000) * 1000 };
+    setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof sndbuf);
+    setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &snd, sizeof snd);
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcv, sizeof rcv);
+}
+
 static void *reader_main(void *arg)
 {
     conn_t *c = arg;
-    int slot = (int)(c - conns), gen = c->gen, one = 1, writer_up = 0;
+    int slot = (int)(c - conns), gen = c->gen, one = 1, writer_up = 0, win_n = 0;
+    int64_t win_at = 0;
     pthread_t writer;
     msg_hdr_t h;
     static __thread uint8_t body[4096];
     setsockopt(c->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+    conn_limits(c->fd, HELLO_WAIT_MS);
 
     /* 첫 메시지는 HELLO여야 한다 */
     hello_msg_t hello;
@@ -218,6 +247,7 @@ static void *reader_main(void *arg)
         goto out;
     }
     hello.name[PROTO_NAME_LEN - 1] = '\0';
+    conn_limits(c->fd, 0);                           /* 들어온 뒤에는 말이 없어도 된다 */
     if (pthread_create(&writer, NULL, writer_main, c) != 0) goto out;
     writer_up = 1;
 
@@ -229,6 +259,10 @@ static void *reader_main(void *arg)
 
     while (msg_recv(c->fd, &h, body, sizeof body) == 1) {
         if (h.type == MSG_INPUT && h.len == sizeof(input_msg_t)) {
+            /* 너무 빠른 입력은 버린다. 한 접속이 사건 큐와 스테이지 통로를 채우지 못하게 한다 */
+            int64_t now = now_ms();
+            if (now - win_at >= INPUT_WIN_MS) { win_at = now; win_n = 0; }
+            if (++win_n > INPUT_WIN_MAX) continue;
             event_t e = { .type = EV_INPUT, .slot = slot, .gen = gen };
             memcpy(&e.in, body, sizeof e.in);
             ev_push(&e);
@@ -243,6 +277,7 @@ out:
     c->closing = 1;
     pthread_cond_signal(&c->cv);
     pthread_mutex_unlock(&c->mu);
+    shutdown(c->fd, SHUT_RDWR);                      /* 쓰기 스레드가 send에서 막혀 있으면 깨운다 */
     if (writer_up) pthread_join(writer, NULL);
     close(c->fd);
     pthread_mutex_lock(&c->mu);
@@ -257,7 +292,9 @@ out:
         ev_push(&leave);
     }
     pthread_mutex_lock(&conns_mu);
+    pthread_mutex_lock(&c->mu);                      /* conn_post가 c->mu만 잡고 used를 읽는다 */
     c->used = 0;
+    pthread_mutex_unlock(&c->mu);
     pthread_mutex_unlock(&conns_mu);
     return NULL;
 }
@@ -269,6 +306,11 @@ static void *accept_main(void *arg)
         int fd = accept4(lfd, NULL, NULL, SOCK_CLOEXEC);
         if (fd < 0) {
             if (errno == EINTR || errno == ECONNABORTED) continue;
+            /* fd나 메모리가 잠깐 모자란 것이면 쉬었다가 다시 받는다. 여기서 끝내면 다시는 접속을 받지 못한다 */
+            if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM) {
+                usleep(100 * 1000);
+                continue;
+            }
             perror("accept");
             return NULL;
         }
@@ -291,7 +333,9 @@ static void *accept_main(void *arg)
         if (pthread_create(&t, NULL, reader_main, c) != 0) {
             close(fd);
             pthread_mutex_lock(&conns_mu);
+            pthread_mutex_lock(&c->mu);
             c->used = 0;
+            pthread_mutex_unlock(&c->mu);
             pthread_mutex_unlock(&conns_mu);
             continue;
         }
@@ -330,6 +374,7 @@ static struct {
     result_msg_t result;
     int ticks_sent, awaiting;        /* awaiting: 틱을 보내고 화면을 기다리는 중 */
     int64_t wait_since;
+    msg_part_t part;                 /* 스테이지에서 받는 중인 메시지 */
 } st = { .to = -1, .from = -1 };
 
 static void stage_close(void)
@@ -359,9 +404,11 @@ static void reap_children(void)
 
 static int stage_spawn(const char *name, uint32_t seed, int n_players)
 {
-    char path[128], a_pipe[48], a_seed[32], a_players[32], a_brain[32], log_path[128];
+    char path[128], a_pipe[48], a_seed[32], a_players[32], a_brain[32], a_ticks[32], log_path[128];
     int to_child[2], from_child[2];
+    pid_t me = getpid();
 
+    if (st.pid > 0) kill(st.pid, SIGKILL);           /* 결과를 내고도 끝나지 않은 앞 스테이지를 남기지 않는다 */
     memset(&st, 0, sizeof st);
     st.to = st.from = -1;
     if (pipe2(to_child, O_CLOEXEC) != 0) return -1;
@@ -374,7 +421,8 @@ static int stage_spawn(const char *name, uint32_t seed, int n_players)
     snprintf(a_players, sizeof a_players, "--players=%d", n_players);
     snprintf(a_brain, sizeof a_brain, "--brain=%s", opt.brain);
     snprintf(log_path, sizeof log_path, "build/logs/stage_%s.log", name);
-    char *argv[] = { path, a_pipe, a_seed, a_players, a_brain, NULL };
+    snprintf(a_ticks, sizeof a_ticks, "--ticks=%d", opt.ticks);
+    char *argv[] = { path, a_pipe, a_seed, a_players, a_brain, opt.ticks > 0 ? a_ticks : NULL, NULL };
     mkdir("build/logs", 0755);
     int log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
 
@@ -390,6 +438,7 @@ static int stage_spawn(const char *name, uint32_t seed, int n_players)
         sigprocmask(SIG_SETMASK, &none, NULL);       /* 부모가 막아 둔 시그널을 푼다 */
         signal(SIGPIPE, SIG_DFL);
         prctl(PR_SET_PDEATHSIG, SIGKILL);            /* 서버가 죽으면 같이 죽는다 */
+        if (getppid() != me) _exit(0);               /* 위 설정보다 먼저 서버가 죽었다 */
         fcntl(to_child[0], F_SETFD, 0);              /* 넘겨줄 두 fd만 exec 뒤에도 남긴다 */
         fcntl(from_child[1], F_SETFD, 0);
         if (log_fd >= 0) { dup2(log_fd, 1); dup2(log_fd, 2); }
@@ -402,6 +451,9 @@ static int stage_spawn(const char *name, uint32_t seed, int n_players)
     st.pid = pid;
     st.to = to_child[1];
     st.from = from_child[0];
+    /* 스테이지가 멈추거나 메시지를 절반만 보내도 게임 마스터는 막히지 않아야 한다 */
+    fcntl(st.to, F_SETFL, O_NONBLOCK);
+    fcntl(st.from, F_SETFL, O_NONBLOCK);
     st.open = 1;
     return 0;
 }
@@ -604,7 +656,9 @@ static void enter_verdict(void)
 {
     for (int s = 0; s < PROTO_SEATS; s++) {
         if (!seats[s].used || seats[s].pane < 0) continue;
-        seats[s].score = st.result.score[seats[s].pane];
+        /* 스테이지가 터무니없는 점수를 보내도 누적 점수가 넘치지 않게 범위를 자른다 */
+        int32_t sc = st.result.score[seats[s].pane];
+        seats[s].score = sc > SCORE_MAX ? SCORE_MAX : (sc < -SCORE_MAX ? -SCORE_MAX : sc);
         /* 같거나 높으면 이긴 것이다. 도중에 나간 사람은 진 것으로 한다 */
         seats[s].passed = seats[s].connected && seats[s].score >= st.result.fly_score;
         if (!seats[s].passed) seats[s].lives--;
@@ -620,7 +674,9 @@ static void enter_verdict(void)
 static void on_stage_readable(void)
 {
     msg_hdr_t h;
-    int r = msg_recv(st.from, &h, stage_buf, sizeof stage_buf);
+    int r = msg_recv_some(st.from, &st.part, stage_buf, sizeof stage_buf);
+    if (r == 0) return;                          /* 덜 왔다. 나머지는 다음에 이어 받는다 */
+    h = st.part.h;
     if (r != 1) {
         if (!st.got_result) stage_failed("결과 없이 끝났습니다");
         return;
@@ -635,7 +691,7 @@ static void on_stage_readable(void)
         st.awaiting = 0;
         for (int i = 0; i < MAX_CONN; i++)
             if (members[i].in) conn_post(i, members[i].gen, MSG_FRAME, h.flags, stage_buf, h.len, 1);
-        if (opt.fast && phase == PH_PLAY) deadline = now_ms();       /* 검사용: 기다리지 않고 다음 틱 */
+        if (opt.fast && !opt.tick_ms && phase == PH_PLAY) deadline = now_ms();   /* 검사용: 기다리지 않고 다음 틱 */
     } else if (h.type == MSG_RESULT && h.len == sizeof st.result) {
         memcpy(&st.result, stage_buf, sizeof st.result);
         st.got_result = 1;
@@ -663,15 +719,20 @@ static void on_deadline(void)
             /* 스테이지가 아직 답하지 않았다. 너무 오래 걸리면 죽인다 */
             if (now - st.wait_since > STAGE_WAIT_MS) { stage_failed("답하지 않습니다"); return; }
         } else if (st.ticks_sent < st.info.n_ticks) {
-            if (msg_send(st.to, MSG_TICK, 0, 0, NULL, 0) != 0) { stage_failed("통로를 닫았습니다"); return; }
-            st.ticks_sent++;
-            st.awaiting = 1;
-            st.wait_since = now;
+            /* 못 보냈으면(통로가 가득 찼거나 스테이지가 닫았다) 다음에 다시 보낸다. 스테이지가 끝난 것이면
+             * 읽는 쪽에서 알게 되고, 못 보내는 상태가 오래가면 멈춘 것으로 본다 */
+            int sent = msg_send_once(st.to, MSG_TICK, 0, 0, NULL, 0);
+            if (sent <= 0 && now - st.wait_since > STAGE_WAIT_MS) { stage_failed("답하지 않습니다"); return; }
+            if (sent > 0) {
+                st.ticks_sent++;
+                st.awaiting = 1;
+                st.wait_since = now;
+            }
         } else if (now - st.wait_since > STAGE_WAIT_MS) {
             stage_failed("결과를 보내지 않습니다");
             return;
         }
-        deadline = (opt.fast ? now + 5 : deadline + TICK_MS);
+        deadline = opt.tick_ms > 0 ? now + opt.tick_ms : (opt.fast ? now + 5 : deadline + TICK_MS);
         if (deadline < now - 500) deadline = now;        /* 많이 밀렸으면 따라잡으려 하지 않는다 */
         break;
     case PH_VERDICT: {
@@ -753,7 +814,9 @@ static void on_input(const event_t *e)
         } else {
             return;
         }
-        if (msg_send(st.to, MSG_INPUT, 0, 0, &out, sizeof out) != 0) stage_failed("통로를 닫았습니다");
+        /* 못 보낸 입력은 버린다. 통로가 가득 찼거나 스테이지가 이미 끝낸 것이다. 여기서 라운드를 무효로
+         * 하면 스테이지가 끝내면서 보낸 결과까지 버리게 된다. 결과 없이 끝난 것인지는 읽는 쪽이 가린다 */
+        (void)msg_send_once(st.to, MSG_INPUT, 0, 0, &out, sizeof out);
     }
 }
 
@@ -806,6 +869,8 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--brain=", 8) == 0)   opt.brain = a + 8;
         else if (strcmp(a, "--fast") == 0)         opt.fast = 1;
         else if (strcmp(a, "--once") == 0)         opt.once = 1;
+        else if (strncmp(a, "--tick-ms=", 10) == 0) opt.tick_ms = atoi(a + 10);
+        else if (strncmp(a, "--ticks=", 8) == 0)   opt.ticks = atoi(a + 8);
         else if (strcmp(a, "--brain-inproc") == 0) brain_inproc = 1;
         else if (strncmp(a, "--order=", 8) == 0) {
             const char *p = a + 8;

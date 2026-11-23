@@ -26,6 +26,7 @@ cd ~/2026_sysprog
 | `make bot STAGE=example` | 화면 없이 여러 판을 돌려 검사한다. "통과"가 나와야 한다 |
 | `make screen SCREEN=lobby CASE=2` | 화면 하나를 예시 상태로 띄운다(`lobby`, `result`, `ranking`, `spectate`). 아무 키나 누르면 끝난다 |
 | `make log STAGE=example` | 스테이지의 `printf` 출력과 경고를 본다 |
+| `make test-fail` | 서버가 고장 상황을 버티는지 본다(스테이지 죽이기, 접속 끊기, 잘못된 메시지 등 10가지). 서버 코드를 고친 뒤에 돌린다 |
 | `make termbench` | 이 터미널이 초당 20장을 따라오는지 잰다. 도는 동안 마우스를 움직이면 마우스 보고도 확인한다 |
 | `make run STAGE=example BRAIN=real` | 진짜 초파리 뇌 배선으로 돌린다. 아래 "진짜 뇌"의 준비를 먼저 한다 |
 

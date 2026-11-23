@@ -2,6 +2,7 @@
 #
 #   make                         전부 빌드
 #   make test                    자동 검사
+#   make test-fail               고장 상황 검사 (스테이지 죽이기, 접속 끊기, 잘못된 메시지, 스레드 경합 등 10가지)
 #   make run STAGE=이름          스테이지 하나를 3분할 화면으로 실행 (SEED=, PLAYERS=, BRAIN=fast|slow|real)
 #   make bot STAGE=이름          화면 없이 여러 판을 돌려 검사
 #   make screen SCREEN=이름      화면 하나를 예시 상태로 띄움 (CASE=)
@@ -71,7 +72,7 @@ endif
 
 ALL_SRC := $(KIT_SRC) $(HOST_SRC) $(NET_SRC) $(SCREEN_SRC) $(TEST_SRC) $(STAGE_SRC) $(wildcard tools/*.c)
 
-.PHONY: all test run bot screen log termbench brain-data brainprobe server client demo-local clean need-stage need-screen
+.PHONY: all test run bot screen log termbench brain-data brainprobe server client demo-local clean need-stage need-screen test-fail
 all: $(KIT_OBJ) $(STAGE_BIN) $(TOOL_BIN)
 
 # ---- 컴파일 ----------------------------------------------------------------
@@ -174,6 +175,10 @@ demo-local: all
 	 sleep 0.2; $(B)/client --bot --wait=3 --port=$(or $(PORT),4620) --name=BOT2 > build/logs/bot2.log 2>&1 & \
 	 sleep 0.2; $(B)/client --port=$(or $(PORT),4620) --name=$(or $(NAME),YOU); st=$$?; $(RESTORE); \
 	 kill $$sv 2>/dev/null; exit $$st
+
+# 서버와 클라이언트가 고장 상황을 버티는지 본다. 포트 4720~4729를 쓴다.
+test-fail: all
+	@sh tests/fail.sh
 
 brain-data:
 	@sh tools/brain_data.sh

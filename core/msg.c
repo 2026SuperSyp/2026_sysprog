@@ -55,6 +55,42 @@ int msg_recv(int fd, msg_hdr_t *h, void *body, uint32_t cap)
     return 1;
 }
 
+int msg_recv_some(int fd, msg_part_t *part, void *body, uint32_t cap)
+{
+    for (;;) {
+        ssize_t r;
+        if (part->got < sizeof part->h) {
+            r = read(fd, (char *)&part->h + part->got, sizeof part->h - part->got);
+        } else {
+            uint32_t have = part->got - (uint32_t)sizeof part->h;
+            if (part->h.len > cap) return -1;
+            if (have == part->h.len) { part->got = 0; return 1; }
+            r = read(fd, (char *)body + have, part->h.len - have);
+        }
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            return errno == EAGAIN ? 0 : -1;
+        }
+        if (r == 0) return -1;
+        part->got += (uint32_t)r;
+    }
+}
+
+int msg_send_once(int fd, uint8_t type, uint8_t flags, uint16_t slot, const void *body, uint32_t len)
+{
+    uint8_t buf[sizeof(msg_hdr_t) + MSG_ONCE_MAX];
+    msg_hdr_t h = { len, type, flags, slot };
+    if (len > MSG_ONCE_MAX) return -1;
+    memcpy(buf, &h, sizeof h);
+    if (len > 0) memcpy(buf + sizeof h, body, len);
+    for (;;) {
+        ssize_t w = write(fd, buf, sizeof h + len);
+        if (w == (ssize_t)(sizeof h + len)) return 1;
+        if (w < 0 && errno == EINTR) continue;
+        return (w < 0 && errno == EAGAIN) ? 0 : -1;
+    }
+}
+
 size_t rle_pack(const uint8_t *px, size_t n, uint8_t *out, size_t cap)
 {
     size_t o = 0;
