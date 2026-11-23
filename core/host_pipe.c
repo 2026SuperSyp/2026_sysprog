@@ -10,6 +10,7 @@
 #include "core/host.h"
 #include "core/frame.h"
 #include "core/msg.h"
+#include "ui/ui_internal.h"
 #include "brain.h"
 
 #include <math.h>
@@ -79,9 +80,9 @@ int host_pipe_main(const host_opts_t *o, int rfd, int wfd)
     info_msg_t info;
     memset(&info, 0, sizeof info);
     info.n_ticks = (uint16_t)o->n_ticks;
-    snprintf(info.title, sizeof info.title, "%s", si->title ? si->title : "");
-    snprintf(info.rule, sizeof info.rule, "%s", si->rule ? si->rule : "");
-    snprintf(info.controls, sizeof info.controls, "%s", si->controls ? si->controls : "");
+    utf8_copy(info.title, sizeof info.title, si->title);          /* 넘치면 글자 경계에서 자른다 */
+    utf8_copy(info.rule, sizeof info.rule, si->rule);
+    utf8_copy(info.controls, sizeof info.controls, si->controls);
     if (msg_send(wfd, MSG_INFO, 0, 0, &info, sizeof info) != 0) return 0;
 
     host_frontend_t fe = { pipe_inputs, pipe_frame, &p };

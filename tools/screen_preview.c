@@ -27,7 +27,7 @@ static void fill_result(round_result_t *r, int c)
     static const char *names[] = { "HENRY", "YEONWOO", "ABCDEFGHIJKLMNO" };
     r->n = c == 1 ? 1 : 3;
     r->fly_score = 70;
-    r->stage_name = "DODGE";
+    r->stage_name = "돌 피하기";
     for (int i = 0; i < r->n; i++) {
         snprintf(r->name[i], sizeof r->name[i], "%s", names[i]);
         r->score[i] = (float)(100 - i * 40 - (c == 3 ? 50 : 0));
@@ -44,7 +44,7 @@ static void fill_ranking(ranking_t *r, int c)
     for (int i = 0; i < r->n; i++) {
         snprintf(r->name[i], sizeof r->name[i], "PLAYER%d", (i + 1) % 100);
         r->total[i] = 400 - i * 25;
-        snprintf(r->best_stage[i], sizeof r->best_stage[i], "%s", i % 2 ? "DODGE" : "WEB MAZE");
+        snprintf(r->best_stage[i], sizeof r->best_stage[i], "%s", i % 2 ? "돌 피하기" : "거미줄 미로");
     }
     r->me = c == 3 ? -1 : r->n - 1;
 }

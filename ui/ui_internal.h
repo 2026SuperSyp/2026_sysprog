@@ -27,6 +27,12 @@ void canvas_blit_half(canvas_t *dst, int dx, int dy, const canvas_t *src);   /* 
 #define CX_SLATE  ((color_t)28)   /* 어두운 남회색 */
 void ui_palette_rgb(color_t c, uint8_t rgb[3]);
 
+/* ---- 글자 (font.c, utf8.c) ---- */
+#define UI_KFONT_LATIN_DY 3      /* 한글이 섞인 글자열에서 영문과 숫자를 이만큼 내려 그린다(ui_text) */
+int    ui_text_h(const char *s);                             /* 한 줄의 높이. 한글이 섞였으면 12, 아니면 8 */
+int    utf8_next(const char **s);                            /* 글자 하나를 읽고 다음으로 넘어간다. 끝이면 0 */
+size_t utf8_copy(char *dst, size_t cap, const char *src);    /* 넘치면 글자 경계에서 잘라 담는다 */
+
 /* ---- 그림 (sprite.c) ---- */
 void ui_set_stage_dir(const char *dir);      /* 예: "stages/example". NULL이면 스테이지 그림을 찾지 않는다 */
 

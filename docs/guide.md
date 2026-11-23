@@ -84,6 +84,28 @@ make run STAGE=example BRAIN=real    (진짜 뇌로 실행)
 - 난이도 숫자는 코드에 쓰지 않고 `config.ini`에 둔다.
 - 점수는 0 이상이고, 한 판을 잘하면 100 근처가 되게 맞춘다.
 
+## 한글 글자
+
+`ui_text`에 한글을 그대로 쓰면 된다(소스 파일은 UTF-8). 스테이지의 제목, 규칙, 조작법도 한글로 적는다. 예제(`stages/example/example.c`)를 참고한다.
+
+- 한글 한 글자는 12x12칸, 영문과 숫자는 6x8칸이다. 폭은 `ui_text_w`로 잰다.
+- 한글이 섞인 글자열은 한 줄의 높이가 12픽셀이다. 그때 영문과 숫자는 3픽셀 내려서 한글의 가운데 높이에 맞춰 그린다. 영문만 있는 글자열은 예전과 같다.
+- 한글은 12픽셀을 꽉 채운다. 여러 줄을 쓸 때는 줄 간격을 14픽셀로 잡는다. 12픽셀이면 위아래 줄이 맞닿는다.
+- 그릴 수 있는 글자: 한글 음절 전부(11172자), 낱자모(ㄱ~ㅣ), 그리고 `· × ‘ ’ “ ” … ← ↑ → ↓ ★ ♥`. 이 부호들도 12x12 한 칸을 차지한다. 한자 같은 그 밖의 글자는 빈칸이 된다.
+- 획이 많은 글자(뷁, 꿿 등)는 12픽셀에서 뭉개진다. 안내 문장에는 흔한 글자를 쓰고 `make run`으로 한 번 읽어 본다.
+- 제목, 규칙, 조작법은 서버를 거치면서 각각 31, 95, 47바이트까지만 전달된다(한글은 한 글자가 3바이트). 넘치면 글자 단위로 잘린다. `stage.h`에 적힌 글자 수를 지키면 넘치지 않는다.
+- 글꼴은 Freesentation(프리젠테이션체, SIL Open Font License 1.1)이다. 저작권 표시와 라이선스 전문은 `ui/assets/FONT_LICENSE.txt`에 있다.
+
+글꼴 파일(`ui/assets/hangul12.fnt`)은 저장소에 들어 있어서 따로 준비할 것이 없다. 파일이 없으면 한글이 빈 네모로 보이고 로그에 경고가 남는다. 다시 만들 때만 아래를 돌린다(`data/venv`는 `make brain-data`가 만든다).
+
+```
+(https://freesentation.blog/freesentation 에서 ver 2.001을 받아 data/raw/font/ 에 푼다. 글꼴 파일은 저장소에 올리지 않는다)
+data/venv/bin/python -m pip install freetype-py
+data/venv/bin/python tools/font_convert.py data/raw/font/Freesentation-4Regular.ttf ui/assets/hangul12.fnt --preview build/font_preview.ppm
+```
+
+굵기, 크기, 그리는 방식을 바꿔 보려면 `tools/font_convert.py` 맨 위의 설명과 `--mode`, `--ppem` 옵션을 본다. `--preview`는 예문을 그린 그림(PPM)을 만든다.
+
 ## 팀 명세서 v6에서 바뀐 이름
 
 | v6 | 지금 |
@@ -96,5 +118,5 @@ make run STAGE=example BRAIN=real    (진짜 뇌로 실행)
 
 ## 아직 안 되는 것
 
-- 한글 글자: 글꼴을 넣기 전이라 한글은 빈 네모로 보인다. 지금은 영문 대문자와 숫자를 쓴다.
+- 한글 글자: 한글은 그려진다(위 "한글 글자"). 다만 12픽셀이라 획이 많은 글자는 뭉개지고, 영문 소문자와 괄호 같은 일부 기호는 아직 글꼴에 없다.
 - 보스전은 아직 없다. 4라운드가 끝나면 바로 랭킹으로 간다.

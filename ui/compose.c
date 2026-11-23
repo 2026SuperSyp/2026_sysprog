@@ -161,7 +161,9 @@ void compose_stage_frame(canvas_t *full, const canvas_t *fly, canvas_t *const pa
 
     /* 위 띠 */
     ui_rect(full, 0, 0, SCREEN_W, TOP_H - 1, C_GRAY1);
-    ui_text(full, 3, 3, hud->title ? hud->title : "", C_YELLOW);
+    /* 한글 제목은 한 줄이 12픽셀이라 위로 올려 놓는다. 그러면 제목 안의 영문이 오른쪽 글자와 같은 높이가 된다 */
+    int title_y = ui_text_h(hud->title) > UI_FONT_H ? 3 - UI_KFONT_LATIN_DY : 3;
+    ui_text(full, 3, title_y, hud->title ? hud->title : "", C_YELLOW);
     snprintf(buf, sizeof buf, "R%d  TIME %d", hud->round, (hud->ticks_left + 19) / 20);
     ui_text(full, SCREEN_W - 3 - ui_text_w(buf), 3, buf, C_TEXT);
 

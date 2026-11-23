@@ -427,7 +427,7 @@ int main(int argc, char **argv)
     sock = connect_to(host, port);
     if (sock < 0) { printf("%s:%d 에 접속할 수 없습니다\n", host, port); return 1; }
     hello_msg_t hello = { .version = PROTO_VERSION };
-    snprintf(hello.name, sizeof hello.name, "%s", name);
+    utf8_copy(hello.name, sizeof hello.name, name);
     if (msg_send(sock, MSG_HELLO, 0, 0, &hello, sizeof hello) != 0) return 1;
 
     if (bot) return run_bot(wait_players);

@@ -40,9 +40,9 @@ static float rock_speed, step, loom_gain, fly_hop, score_per_dodge, wall_gain, w
 static int   move_gap, hop_cooldown;
 
 static const stage_info_t info = {
-    .title    = "DODGE",
-    .rule     = "DODGE THE FALLING ROCKS\nBEAT THE FLY",
-    .controls = "LEFT / RIGHT OR MOUSE",
+    .title    = "돌 피하기",
+    .rule     = "떨어지는 돌을 피하세요\n초파리보다 많이 피하면 승리",
+    .controls = "← → 또는 마우스",
 };
 
 const stage_info_t *stage_info(void) { return &info; }
