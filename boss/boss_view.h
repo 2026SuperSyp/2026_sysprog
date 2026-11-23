@@ -10,7 +10,8 @@
 #include "ui.h"
 
 typedef struct {
-    int me;                              /* 내 참가자 번호. 관전자는 -1(살아 있는 첫 참가자의 눈으로 본다) */
+    int me;                              /* 내 참가자 번호. 관전자는 -1 */
+    int watch;                           /* 내 눈으로 볼 수 없을 때(관전자, 쓰러짐) 누구의 눈으로 볼지. 쓰러진 사람이면 그다음 사람 */
     const char *name[BOSS_PLAYERS];      /* 참가자 이름. 없으면 NULL */
     int hit_ms, hurt_ms, wave_ms;        /* 내 공격이 맞은 뒤, 내가 맞은 뒤, 날갯짓 뒤로 지난 시간(ms). 없었으면 음수 */
 } boss_view_t;

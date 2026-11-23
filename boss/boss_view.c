@@ -262,7 +262,7 @@ static void draw_bars(canvas_t *c, const boss_snap_t *b, const boss_view_t *v, i
     int y = VY + VH + 2;
     if (eye < 0) { ui_text(c, 2, y, "모두 쓰러졌다", C_GRAY3); return; }
     if (eye != v->me) {
-        snprintf(line, sizeof line, "관전 %.10s", v->name[eye] ? v->name[eye] : "");
+        snprintf(line, sizeof line, "관전 %.10s   Tab 다른 사람", v->name[eye] ? v->name[eye] : "");
         ui_text(c, 2, y, line, pcol[eye]);
         return;
     }
@@ -283,7 +283,11 @@ void boss_view_draw(canvas_t *full, const boss_snap_t *b, const boss_view_t *v)
     int eye = -1;
     if (!have_map) load_map();
     if (v->me >= 0 && v->me < b->n_players && b->p[v->me].alive) eye = v->me;
-    for (int i = 0; eye < 0 && i < b->n_players && i < BOSS_PLAYERS; i++) if (b->p[i].alive) eye = i;
+    int n = b->n_players < BOSS_PLAYERS ? b->n_players : BOSS_PLAYERS;
+    for (int k = 0; eye < 0 && k < n; k++) {         /* 고른 사람부터 차례로, 살아 있는 사람을 찾는다 */
+        int i = ((v->watch % n + n) % n + k) % n;
+        if (b->p[i].alive) eye = i;
+    }
 
     ui_clear(full, C_BLACK);
     if (eye < 0) {                                   /* 볼 사람이 없다: 지도만 크게 */

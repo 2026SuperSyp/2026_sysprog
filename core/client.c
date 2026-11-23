@@ -56,7 +56,7 @@ static struct {
     frame_map_t fm;
     top_msg_t top;                   /* 서버가 마지막으로 보낸 역대 순위 */
     boss_snap_t boss;                /* 보스전의 마지막 상태 */
-    int have_boss;
+    int have_boss, boss_watch;       /* boss_watch: 관전할 때 누구의 눈으로 볼지 */
     int64_t boss_hit_at, boss_hurt_at, boss_wave_at;     /* 내 공격이 맞은 때, 내가 맞은 때, 날갯짓이 있던 때(ms) */
     int watch;                       /* 오른쪽 위에 볼 칸. WATCH_FLY이면 키보드 치는 초파리 */
     int dirty, quit;
@@ -169,6 +169,13 @@ static void *recv_main(void *arg)
 static void next_watch(void)
 {
     pthread_mutex_lock(&S.mu);
+    if (S.have_phase && S.ph.phase == PH_BOSS) {     /* 보스전: 누구의 눈으로 볼지 바꾼다(내가 살아 있으면 쓰이지 않는다) */
+        S.boss_watch = (S.boss_watch + 1) % BOSS_PLAYERS;
+        S.dirty = 1;
+        pthread_cond_broadcast(&S.cv);
+        pthread_mutex_unlock(&S.mu);
+        return;
+    }
     int n = S.have_frame ? S.head.n_panes : 0, view = view_pane(&S.ph), w = S.watch;
     /* 다른 칸들을 차례로 돌고, 마지막 다음은 키보드 치는 초파리다 */
     int next = (w == WATCH_FLY) ? 0 : w + 1;
@@ -183,9 +190,15 @@ static void *input_main(void *arg)
 {
     uint8_t buf[512];
     size_t len = 0;
+    int64_t pinged = 0;
     (void)arg;
     for (;;) {
         struct pollfd pf = { STDIN_FILENO, POLLIN, 0 };
+        /* 가만히 있어도 서버가 끊지 않게 2초마다 알린다. 소켓에 쓰는 것은 이 스레드뿐이다 */
+        if (now_ms() - pinged >= 2000) {
+            pinged = now_ms();
+            if (msg_send(sock, MSG_PING, 0, 0, NULL, 0) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
+        }
         pthread_mutex_lock(&S.mu);
         int quit = S.quit;
         pthread_mutex_unlock(&S.mu);
@@ -227,7 +240,7 @@ static void draw_boss(canvas_t *full, const phase_msg_t *ph)
 {
     boss_view_t v = { .me = (ph->me >= 0 && ph->me < PROTO_SEATS) ? ph->pane_of[ph->me] : -1,
                       .hit_ms = ms_since(S.boss_hit_at), .hurt_ms = ms_since(S.boss_hurt_at),
-                      .wave_ms = ms_since(S.boss_wave_at) };
+                      .wave_ms = ms_since(S.boss_wave_at), .watch = S.boss_watch };
     if (!S.have_boss) { scene_message(full, "BOSS", C_YELLOW); return; }
     for (int s = 0; s < PROTO_SEATS; s++)
         if (ph->pane_of[s] >= 0 && ph->pane_of[s] < BOSS_PLAYERS) v.name[ph->pane_of[s]] = ph->name[s];
@@ -505,6 +518,9 @@ static int run_bot(int wait_players)
     int frames = 0, sent_ready = 0, sent_start = 0, rounds = 0, last_phase = -1, top_n = -1, boss_seen = 0, boss_n = 0;
     alarm(120);                                      /* 멈춰 버리면 검사가 끝나지 않으므로 */
     for (;;) {
+        /* 올 것이 없으면 1초마다 PING을 보낸다(서버가 말 없는 접속을 끊는다) */
+        struct pollfd pf = { sock, POLLIN, 0 };
+        if (poll(&pf, 1, 1000) == 0) { msg_send(sock, MSG_PING, 0, 0, NULL, 0); continue; }
         if (msg_recv(sock, &h, body, sizeof body) != 1) { printf("BOT 접속이 끊겼습니다\n"); return 1; }
         if (h.type == MSG_TOP && h.len == sizeof(top_msg_t)) top_n = body[offsetof(top_msg_t, n)];
         if (h.type == MSG_FRAME) {

@@ -2,7 +2,8 @@
  *
  *   build/dev/server [--port=N] [--order=이름,이름,...] [--rounds=N] [--seed=N]
  *                    [--brain=fast|slow|real] [--fast] [--once] [--brain-inproc] [--brain-strict] [--boss=초]
- *   검사용: [--tick-ms=N] 틱 사이를 N ms로 한다(--fast여도 지킨다), [--ticks=N] 한 판을 N틱으로 한다
+ *   검사용: [--tick-ms=N] 틱 사이를 N ms로 한다(--fast여도 지킨다), [--ticks=N] 한 판을 N틱으로 한다,
+ *           [--idle-ms=N] 말이 없는 접속을 N ms 뒤에 끊는다(기본 10초)
  *
  * 스레드
  *   시그널 스레드        시그널을 기다렸다가 사건으로 넘긴다
@@ -62,6 +63,7 @@
 #define STAGE_WAIT_MS 2000       /* 스테이지가 이만큼 답하지 않으면 죽인다 */
 #define HELLO_WAIT_MS 3000       /* 접속하고 이만큼 HELLO가 오지 않으면 끊는다 */
 #define SEND_WAIT_MS  3000       /* 접속자가 이만큼 하나도 받아 가지 않으면 끊는다 */
+#define IDLE_WAIT_MS  10000      /* 들어온 접속자가 이만큼 아무것도 보내지 않으면 끊는다. 클라이언트는 2초마다 PING을 보낸다 */
 #define SEND_BUF      65536      /* 접속자마다 커널에 쌓아 두는 보낼 것의 한도(바이트) */
 #define INPUT_WIN_MS  100        /* 접속자 한 명의 입력은 이 시간 동안 */
 #define INPUT_WIN_MAX 256        /* 이만큼만 받고 넘치는 것은 버린다 */
@@ -79,7 +81,8 @@ static struct {
     int card_ms, ready_ms, verdict_ms, rank_ms;
     int tick_ms, ticks;              /* 검사용. 0이면 쓰지 않는다 */
     int boss_sec;                    /* 보스전 길이(초). 음수이면 boss/config.ini의 값, 0이면 보스전을 건너뛴다 */
-} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 3000, 2000, 2000, 6000, 0, 0, -1 };
+    int idle_ms;                     /* 말이 없는 접속을 끊는 시간. 검사에서 --idle-ms=N 으로 줄인다 */
+} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 3000, 2000, 2000, 6000, 0, 0, -1, IDLE_WAIT_MS };
 
 static int64_t now_ms(void)
 {
@@ -289,7 +292,9 @@ static void *reader_main(void *arg)
         msg_send(c->fd, MSG_TOP, 0, 0, &top, sizeof top);
         goto out;
     }
-    conn_limits(c->fd, 0);                           /* 들어온 뒤에는 말이 없어도 된다 */
+    /* 들어온 뒤에도 오래 말이 없으면 끊는다. 아무것도 하지 않는 접속이 자리를 다 차지하지 못하게 한다.
+     * 로비에서 가만히 있는 사람은 클라이언트가 보내는 PING 덕분에 끊기지 않는다 */
+    conn_limits(c->fd, opt.idle_ms);
     if (pthread_create(&writer, NULL, writer_main, c) != 0) goto out;
     writer_up = 1;
 
@@ -299,7 +304,13 @@ static void *reader_main(void *arg)
     snprintf(join.name, sizeof join.name, "%s", hello.name[0] ? hello.name : "PLAYER");
     ev_push(&join);
 
-    while (msg_recv(c->fd, &h, body, sizeof body) == 1) {
+    for (;;) {
+        errno = 0;
+        if (msg_recv(c->fd, &h, body, sizeof body) != 1) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK)
+                fprintf(stderr, "서버: %d초 동안 말이 없는 접속(%d번)을 끊었습니다\n", opt.idle_ms / 1000, slot);
+            break;
+        }
         if (h.type == MSG_INPUT && h.len == sizeof(input_msg_t)) {
             /* 너무 빠른 입력은 버린다. 한 접속이 사건 큐와 스테이지 통로를 채우지 못하게 한다 */
             int64_t now = now_ms();
@@ -1001,6 +1012,7 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--tick-ms=", 10) == 0) opt.tick_ms = atoi(a + 10);
         else if (strncmp(a, "--ticks=", 8) == 0)   opt.ticks = atoi(a + 8);
         else if (strncmp(a, "--boss=", 7) == 0)    opt.boss_sec = atoi(a + 7);
+        else if (strncmp(a, "--idle-ms=", 10) == 0) opt.idle_ms = atoi(a + 10);
         else if (strcmp(a, "--brain-inproc") == 0) brain_inproc = 1;
         else if (strcmp(a, "--brain-strict") == 0) brain_strict = 1;
         else if (strncmp(a, "--order=", 8) == 0) {

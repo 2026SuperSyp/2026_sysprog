@@ -396,9 +396,9 @@ case_6() {
 # ---- 7. 잘못된 입력 -----------------------------------------------------------------
 case_7() {
     begin
-    server 7 --fast --seed=1 --order=example,t_early,t_count --rounds=3 --tick-ms=10 --ticks=150 || WHY="$WHY 서버가 뜨지 않음"
+    server 7 --fast --seed=1 --order=example,t_early,t_count --rounds=3 --tick-ms=10 --ticks=150 --idle-ms=3000 || WHY="$WHY 서버가 뜨지 않음"
     pids=""
-    for m in silent version hugelen garbage late half cut; do
+    for m in silent idle version hugelen garbage late half cut; do
         peer 7 $m --mode=$m --sec=8
         pids="$pids $m:$LAST"
     done
@@ -406,6 +406,9 @@ case_7() {
         wait_exit ${mp#*:} 10; r=$?
         [ $r -eq 0 ] || WHY="$WHY ${mp%%:*}=$r"
     done
+    # 들어온 뒤 아무것도 보내지 않는 접속은 --idle-ms(여기서는 3초)쯤에 끊겨야 한다
+    im=$(sed -n 's/^BAD idle closed_ms=\([0-9]*\).*/\1/p' $L/c7.idle.log)
+    [ -n "$im" ] && [ "$im" -ge 2500 ] && [ "$im" -le 5000 ] || WHY="$WHY 말 없는 접속을 ${im:-?}ms에 끊음(3000쯤이어야 한다)"
     # 자리가 새지 않았는지: 16개가 모두 다시 받아져야 한다
     sleep 0.2
     $PEER --port=$PORT --mode=fill --n=16 --sec=1 > $L/c7.fill.log 2>&1

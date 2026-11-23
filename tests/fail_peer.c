@@ -15,6 +15,7 @@
  *   slow      HELLO와 준비 키만 보내고 --sec 동안 아무것도 읽지 않는다. 항상 0
  *   stuck     slow처럼 읽지 않다가 --after(기본 1500ms) 뒤에 len이 아주 큰 머리를 보낸다. 항상 0
  *   silent    접속만 하고 아무것도 보내지 않는다. 서버가 끊으면 0
+ *   idle      HELLO만 보내고 그 뒤로 아무것도 보내지 않는다(PING도). 서버가 끊으면 0
  *   version   틀린 버전으로 HELLO를 보낸다. 거절 메시지를 받고 끊기면 0
  *   hugelen   len이 아주 큰 머리를 보낸다. 끊기면 0
  *   garbage   뜻 없는 바이트를 보낸다. 끊기면 0
@@ -152,12 +153,16 @@ static int run_watch(int flood)
     static uint8_t body[sizeof(phase_msg_t)];
     int fd = dial(), last_phase = -1, last_round = -1, last_seated = 0, sent_ready = 0;
     long frames = 0, total_frames = 0, sent = 0, bytes = 0, probed = 0;
-    int64_t t0 = now_ms(), last_frame = 0, gap = 0, next_probe = 0;
+    int64_t t0 = now_ms(), last_frame = 0, gap = 0, next_probe = 0, pinged = 0;
     if (fd < 0 || put_hello(fd, PROTO_VERSION) != 0) { printf("END 접속 실패\n"); return 1; }
 
     for (;;) {
         int64_t now = now_ms();
         if ((double)(now - t0) > limit_sec * 1000.0) { printf("END 시간 초과 frames=%ld\n", total_frames); return 3; }
+        if (now - pinged >= 1000) {                  /* 서버가 말 없는 접속을 끊으므로 1초마다 알린다 */
+            pinged = now;
+            put_msg(fd, MSG_PING, NULL, 0);
+        }
         if (flood == 2 && last_phase == PH_PLAY && now >= next_probe) {
             if (put_key(fd, 'a') != 0) { printf("END 접속이 끊겼습니다 probed=%ld\n", probed); return 1; }
             probed++;
@@ -294,6 +299,8 @@ static int run_bad(void)
         return 0;
     } else if (strcmp(mode, "silent") == 0) {
         /* 아무것도 보내지 않는다 */
+    } else if (strcmp(mode, "idle") == 0) {
+        put_hello(fd, PROTO_VERSION);                    /* 들어가기만 하고 가만히 있는다 */
     } else if (strcmp(mode, "version") == 0) {
         put_hello(fd, PROTO_VERSION + 41);
     } else if (strcmp(mode, "hugelen") == 0) {
@@ -533,6 +540,6 @@ int main(int argc, char **argv)
     if (strcmp(mode, "fill") == 0)  return run_fill();
     if (strcmp(mode, "drip") == 0)  return run_drip();
     int r = run_bad();
-    if (r == 2) printf("--mode=watch|flood|probe|slow|stuck|silent|version|hugelen|garbage|late|half|cut|fill|drip 을 주세요\n");
+    if (r == 2) printf("--mode=watch|flood|probe|slow|stuck|silent|idle|version|hugelen|garbage|late|half|cut|fill|drip 을 주세요\n");
     return r;
 }
