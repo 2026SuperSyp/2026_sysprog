@@ -319,7 +319,7 @@ case_6() {
     begin
     # 메모리를 재려고, 검사 도구가 풀린 메모리를 붙들어 두는 양을 줄인다
     export ASAN_OPTIONS=quarantine_size_mb=4
-    server 6 --fast --seed=1 --order=example --rounds=1 --tick-ms=10 --ticks=500 || WHY="$WHY 서버가 뜨지 않음"
+    server 6 --fast --seed=1 --order=example --rounds=1 --tick-ms=10 --ticks=1200 || WHY="$WHY 서버가 뜨지 않음"
     unset ASAN_OPTIONS
     bot 6 BOT1 3; B1=$LAST
     sleep 0.15

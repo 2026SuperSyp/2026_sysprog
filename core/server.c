@@ -177,8 +177,8 @@ static int send_bytes(int fd, const uint8_t *p, size_t n)
             if (errno == EINTR) continue;
             return -1;
         }
-        /* 막히는 소켓이 일부만 보내고 돌아왔다면 SEND_WAIT_MS 동안 막혀 있었다는 뜻이다 */
-        if ((size_t)w < n) return -1;
+        /* 일부만 보내고 돌아왔으면 나머지를 이어서 보낸다. 느려도 받아 가는 접속자는 끊지 않는다.
+         * SEND_WAIT_MS 동안 한 바이트도 못 보냈을 때만 send가 실패로 돌아온다 */
         p += w;
         n -= (size_t)w;
     }
@@ -654,17 +654,20 @@ static void start_game(void)
 
 static void enter_verdict(void)
 {
+    /* 초파리 점수도 참가자 점수와 같은 한도로 자른다. 한쪽만 자르면 비교가 뒤집힌다 */
+    int fly = st.result.fly_score > SCORE_MAX ? SCORE_MAX
+            : (st.result.fly_score < -SCORE_MAX ? -SCORE_MAX : st.result.fly_score);
     for (int s = 0; s < PROTO_SEATS; s++) {
         if (!seats[s].used || seats[s].pane < 0) continue;
         /* 스테이지가 터무니없는 점수를 보내도 누적 점수가 넘치지 않게 범위를 자른다 */
         int32_t sc = st.result.score[seats[s].pane];
         seats[s].score = sc > SCORE_MAX ? SCORE_MAX : (sc < -SCORE_MAX ? -SCORE_MAX : sc);
         /* 같거나 높으면 이긴 것이다. 도중에 나간 사람은 진 것으로 한다 */
-        seats[s].passed = seats[s].connected && seats[s].score >= st.result.fly_score;
+        seats[s].passed = seats[s].connected && seats[s].score >= fly;
         if (!seats[s].passed) seats[s].lives--;
         seats[s].total += seats[s].score;
     }
-    fly_score = st.result.fly_score;
+    fly_score = fly;
     stage_close();                               /* 스테이지는 스스로 끝난다. 거두는 것은 SIGCHLD에서 */
     phase = PH_VERDICT;
     deadline = now_ms() + opt.verdict_ms;
