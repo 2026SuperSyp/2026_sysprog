@@ -47,5 +47,6 @@ int host_bot_inputs(uint32_t seed, int stream, int player, int tick, host_input_
 /* 앞단 (host_bot.c, host_local.c) */
 int host_bot_main(const host_opts_t *o, int solo);     /* 화면 없이 돌리고 RESULT, STATS 줄을 찍는다 */
 int host_local_main(const host_opts_t *o, int argc, char **argv);   /* 터미널에서 돌린다 */
+int host_pipe_main(const host_opts_t *o, int rfd, int wfd);         /* 서버가 띄웠을 때. 물려받은 fd로 주고받는다 */
 
 #endif

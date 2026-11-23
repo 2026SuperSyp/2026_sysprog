@@ -7,6 +7,9 @@
 #   make screen SCREEN=이름      화면 하나를 예시 상태로 띄움 (CASE=)
 #   make log STAGE=이름          스테이지 로그를 따라 읽음
 #   make termbench               터미널 속도 측정
+#   make server                  서버를 띄움 (PORT=, ORDER=이름,이름, BRAIN=)
+#   make client                  서버에 접속 (HOST=, PORT=, NAME=)
+#   make demo-local              한 컴퓨터에서 서버, 봇 2명, 사람 1명으로 한 판
 #   make brain-data              진짜 뇌에 필요한 자료를 받아 data/ 에 준비 (한 번만)
 #   make brainprobe              진짜 뇌에 자극을 넣어 보고 반응과 계산 시간을 표로 봄
 #
@@ -20,14 +23,14 @@ ifeq ($$(origin $(1)),environment)
 override $(1) :=
 endif
 endef
-$(foreach v,STAGE SEED PLAYERS SCREEN CASE BRAIN,$(eval $(call only_from_cmdline,$(v))))
+$(foreach v,STAGE SEED PLAYERS SCREEN CASE BRAIN HOST PORT ORDER NAME,$(eval $(call only_from_cmdline,$(v))))
 
 CC      := gcc
 B       := build/dev
 CFLAGS  := -std=gnu11 -Wall -Wextra -g -O1 -fno-omit-frame-pointer \
            -fsanitize=address,undefined -fno-sanitize-recover=undefined \
-           -D_GNU_SOURCE -Iinclude -I. -MMD -MP
-LDFLAGS := -fsanitize=address,undefined
+           -D_GNU_SOURCE -Iinclude -I. -MMD -MP -pthread
+LDFLAGS := -fsanitize=address,undefined -pthread
 LDLIBS  := -lm
 
 # 터미널을 쓰는 프로그램이 어떻게 끝났든 터미널을 되돌린다.
@@ -35,7 +38,9 @@ RESTORE := stty sane 2>/dev/null; printf '\033[?1003l\033[?1006l\033[?25h\033[?1
 
 # ---- 소스 목록 -------------------------------------------------------------
 KIT_SRC    := $(wildcard ui/*.c brain/*.c core/log.c core/cfg.c core/rng.c)
-HOST_SRC   := $(wildcard core/stage_host.c core/stage_main.c core/host_bot.c core/host_local.c core/default_screens.c)
+HOST_SRC   := $(wildcard core/stage_host.c core/stage_main.c core/host_bot.c core/host_local.c core/host_pipe.c \
+                         core/default_screens.c core/scenes.c core/msg.c core/frame.c)
+NET_SRC    := $(wildcard core/server.c core/client.c)
 SCREEN_SRC := $(wildcard screens/*.c)
 TEST_SRC   := $(wildcard tests/test_*.c)
 STAGES     := $(notdir $(patsubst %/,%,$(wildcard stages/*/)))
@@ -56,13 +61,16 @@ endif
 ifneq ($(wildcard tools/termbench.c),)
 TOOL_BIN   += $(B)/termbench
 endif
+ifneq ($(wildcard core/server.c),)
+TOOL_BIN   += $(B)/server $(B)/client
+endif
 ifneq ($(wildcard tools/brainprobe.c),)
 TOOL_BIN   += $(B)/brainprobe
 endif
 
-ALL_SRC := $(KIT_SRC) $(HOST_SRC) $(SCREEN_SRC) $(TEST_SRC) $(STAGE_SRC) $(wildcard tools/*.c)
+ALL_SRC := $(KIT_SRC) $(HOST_SRC) $(NET_SRC) $(SCREEN_SRC) $(TEST_SRC) $(STAGE_SRC) $(wildcard tools/*.c)
 
-.PHONY: all test run bot screen log termbench brain-data brainprobe clean need-stage need-screen
+.PHONY: all test run bot screen log termbench brain-data brainprobe server client demo-local clean need-stage need-screen
 all: $(KIT_OBJ) $(STAGE_BIN) $(TOOL_BIN)
 
 # ---- 컴파일 ----------------------------------------------------------------
@@ -92,6 +100,15 @@ $(B)/termbench: $(B)/tools/termbench.o $(KIT_OBJ)
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
+$(B)/server: $(B)/core/server.o $(B)/core/msg.o $(KIT_OBJ)
+	@mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(B)/client: $(B)/core/client.o $(B)/core/msg.o $(B)/core/frame.o $(B)/core/scenes.o \
+             $(B)/core/default_screens.o $(KIT_OBJ) $(SCREEN_OBJ)
+	@mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
 $(B)/brainprobe: $(B)/tools/brainprobe.o $(B)/brain/lif.o
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
@@ -101,8 +118,9 @@ $(B)/tests/%: $(B)/tests/%.o $(KIT_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 # ---- 실행 ------------------------------------------------------------------
-test: $(TEST_BIN)
+test: $(TEST_BIN) $(STAGE_BIN) $(B)/server $(B)/client
 	@sh tests/run.sh $(TEST_BIN)
+	@sh tests/e2e.sh
 
 need-stage:
 	@if [ -z "$(STAGE)" ]; then echo "STAGE=이름 을 주세요. 있는 스테이지: $(STAGES)"; exit 2; fi
@@ -131,6 +149,23 @@ screen: need-screen
 termbench:
 	@$(MAKE) --no-print-directory $(B)/termbench
 	@$(B)/termbench; st=$$?; $(RESTORE); exit $$st
+
+# 서버는 스테이지 실행 파일을 직접 띄우므로 먼저 전부 빌드한다.
+server: all
+	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example) --brain=$(or $(BRAIN),fast)
+
+client: all
+	@$(B)/client --host=$(or $(HOST),127.0.0.1) --port=$(or $(PORT),4620) --name=$(or $(NAME),PLAYER); \
+	 st=$$?; $(RESTORE); exit $$st
+
+demo-local: all
+	@mkdir -p build/logs
+	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example) --brain=$(or $(BRAIN),fast) \
+	    > build/logs/server.log 2>&1 & sv=$$!; sleep 0.5; \
+	 $(B)/client --bot --wait=3 --port=$(or $(PORT),4620) --name=BOT1 > build/logs/bot1.log 2>&1 & \
+	 sleep 0.2; $(B)/client --bot --wait=3 --port=$(or $(PORT),4620) --name=BOT2 > build/logs/bot2.log 2>&1 & \
+	 sleep 0.2; $(B)/client --port=$(or $(PORT),4620) --name=$(or $(NAME),YOU); st=$$?; $(RESTORE); \
+	 kill $$sv 2>/dev/null; exit $$st
 
 brain-data:
 	@sh tools/brain_data.sh

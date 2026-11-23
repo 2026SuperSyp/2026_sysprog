@@ -3,6 +3,7 @@
  * 0번 참가자는 키보드와 마우스, 나머지는 무작위 입력이다. q로 나간다. */
 #include "core/host.h"
 #include "core/log.h"
+#include "core/scenes.h"
 #include "screen.h"
 #include "ui/ui_internal.h"
 
@@ -151,11 +152,6 @@ static void local_frame(host_frontend_t *fe, int tick, const canvas_t *fly,
     show(L);
 }
 
-static void center_text(canvas_t *c, int y, const char *s, color_t col)
-{
-    ui_text(c, (SCREEN_W - ui_text_w(s)) / 2, y, s, col);
-}
-
 /* 게임 밖의 장면(규칙 설명, 카운트다운, 판정)을 ticks만큼 보여 준다. */
 static void scene(local_t *L, int ticks, void (*draw)(local_t *, int tick, void *arg), void *arg)
 {
@@ -171,24 +167,13 @@ static void scene(local_t *L, int ticks, void (*draw)(local_t *, int tick, void 
 static void draw_card(local_t *L, int tick, void *arg)
 {
     (void)tick; (void)arg;
-    char line[128];
-    ui_clear(L->full, C_BG);
-    center_text(L->full, 30, L->info->title ? L->info->title : "", C_YELLOW);
-    /* 규칙은 두 줄까지. '\n'에서 나눈다. */
-    snprintf(line, sizeof line, "%s", L->info->rule ? L->info->rule : "");
-    char *second = strchr(line, '\n');
-    if (second) *second++ = '\0';
-    center_text(L->full, 56, line, C_TEXT);
-    if (second) center_text(L->full, 70, second, C_TEXT);
-    center_text(L->full, 96, L->info->controls ? L->info->controls : "", C_CYAN);
+    scene_card(L->full, L->info->title, L->info->rule, L->info->controls);
 }
 
 static void draw_count(local_t *L, int tick, void *arg)
 {
     (void)arg;
-    static const char *words[] = { "3", "2", "1", "GO!" };
-    ui_clear(L->full, C_BG);
-    center_text(L->full, 60, words[tick / 10 > 3 ? 3 : tick / 10], tick >= 30 ? C_GOOD : C_YELLOW);
+    scene_count(L->full, tick);
 }
 
 static void draw_verdict(local_t *L, int tick, void *arg)
