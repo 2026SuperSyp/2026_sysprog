@@ -8,6 +8,10 @@
  *   watch     들어가서 준비하고 받기만 한다. 단계가 바뀔 때(PHASE)와 도중에 누가 나갈 때(SEATS) 한 줄씩 찍는다.
  *             --until의 단계(기본 RANK)로 넘어가는 것을 보면 0으로 끝난다
  *   flood     watch와 같되 게임 중에 입력을 쉬지 않고 보낸다
+ *   probe     watch와 같되 게임 중에 --after(ms)마다 키를 하나 보낸다. 판정 때 "PROBE sent=보낸 수 got=점수"를
+ *             찍는다. stage_t_count와 같이 쓰면 점수가 스테이지에 닿은 내 입력의 수다
+ *   drip      HELLO를 --after(ms)마다 한 바이트씩 보낸다. --n개를 한꺼번에 연다. 모두 끊기면
+ *             "DRIP n=.. closed=.. max_ms=.." 를 찍고 0, --sec 안에 다 끊기지 않으면 3
  *   slow      HELLO와 준비 키만 보내고 --sec 동안 아무것도 읽지 않는다. 항상 0
  *   stuck     slow처럼 읽지 않다가 --after(기본 1500ms) 뒤에 len이 아주 큰 머리를 보낸다. 항상 0
  *   silent    접속만 하고 아무것도 보내지 않는다. 서버가 끊으면 0
@@ -25,6 +29,7 @@
  *   win       60틱 동안 작은 FRAME으로 답하고, 참가자가 모두 이기는 RESULT를 보낸다
  *   early     1틱 뒤 읽는 쪽을 먼저 닫고, 0.3초 뒤에 RESULT를 보낸다
  *   bigscore  1틱 뒤 점수가 모두 2147483647인 RESULT를 보내고, 끝나지 않고 남는다
+ *   count     150틱 동안 작은 FRAME으로 답하면서 참가자별로 받은 INPUT을 세고, 그 수를 점수로 보낸다
  *
  * 끝나는 값: 0 기대한 대로, 1 접속이 끊겼거나 기대와 다름, 2 사용법, 3 시간 초과 */
 #include "protocol.h"
@@ -141,20 +146,28 @@ static const char *phase_name(int ph)
     return (ph >= 0 && ph <= PH_RANK) ? names[ph] : "?";
 }
 
+/* flood: 0 받기만, 1 입력을 쉬지 않고, 2 after_ms마다 하나씩(probe) */
 static int run_watch(int flood)
 {
     static uint8_t body[sizeof(phase_msg_t)];
     int fd = dial(), last_phase = -1, last_round = -1, last_seated = 0, sent_ready = 0;
-    long frames = 0, total_frames = 0, sent = 0, bytes = 0;
-    int64_t t0 = now_ms(), last_frame = 0, gap = 0;
+    long frames = 0, total_frames = 0, sent = 0, bytes = 0, probed = 0;
+    int64_t t0 = now_ms(), last_frame = 0, gap = 0, next_probe = 0;
     if (fd < 0 || put_hello(fd, PROTO_VERSION) != 0) { printf("END 접속 실패\n"); return 1; }
 
     for (;;) {
         int64_t now = now_ms();
         if ((double)(now - t0) > limit_sec * 1000.0) { printf("END 시간 초과 frames=%ld\n", total_frames); return 3; }
+        if (flood == 2 && last_phase == PH_PLAY && now >= next_probe) {
+            if (put_key(fd, 'a') != 0) { printf("END 접속이 끊겼습니다 probed=%ld\n", probed); return 1; }
+            probed++;
+            next_probe = now + after_ms;
+        }
         struct pollfd pf = { fd, POLLIN, 0 };
-        if (flood && last_phase == PH_PLAY) pf.events |= POLLOUT;
-        if (poll(&pf, 1, 100) < 0) continue;
+        if (flood == 1 && last_phase == PH_PLAY) pf.events |= POLLOUT;
+        int wait_ms = 100;
+        if (flood == 2 && last_phase == PH_PLAY) wait_ms = next_probe > now ? (int)(next_probe - now) : 0;
+        if (poll(&pf, 1, wait_ms) < 0) continue;
 
         if (pf.revents & POLLOUT) {
             /* 한 번에 여러 개를 붙여 보낸다. 막히면 그만둔다 */
@@ -215,9 +228,15 @@ static int run_watch(int flood)
                    (long long)(now - t0), ph.me, frames, (long long)gap, bytes);
             for (int s = 0; s < PROTO_SEATS; s++) {
                 if (ph.name[s][0])
-                    printf(" %s:seat=%d:lives=%d:pass=%d", ph.name[s], ph.seated[s], ph.lives[s], ph.passed[s]);
+                    printf(" %s:seat=%d:lives=%d:pass=%d:score=%d", ph.name[s], ph.seated[s], ph.lives[s], ph.passed[s],
+                           (int)ph.score[s]);
             }
             printf("\n");
+            if (flood == 2 && ph.phase == PH_VERDICT && ph.me >= 0 && ph.me < PROTO_SEATS) {
+                ph.title[sizeof ph.title - 1] = '\0';
+                printf("PROBE round=%d sent=%ld got=%d title=%s\n", ph.round, probed, (int)ph.score[ph.me], ph.title);
+                probed = 0;
+            }
             int was = last_phase;
             frames = 0;
             gap = 0;
@@ -312,6 +331,58 @@ static int run_bad(void)
     return 0;
 }
 
+/* ---- drip ---------------------------------------------------------------------- */
+/* HELLO를 한 바이트씩 아주 느리게 보낸다. 서버가 HELLO 전체에 시간 한도를 두면 그 한도쯤에 끊긴다. */
+static int run_drip(void)
+{
+    uint8_t msg[sizeof(msg_hdr_t) + sizeof(hello_msg_t)];
+    msg_hdr_t h = { sizeof(hello_msg_t), MSG_HELLO, 0, 0 };
+    hello_msg_t hello = { .version = PROTO_VERSION };
+    int fds[MAX_FILL], open_n = 0, closed = 0;
+    size_t pos = 0;
+    int64_t t0 = now_ms(), max_ms = 0, next = t0;
+    snprintf(hello.name, sizeof hello.name, "%s", name);
+    memcpy(msg, &h, sizeof h);
+    memcpy(msg + sizeof h, &hello, sizeof hello);
+    if (n_conn > MAX_FILL) n_conn = MAX_FILL;
+    if (n_conn < 1) n_conn = 1;
+    for (int i = 0; i < n_conn; i++) {
+        fds[i] = dial();
+        if (fds[i] >= 0) open_n++;
+    }
+    if (open_n == 0) { printf("DRIP 접속 실패\n"); return 1; }
+
+    while (closed < open_n) {
+        int64_t now = now_ms();
+        if ((double)(now - t0) > limit_sec * 1000.0) {
+            printf("DRIP n=%d closed=%d max_ms=%lld 시간 초과(보낸 바이트 %zu/%zu)\n",
+                   open_n, closed, (long long)max_ms, pos, sizeof msg);
+            return 3;
+        }
+        if (now >= next && pos < sizeof msg) {           /* 열려 있는 접속마다 다음 한 바이트 */
+            for (int i = 0; i < n_conn; i++)
+                if (fds[i] >= 0) (void)send(fds[i], msg + pos, 1, MSG_NOSIGNAL);
+            pos++;
+            next = now + after_ms;
+        }
+        struct pollfd pf[MAX_FILL];
+        for (int i = 0; i < n_conn; i++) pf[i] = (struct pollfd){ fds[i], POLLIN, 0 };
+        if (poll(pf, (nfds_t)n_conn, 20) <= 0) continue;
+        for (int i = 0; i < n_conn; i++) {
+            uint8_t junk[4096];
+            if (fds[i] < 0 || !pf[i].revents) continue;
+            ssize_t r = recv(fds[i], junk, sizeof junk, MSG_DONTWAIT);
+            if (r > 0 || (r < 0 && (errno == EAGAIN || errno == EINTR))) continue;   /* 받아 준 것이면 읽어 버린다 */
+            close(fds[i]);
+            fds[i] = -1;
+            closed++;
+            if (now_ms() - t0 > max_ms) max_ms = now_ms() - t0;
+        }
+    }
+    printf("DRIP n=%d closed=%d max_ms=%lld sent_bytes=%zu/%zu\n", open_n, closed, (long long)max_ms, pos, sizeof msg);
+    return 0;
+}
+
 /* ---- fill ---------------------------------------------------------------------- */
 static int run_fill(void)
 {
@@ -368,14 +439,14 @@ static int get(int fd, void *buf, size_t n)
     return 1;
 }
 
-/* 메시지 하나를 받고 내용은 버린다. 서버가 닫았으면 0. */
-static int stage_get(int rfd, msg_hdr_t *h)
+/* 메시지 하나를 받는다. 내용의 앞 64바이트까지는 head에 남기고 나머지는 버린다. 서버가 닫았으면 0. */
+static int stage_get(int rfd, msg_hdr_t *h, uint8_t head[64])
 {
     uint8_t junk[64];
     if (!get(rfd, h, sizeof *h)) return 0;
-    for (uint32_t left = h->len; left > 0; ) {
+    for (uint32_t left = h->len, first = 1; left > 0; first = 0) {
         uint32_t n = left < sizeof junk ? left : (uint32_t)sizeof junk;
-        if (!get(rfd, junk, n)) return 0;
+        if (!get(rfd, first ? head : junk, n)) return 0;
         left -= n;
     }
     return 1;
@@ -391,7 +462,10 @@ static void stage_put(int wfd, uint8_t type, const void *body, uint32_t len)
 /* 서버가 build/dev/stage_t_<종류>라는 이름으로 띄운다. 종류마다 한 가지씩 잘못 군다. */
 static int run_stage(const char *kind, int rfd, int wfd)
 {
-    int ticks = strcmp(kind, "win") == 0 ? 60 : 1, big = strcmp(kind, "bigscore") == 0;
+    int count = strcmp(kind, "count") == 0;
+    int ticks = strcmp(kind, "win") == 0 ? 60 : (count ? 150 : 1), big = strcmp(kind, "bigscore") == 0;
+    int32_t got[PROTO_PANES] = { 0 };
+    uint8_t head[64];
     info_msg_t info;
     result_msg_t res;
     msg_hdr_t h;
@@ -407,13 +481,18 @@ static int run_stage(const char *kind, int rfd, int wfd)
         return 0;
     }
     for (int t = 0; t < ticks; ) {                               /* 틱마다 작은 FRAME으로 답한다 */
-        if (!stage_get(rfd, &h)) return 0;
+        if (!stage_get(rfd, &h, head)) return 0;
+        if (h.type == MSG_INPUT && h.len == sizeof(input_msg_t)) {
+            input_msg_t in;
+            memcpy(&in, head, sizeof in);
+            if (in.player < PROTO_PANES && got[in.player] < 999999) got[in.player]++;
+        }
         if (h.type != MSG_TICK) continue;
         stage_put(wfd, MSG_FRAME, "abcd", 4);
         t++;
     }
     memset(&res, 0, sizeof res);
-    for (int p = 0; p < PROTO_PANES; p++) res.score[p] = big ? INT32_MAX : 100;   /* 초파리는 0점: 모두 이긴다 */
+    for (int p = 0; p < PROTO_PANES; p++) res.score[p] = big ? INT32_MAX : (count ? got[p] : 100);   /* 초파리는 0점 */
     if (strcmp(kind, "early") == 0) {                            /* 결과를 내기 전에 읽는 쪽부터 닫는다 */
         close(rfd);
         usleep(300 * 1000);
@@ -450,8 +529,10 @@ int main(int argc, char **argv)
     }
     if (strcmp(mode, "watch") == 0) return run_watch(0);
     if (strcmp(mode, "flood") == 0) return run_watch(1);
+    if (strcmp(mode, "probe") == 0) return run_watch(2);
     if (strcmp(mode, "fill") == 0)  return run_fill();
+    if (strcmp(mode, "drip") == 0)  return run_drip();
     int r = run_bad();
-    if (r == 2) printf("--mode=watch|flood|slow|stuck|silent|version|hugelen|garbage|late|half|cut|fill 을 주세요\n");
+    if (r == 2) printf("--mode=watch|flood|probe|slow|stuck|silent|version|hugelen|garbage|late|half|cut|fill|drip 을 주세요\n");
     return r;
 }

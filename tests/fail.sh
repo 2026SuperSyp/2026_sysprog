@@ -9,8 +9,11 @@
 #   1  스테이지를 죽임(kill -9)          6  읽지 않는 접속자
 #   2  스테이지가 멈춤                   7  잘못된 입력
 #   3  스테이지가 없거나 뜨자마자 죽음    8  서버를 죽이고 다시 띄움
-#   4  참가자 한 명이 도중에 나감         9  접속이 16개를 넘음
+#   4  참가자 한 명이 도중에 나감         9  접속이 16개를 넘음, HELLO가 아주 느림, 접속을 되풀이
 #   5  참가자가 모두 도중에 나감         10  스레드 검사(ThreadSanitizer)
+# 새는 것은 세 가지로 본다: 서버가 끝날 때 메모리 검사 도구가 남긴 것(서버, 봇, 클라이언트, 스테이지 로그),
+# 판이나 접속이 끝난 뒤 서버의 fd와 스레드 수(1번, 9번), 접속을 되풀이하는 동안 서버의 메모리(9번).
+# kill -9로 죽인 프로세스는 검사 도구가 아무것도 남기지 못한다(8번).
 BASE=${1:-4720}
 [ $# -gt 0 ] && shift
 CASES=${*:-1 2 3 4 5 6 7 8 9 10}
@@ -18,6 +21,9 @@ B=${SSP_BUILD:-build/dev}         # 다른 빌드를 보려면 SSP_BUILD=build/r
 L=build/logs/fail
 PEER=$B/tests/fail_peer
 T0=$(date +%s)
+# 스테이지는 라운드가 끝나면 정상 종료하므로 그때 메모리 검사 도구가 스테이지 로그에 남긴다. 돌리기 전과 뒤를 센다
+stage_errs() { cat build/logs/stage_*.log 2>/dev/null | grep -c -E 'AddressSanitizer|LeakSanitizer|runtime error'; }
+SE0=$(stage_errs)
 
 for f in $B/server $B/client $B/stage_example; do
     [ -x $f ] || { echo "실패: $f 가 없습니다. 먼저 make all 을 실행하세요"; exit 1; }
@@ -35,7 +41,7 @@ fi
 # 가짜 스테이지: 검사용 접속자가 그 노릇도 한다(종류는 tests/fail_peer.c에 있다).
 # 서버가 build/dev/stage_<이름>을 띄우므로 그 이름으로 복사해 두고, 끝날 때 지운다.
 FAKES=""
-for k in crash partial win early bigscore; do
+for k in crash partial win early bigscore count; do
     cp $PEER $B/stage_t_$k || exit 1
     FAKES="$FAKES $B/stage_t_$k"
 done
@@ -107,8 +113,24 @@ peer() {        # peer <경우> <로그 이름> <옵션...>
 stage_pid() { pgrep -P $SV -f 'stage_' 2>/dev/null | head -n 1; }
 zombies()   { ps -o stat= --ppid $SV 2>/dev/null | grep -c Z; }
 rss_kb()    { awk '/^VmRSS/ { print $2 }' /proc/$1/status 2>/dev/null; }
+n_fd()      { ls /proc/$1/fd 2>/dev/null | wc -l; }
+n_thread()  { awk '/^Threads/ { print $2 }' /proc/$1/status 2>/dev/null; }
+
+# 서버의 fd 수와 스레드 수가 기준(BASE_FD, BASE_TH)으로 돌아오기를 기다린다. 끝난 접속과 라운드가
+# 남긴 것(닫지 않은 소켓이나 통로, 끝나지 않은 스레드)이 있으면 돌아오지 않는다.
+back_to_base() { # back_to_base <설명> : 2초 안에 돌아오지 않으면 WHY에 덧붙인다
+    _i=0
+    while [ $_i -lt 40 ]; do
+        [ "$(n_fd $SV)" -le "$BASE_FD" ] && [ "$(n_thread $SV)" -le "$BASE_TH" ] && return 0
+        sleep 0.05
+        _i=$((_i + 1))
+    done
+    WHY="$WHY $1: 서버의 fd $BASE_FD -> $(n_fd $SV)개, 스레드 $BASE_TH -> $(n_thread $SV)개"
+}
 
 # 서버를 SIGTERM으로 끝내고, 깨끗이 끝났는지와 로그에 검사 도구의 오류가 없는지 본다.
+# 서버는 정상 종료하므로 그때 메모리 검사 도구가 풀지 않은 메모리를 찾아 로그에 남긴다.
+# 그 경우에 띄운 봇과 클라이언트의 로그(c<경우>.*.log)도 같이 본다.
 stop_server() { # stop_server <경우> : 문제가 있으면 WHY에 덧붙인다
     if alive $SV; then
         kill -TERM $SV
@@ -117,7 +139,8 @@ stop_server() { # stop_server <경우> : 문제가 있으면 WHY에 덧붙인다
     else
         WHY="$WHY 서버가 죽어 있음"
     fi
-    grep -q -E 'AddressSanitizer|runtime error|LeakSanitizer' $L/c$1.server.log && WHY="$WHY 서버 로그에 검사 오류"
+    _bad=$(grep -l -E 'AddressSanitizer|runtime error|LeakSanitizer' $L/c$1.*.log 2>/dev/null | tr '\n' ' ')
+    [ -z "$_bad" ] || WHY="$WHY 로그에 검사 오류($_bad)"
 }
 
 begin() { WHY=""; T_CASE=$(date +%s%N); }
@@ -143,6 +166,7 @@ join3() {       # join3 <경우> [관찰자 옵션...]
 case_1() {
     begin
     server 1 --fast --seed=1 --order=example --rounds=2 --tick-ms=10 --ticks=150 || WHY="$WHY 서버가 뜨지 않음"
+    BASE_FD=$(n_fd $SV); BASE_TH=$(n_thread $SV)    # 아무도 없을 때. 판이 끝나고 모두 나가면 여기로 돌아와야 한다
     join3 1
     npipe=0; nleak=1
     if wait_line $L/c1.watch.log 'PHASE PLAY round=1' 10; then
@@ -165,6 +189,7 @@ case_1() {
     [ "$npipe" -eq 2 ] && [ "$nleak" -eq 0 ] || WHY="$WHY 스테이지 fd: 통로 ${npipe}개, 샌 것 ${nleak}개"
     sleep 0.3
     [ "$(zombies)" -eq 0 ] || WHY="$WHY 거두지 않은 자식이 있음"
+    back_to_base "2라운드와 접속 3개가 끝난 뒤"
     stop_server 1
     report 1 "스테이지를 죽임(kill -9): 무효 뒤 다음 라운드, 랭킹까지 감"
 }
@@ -371,7 +396,7 @@ case_6() {
 # ---- 7. 잘못된 입력 -----------------------------------------------------------------
 case_7() {
     begin
-    server 7 --fast --seed=1 --order=example,t_early --rounds=2 --tick-ms=10 --ticks=150 || WHY="$WHY 서버가 뜨지 않음"
+    server 7 --fast --seed=1 --order=example,t_early,t_count --rounds=3 --tick-ms=10 --ticks=150 || WHY="$WHY 서버가 뜨지 않음"
     pids=""
     for m in silent version hugelen garbage late half cut; do
         peer 7 $m --mode=$m --sec=8
@@ -386,24 +411,37 @@ case_7() {
     $PEER --port=$PORT --mode=fill --n=16 --sec=1 > $L/c7.fill.log 2>&1
     grep -q 'welcomed=16 refused=0' $L/c7.fill.log || WHY="$WHY 자리가 샘($(head -n 1 $L/c7.fill.log))"
 
-    # 입력을 쉬지 않고 쏟아붓는 참가자 2명과 봇 1명이 한 판(2라운드)을 한다. 판이 멈추면 안 된다.
-    # 한 라운드는 결과를 내기 전에 읽는 쪽을 먼저 닫는 스테이지다. 그때 못 보낸 입력 때문에
-    # 라운드가 무효가 되어서도 안 된다(결과가 이미 오고 있다)
+    # 입력을 쉬지 않고 쏟아붓는 참가자, 20ms마다 키를 하나 누르는 참가자(probe), 봇이 한 판(3라운드)을 한다.
+    # 판이 멈추면 안 된다. 2라운드는 결과를 내기 전에 읽는 쪽을 먼저 닫는 스테이지다. 그때 못 보낸 입력
+    # 때문에 라운드가 무효가 되어서도 안 된다(결과가 이미 오고 있다).
+    # 한 라운드는 참가자별로 받은 입력 수를 점수로 내는 스테이지(t_count, 제목 "FAKE count")다. 서버는 접속 하나의 입력을
+    # 100ms에 256개까지만 넘긴다(core/server.c의 INPUT_WIN_*). 그래서
+    #   - 폭주하는 참가자의 입력이 스테이지에 닿은 수는 1.5초 판에서 6000개를 넘지 않아야 하고
+    #     (막는 것이 없으면 백만 개 가까이 닿는다)
+    #   - 다른 참가자가 누른 키는 거의 다 닿아야 한다(판이 끝날 무렵의 몇 개만 빠질 수 있다)
     sleep 0.2
     bot 7 BOT1 3; B1=$LAST
     sleep 0.15
     peer 7 flood1 --mode=flood --name=FLOOD1 --sec=20; F1=$LAST
     sleep 0.15
-    peer 7 flood2 --mode=flood --name=FLOOD2 --sec=20; F2=$LAST
+    peer 7 probe --mode=probe --after=20 --name=PROBE --sec=20; F2=$LAST
     wait_exit $B1 21; r1=$?
     wait_exit $F1 21; rf1=$?
     wait_exit $F2 21; rf2=$?
-    [ $r1 -eq 0 ] && [ $rf1 -eq 0 ] && [ $rf2 -eq 0 ] || WHY="$WHY 입력 폭주: 봇=$r1 폭주=$rf1,$rf2"
-    f=$(sed -n 's/^PHASE VERDICT .* frames=\([0-9]*\).*/\1/p' $L/c7.flood1.log | sort -n | tail -n 1)
+    [ $r1 -eq 0 ] && [ $rf1 -eq 0 ] && [ $rf2 -eq 0 ] || WHY="$WHY 입력 폭주: 봇=$r1 폭주=$rf1 probe=$rf2"
+    # 화면 수는 example 라운드(150틱)에서 본다. 라운드 순서는 서버가 섞으므로 제목으로 찾는다
+    ex=$(sed -n 's/^PROBE round=\([0-9]*\) .* title=돌 피하기$/\1/p' $L/c7.probe.log)
+    f=$(sed -n "s/^PHASE VERDICT round=${ex:-0} .* frames=\([0-9]*\).*/\1/p" $L/c7.flood1.log)
     [ "${f:-0}" -ge 100 ] || WHY="$WHY 입력 폭주 중 화면이 ${f:-0}장(150장 중)"
-    grep -q 'rounds=2' $L/c7.BOT1.log || WHY="$WHY 입력 폭주 판이 2라운드가 아님($(cat $L/c7.BOT1.log))"
+    grep -q 'rounds=3' $L/c7.BOT1.log || WHY="$WHY 입력 폭주 판이 3라운드가 아님($(cat $L/c7.BOT1.log))"
     grep -q '무효' $L/c7.server.log && WHY="$WHY 결과를 낸 라운드가 무효가 됨"
-    echo "flood: $(tail -n 1 $L/c7.flood1.log) / $(cat $L/c7.BOT1.log)" > $L/c7.numbers
+    cr=$(sed -n 's/^PROBE round=\([0-9]*\) .* title=FAKE count$/\1/p' $L/c7.probe.log)
+    fl=$(sed -n "s/^PHASE VERDICT round=${cr:-0} .* FLOOD1:[^ ]*:score=\([0-9]*\).*/\1/p" $L/c7.probe.log)
+    ps=$(sed -n "s/^PROBE round=${cr:-0} sent=\([0-9]*\) got=.*/\1/p" $L/c7.probe.log)
+    pg=$(sed -n "s/^PROBE round=${cr:-0} sent=[0-9]* got=\([0-9]*\).*/\1/p" $L/c7.probe.log)
+    [ "${fl:-999999}" -gt 0 ] && [ "${fl:-999999}" -le 6000 ] || WHY="$WHY 폭주한 입력이 스테이지에 ${fl:-?}개 닿음(한도 6000)"
+    [ "${ps:-0}" -ge 50 ] && [ "${pg:-0}" -ge $(( ${ps:-0} - 3 )) ] || WHY="$WHY 다른 참가자의 입력이 빠짐(보낸 ${ps:-?}, 닿은 ${pg:-?})"
+    echo "flood_delivered=$fl probe_sent=$ps probe_got=$pg / $(tail -n 1 $L/c7.flood1.log) / $(cat $L/c7.BOT1.log)" > $L/c7.numbers
     stop_server 7
     report 7 "잘못된 입력(버전, 큰 len, 쓰레기, 중간에 끊김, 말 없는 접속, 입력 폭주): 그 접속만 끊고 판은 이어 감"
 }
@@ -473,7 +511,37 @@ case_9() {
     $PEER --port=$PORT --mode=fill --n=1 --sec=1 > $L/c9.fill4.log 2>&1
     grep -q 'welcomed=1 ' $L/c9.fill4.log || WHY="$WHY (나) fd가 모자랐던 뒤로 접속을 받지 않음"
     stop_server 9
-    report 9 "접속이 16개를 넘거나 fd가 모자람: 넘는 것만 거절하고 있던 접속은 그대로"
+
+    # (다) HELLO를 0.5초에 한 바이트씩 보내는 접속 16개가 자리를 다 채운다. HELLO 전체의 한도(3초) 뒤에는
+    # 모두 끊겨야 하고, 그 뒤에 온 진짜 접속자는 들어와야 한다
+    mv $L/c9.server.log $L/c9.server_b.log
+    export ASAN_OPTIONS=quarantine_size_mb=4         # 메모리를 재려고 줄인다(6번과 같다)
+    server 9 --fast || WHY="$WHY 서버가 뜨지 않음"
+    unset ASAN_OPTIONS
+    BASE_FD=$(n_fd $SV); BASE_TH=$(n_thread $SV)
+    peer 9 drip --mode=drip --n=16 --after=500 --sec=8; DR=$LAST
+    sleep 0.5
+    $PEER --port=$PORT --mode=fill --n=1 --sec=0.3 > $L/c9.fill5.log 2>&1
+    grep -q 'refused=1' $L/c9.fill5.log || WHY="$WHY (다) 느린 접속 16개가 자리를 채우지 못함($(head -n 1 $L/c9.fill5.log))"
+    wait_exit $DR 9; rd=$?
+    dm=$(sed -n 's/^DRIP n=16 closed=16 max_ms=\([0-9]*\).*/\1/p' $L/c9.drip.log)
+    [ $rd -eq 0 ] && [ -n "$dm" ] && [ "$dm" -le 4000 ] || WHY="$WHY (다) 느린 HELLO가 자리를 오래 붙듦($(head -n 1 $L/c9.drip.log))"
+    $PEER --port=$PORT --mode=fill --n=1 --sec=0.3 > $L/c9.fill6.log 2>&1
+    grep -q 'welcomed=1 ' $L/c9.fill6.log || WHY="$WHY (다) 느린 접속이 끊긴 뒤에 들어오지 못함($(head -n 1 $L/c9.fill6.log))"
+
+    # (라) 접속을 열고 닫기를 되풀이해도 서버의 fd, 스레드, 메모리가 늘지 않는다
+    for k in 1 2 3 4 5 6 7 8; do
+        $PEER --port=$PORT --mode=fill --n=16 --sec=0.2 > $L/c9.cycle.log 2>&1
+        for m in version garbage half cut; do $PEER --port=$PORT --mode=$m --sec=2 >> $L/c9.cycle.log 2>&1; done
+        [ $k -eq 2 ] && rss_a=$(rss_kb $SV)
+    done
+    back_to_base "(라) 접속 160개를 열고 닫은 뒤"
+    rss_b=$(rss_kb $SV)
+    grow=$(( ${rss_b:-0} - ${rss_a:-0} ))
+    [ $grow -lt 16384 ] || WHY="$WHY (라) 접속을 되풀이하는 동안 서버 메모리가 ${grow}kB 늘어남"
+    echo "drip_max_ms=$dm cycle_rss=${rss_a}->${rss_b}kB fd=$BASE_FD->$(n_fd $SV) threads=$BASE_TH->$(n_thread $SV)" > $L/c9.numbers
+    stop_server 9
+    report 9 "접속이 16개를 넘거나 fd가 모자라거나 HELLO가 느림: 넘는 것만 거절하고 느린 것은 3초 뒤 끊음"
 }
 
 # ---- 10. 스레드 검사 ------------------------------------------------------------------
@@ -506,7 +574,7 @@ case_10() {
         # 화면 클라이언트가 들어와 그리기 시작할 때까지 기다린다(아래에서 접속 자리를 다 채우기 전에)
         _i=0
         while [ $_i -lt 300 ]; do
-            _n=$(wc -c < $L/c10.human.log 2>/dev/null)
+            _n=$( (wc -c < $L/c10.human.log) 2>/dev/null)
             [ "${_n:-0}" -ge 20000 ] && break
             sleep 0.05
             _i=$((_i + 1))
@@ -555,5 +623,7 @@ for c in $CASES; do
     if [ -f $L/c$c.result ]; then cat $L/c$c.result; else echo "실패 $c 결과가 없음"; fi
     grep -q '^통과' $L/c$c.result 2>/dev/null || bad=$((bad + 1))
 done
+se=$(( $(stage_errs) - SE0 ))
+if [ $se -gt 0 ]; then echo "실패 스테이지 로그에 검사 오류 ${se}줄 (build/logs/stage_*.log)"; else echo "통과 스테이지 로그에 검사 오류 없음"; fi
 echo "검사(실패 상황) ${total}개 중 $((total - bad))개 통과 ($(( $(date +%s) - T0 ))초)"
-[ $bad -eq 0 ]
+[ $bad -eq 0 ] && [ $se -le 0 ]

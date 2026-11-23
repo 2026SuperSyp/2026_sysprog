@@ -230,6 +230,31 @@ static void conn_limits(int fd, int recv_ms)
 
 static const char *ranking_path;             /* 랭킹 파일. 값은 아래 게임 마스터 쪽에서 정한다 */
 
+/* 첫 메시지(HELLO)를 deadline(ms)까지 다 받는다. 한 바이트씩 아주 느리게 보내는 접속이 자리를
+ * 붙들지 못하게, 읽을 때마다가 아니라 전체에 시간 한도를 둔다. 1이면 다 받았다. */
+static int recv_hello(int fd, msg_hdr_t *h, uint8_t *body, uint32_t cap, int64_t deadline)
+{
+    uint32_t got = 0, need = sizeof *h;
+    for (;;) {
+        if (got == sizeof *h) {
+            if (h->len > cap) return -1;
+            need = (uint32_t)sizeof *h + h->len;
+        }
+        if (got == need) return 1;
+        int64_t left = deadline - now_ms();
+        if (left <= 0) return 0;
+        struct pollfd pf = { fd, POLLIN, 0 };
+        int r = poll(&pf, 1, (int)left);
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) return r;
+        ssize_t n = got < sizeof *h ? recv(fd, (uint8_t *)h + got, sizeof *h - got, MSG_DONTWAIT)
+                                    : recv(fd, body + (got - sizeof *h), need - got, MSG_DONTWAIT);
+        if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+        if (n <= 0) return -1;
+        got += (uint32_t)n;
+    }
+}
+
 static void *reader_main(void *arg)
 {
     conn_t *c = arg;
@@ -238,12 +263,13 @@ static void *reader_main(void *arg)
     pthread_t writer;
     msg_hdr_t h;
     static __thread uint8_t body[4096];
+    int64_t hello_by = now_ms() + HELLO_WAIT_MS;
     setsockopt(c->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
     conn_limits(c->fd, HELLO_WAIT_MS);
 
-    /* 첫 메시지는 HELLO여야 한다 */
+    /* 첫 메시지는 HELLO여야 하고, 접속하고 HELLO_WAIT_MS 안에 다 와야 한다 */
     hello_msg_t hello;
-    if (msg_recv(c->fd, &h, body, sizeof body) != 1 || h.type != MSG_HELLO || h.len != sizeof hello) goto out;
+    if (recv_hello(c->fd, &h, body, sizeof body, hello_by) != 1 || h.type != MSG_HELLO || h.len != sizeof hello) goto out;
     memcpy(&hello, body, sizeof hello);
     if (hello.version != PROTO_VERSION) {
         const char *why = "version mismatch";
