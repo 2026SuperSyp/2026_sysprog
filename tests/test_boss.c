@@ -30,7 +30,8 @@ static void setup(const boss_cfg_t *c, int n)
 static void put_player(int i, float x, float y, int dir)
 {
     S.p[i].x = x; S.p[i].y = y; S.p[i].dir = dir;
-    S.p[i].last_dist = sqrtf((x - S.fly.x) * (x - S.fly.x) + (y - S.fly.y) * (y - S.fly.y));
+    S.p[i].approach = 0.0f;                                      /* 가만히 서 있던 것으로 한다 */
+    S.p[i].move_cool = 0;
 }
 
 static void put_fly(float x, float y)
@@ -177,7 +178,8 @@ static void test_charge(void)
     /* 몰아붙이면(빨리 다가오면) 돌진하지 않는다 */
     setup(&c, 1);
     put_fly(8.5f, 9.0f);
-    put_player(0, 8.5f, 12.5f, NORTH);
+    put_player(0, 8.5f, 12.0f, NORTH);
+    S.p[0].approach = c.loom_speed;                               /* 달려오던 중이다 */
     for (int k = 0; k < 4; k++) {
         press(0, SK_UP);
         T_EQ_INT(count_ev(BOSS_EV_CHARGE), 0);
@@ -351,6 +353,39 @@ static void test_takeoff(void)
     T_EQ_INT(S.fly.charge_cool, c.charge_cooldown);
 }
 
+/* 살금살금: 걸음이 짧고, 누르고 있어도 걸음 속도는 정해져 있고, 천천히 다가가면 자극이 약하다 */
+static void test_sneak(void)
+{
+    boss_cfg_t c = calm();
+    float stim[BRAIN_GROUP_COUNT];
+    setup(&c, 1);
+    put_fly(8.5f, 9.0f);
+    S.fly.ang = 0.0f;
+    put_player(0, 8.5f, 15.0f, NORTH);
+    press(0, SK_UP | BOSS_SLOW);
+    T_CHECK(fabsf(S.p[0].y - (15.0f - c.slow_step)) < 1e-4f);     /* 짧은 걸음 */
+    put_player(0, 8.5f, 15.0f, NORTH);
+    for (int k = 0; k < c.step_ticks * 4; k++) press(0, SK_UP);   /* 틱마다 눌러도 step_ticks에 한 걸음 */
+    T_CHECK(fabsf(S.p[0].y - (15.0f - 4.0f * c.step)) < 1e-3f);
+
+    /* 같은 자리(파리채가 닿는 거리)까지 왔을 때: 걸어왔으면 뛰어오를 만큼 세고, 살금살금 왔으면 약하다.
+     * 기준은 진짜 뇌다. 진짜 뇌는 다가옴 자극 0.23쯤에서 달아남 반응이 0.5를 넘는다 */
+    const float jump_stim = 0.23f;
+    float reach = c.fly_radius + c.player_radius + c.swat_range - 0.05f;
+    put_player(0, 8.5f, 9.0f + reach + 3.0f * c.step, NORTH);
+    for (int k = 0; k < c.step_ticks * 3; k++) press(0, SK_UP);
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_R] >= jump_stim);
+    put_player(0, 8.5f, 9.0f + reach + 10.0f * c.slow_step, NORTH);
+    for (int k = 0; k < c.step_ticks * 10; k++) press(0, SK_UP | BOSS_SLOW);
+    T_CHECK(fabsf(S.p[0].y - (9.0f + reach)) < 1e-3f);
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_R] < jump_stim);
+    int hp = S.fly.hp;
+    press(0, SK_ACT);                                             /* 그 자리에서 파리채가 닿는다 */
+    T_EQ_INT(S.fly.hp, hp - (int)c.swat_damage);
+}
+
 /* 뇌 대신 쓰는 정해진 규칙(가짜 뇌와 비슷하게) */
 static void rule_brain(const float *stim, float *rate)
 {
@@ -425,6 +460,7 @@ int main(void)
     test_dead_input();
     test_hurt();
     test_takeoff();
+    test_sneak();
     printf("  스냅숏 %zu바이트\n", sizeof(boss_snap_t));
     T_DONE();
 }

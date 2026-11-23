@@ -3,9 +3,10 @@
  *
  * 참가자 전략(사람처럼 3틱에 한 번만 키를 누른다)
  *   rush    초파리 쪽으로 돌아 다가가 파리채로 친다. 끈끈이가 닿는 거리면 먼저 던져 붙인다
+ *   sneak   rush와 같되 4칸 안에서는 살금살금(Shift) 다가간다. 초파리가 붙어 있으면 그냥 달려간다
  *   kite    3.5~7칸 거리를 지키며 스프레이를 쏜다. 다 쓰면 rush처럼 한다
  *   random  아무 키나 누른다
- *   mix     rush, kite, rush (3명일 때)
+ *   mix     sneak, kite, sneak (3명일 때)
  * 초파리는 뇌가 움직인다: 기본은 같은 프로세스 안의 가짜 뇌(fast), --brain=real이면 진짜 배선(data/). */
 #include "boss/boss.h"
 #include "brain/brain_host.h"
@@ -16,8 +17,8 @@
 #include <string.h>
 #include <time.h>
 
-enum { RUSH, KITE, RANDOM, N_STRAT };
-static const char *strat_name[] = { "rush", "kite", "random", "mix" };
+enum { RUSH, SNEAK, KITE, RANDOM, N_STRAT };
+static const char *strat_name[] = { "rush", "sneak", "kite", "random", "mix" };
 
 typedef struct { float lx, ly; int blocked, last; } bot_t;
 
@@ -57,8 +58,8 @@ static int bot_key(const boss_state_t *s, int i, int strat, bot_t *b, stage_rng_
         if (d > far) return SK_UP;
         return pick(s, i, BOSS_SPRAY);
     }
-    float reach = s->cfg.fly_radius + s->cfg.player_radius + s->cfg.swat_range - 0.2f;
-    if (d > reach) return SK_UP;
+    float reach = s->cfg.fly_radius + s->cfg.player_radius + s->cfg.swat_range - 0.05f;
+    if (d > reach) return (strat == SNEAK && f->stun == 0 && d < reach + 4.0f) ? (SK_UP | BOSS_SLOW) : SK_UP;
     return pick(s, i, BOSS_SWATTER);
 }
 
@@ -84,13 +85,33 @@ static double now_ms(void)
     return (double)t.tv_sec * 1000.0 + (double)t.tv_nsec / 1e6;
 }
 
+/* 다가옴 자극의 세기별로 뇌가 내는 달아남 반응을 찍는다(자극을 1초 준 뒤의 값).
+ * both가 1이면 왼쪽과 오른쪽에 같은 세기를 준다(정면의 벽이나 정면에서 오는 사람) */
+static void probe(brain_mode_t mode, const char *name, int both)
+{
+    printf("%s: 다가옴 자극(%s) -> 달아남 반응:", name, both ? "양쪽에 각각" : "한쪽");
+    for (int k = 1; k <= 10; k++) {
+        float level = (float)k / (both ? 20.0f : 10.0f), e = 0.0f;
+        brain_host_reset(1, mode);
+        for (int t = 0; t < 20; t++) {
+            brain_host_begin_tick();
+            brain_stimulate(BR_LOOM_L, level);
+            if (both) brain_stimulate(BR_LOOM_R, level);
+            e = brain_rate(BR_ESCAPE);
+            brain_host_end_tick();
+        }
+        printf(" %.2f->%.2f", level, e);
+    }
+    printf("\n");
+}
+
 static double tick_ms_sum, tick_ms_max;
 static long tick_n;
 
 static void play(const boss_cfg_t *c, brain_mode_t mode, int strat, int n, uint32_t seed, stat_t *st)
 {
     static boss_state_t s;
-    static const int mix[3] = { RUSH, KITE, RUSH };
+    static const int mix[3] = { SNEAK, KITE, SNEAK };
     int lives[3] = { 3, 3, 3 };
     bot_t bots[3];
     stage_rng_t r;
@@ -168,6 +189,8 @@ int main(int argc, char **argv)
         brain_mode_t mode = pass ? BRAIN_REAL : BRAIN_FAKE_FAST;
         int g = pass ? (games < 4 ? games : 4) : games;           /* 진짜 뇌는 한 판에 수십 초가 걸린다 */
         if (pass && brain_host_open_real("data") != 0) { printf("진짜 뇌의 자료(data/)가 없어 건너뜁니다\n"); break; }
+        probe(mode, pass ? "real" : "fake", 0);
+        probe(mode, pass ? "real" : "fake", 1);
         tick_ms_sum = tick_ms_max = 0.0;
         tick_n = 0;
         for (int strat = 0; strat <= N_STRAT; strat++) {

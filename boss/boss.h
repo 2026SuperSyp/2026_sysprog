@@ -14,7 +14,8 @@
  *   boss_snapshot(s, &snap)          보낼 것과 그릴 것
  *
  * 키 (include/stage.h의 SK_*)
- *   SK_UP / SK_DOWN      한 걸음 앞 / 뒤 (누를 때마다 한 걸음)
+ *   SK_UP / SK_DOWN      한 걸음 앞 / 뒤. 누르고 있어도 한 걸음에 step_ticks(3틱)이 걸린다
+ *   SK_UP | BOSS_SLOW    살금살금 한 걸음(Shift를 누른 채 이동). 걸음이 짧다(slow_step)
  *   SK_LEFT / SK_RIGHT   한 칸(22.5도) 왼쪽 / 오른쪽으로 돈다
  *   SK_1, SK_2, SK_3     파리채 / 스프레이 / 끈끈이를 고른다
  *   SK_SUB               다음 무기로 바꾼다
@@ -35,6 +36,7 @@
 #define BOSS_EVENTS     16       /* 한 틱에 남기는 사건 수의 한도 */
 #define BOSS_DIRS       16       /* 참가자가 볼 수 있는 방향 수 */
 #define BOSS_FIX        256      /* 스냅숏 좌표의 고정 소수점: 1칸 = 256 */
+#define BOSS_SLOW       0x100    /* boss_input의 키에 더한다: 살금살금(Shift) */
 
 enum { BOSS_SWATTER = 0, BOSS_SPRAY, BOSS_TRAP, BOSS_ITEMS };
 enum { BOSS_GOING = 0, BOSS_PLAYERS_WIN, BOSS_FLY_WINS };
@@ -58,7 +60,8 @@ typedef struct {
     int   ticks;                 /* 판의 길이(틱). 180초 */
     float fly_hp_per_player;     /* 초파리 체력 = 이것 x 참가자 수 */
     float fly_radius, player_radius;
-    float step;                                  /* 참가자의 한 걸음(칸) */
+    float step, slow_step;                       /* 참가자의 한 걸음과 살금살금 한 걸음(칸) */
+    int   step_ticks;                            /* 한 걸음에 걸리는 틱 수. 키를 누르고 있어도 이보다 빨리 걷지 못한다 */
     /* 초파리의 몸. 실제 초파리에서 잰 값이다(출처는 docs/brain-notes.md). 몸길이로 나눠 거대 초파리에 옮긴다 */
     float body_mm;                               /* 몸길이. 게임에서는 지름(fly_radius x 2)이 몸길이다 */
     float walk_mm_s, run_mm_s, back_mm_s;        /* 앞으로 걷기, 달아나기, 뒤로 걷기의 빠르기(반응이 1일 때) */
@@ -74,6 +77,11 @@ typedef struct {
     float charge_range, charge_speed; int charge_windup, charge_ticks, charge_cooldown;
     float wave_radius, wave_push; int wave_period;
     float loom_range, wall_sense, rush_level;    /* 다가옴을 느끼는 거리, 벽을 느끼는 거리, 몰린다고 보는 자극 */
+    float wall_turn;                             /* 벽이 바로 앞일 때 반대쪽으로 도는 세기(도는 빠르기의 배수). 뇌와 무관한 몸의 규칙 */
+    /* 다가옴 자극 = 가까움 x (loom_base + loom_gain x 다가오는 빠르기). 빠르기는 참가자가 초파리 쪽으로 움직인 거리를
+     * loom_avg_ticks 동안 평균해서 loom_speed(칸/틱)로 나눈 것이다. 천천히 다가가면 자극이 약하다 */
+    float loom_base, loom_gain, loom_speed;
+    int   loom_avg_ticks;
     float near_range, near_gain;                 /* 이 거리 안의 참가자는 서 있기만 해도 자극이 된다(가장 가까울 때 near_gain만큼 더한다) */
     int   hurt_ticks;                            /* 맞은 뒤 이만큼은 때린 쪽에서 강한 자극이 들어오고, 돌진하지 않는다 */
 } boss_cfg_t;
@@ -83,7 +91,8 @@ typedef struct {
     int   dir;                   /* 0 .. BOSS_DIRS-1 */
     int   hp, alive, item, ammo, traps, cool;
     int   move, turn, use, pick; /* 다음 틱에 할 일 */
-    float last_dist;             /* 지난 틱의 초파리까지 거리(다가오는 빠르기를 잰다) */
+    int   slow, move_cool;       /* 살금살금 걷는가, 다음 걸음까지 남은 틱 */
+    float closing, approach;     /* 이번 틱에 초파리 쪽으로 움직인 거리(칸), 그것의 평균(칸/틱) */
 } boss_player_t;
 
 typedef struct {

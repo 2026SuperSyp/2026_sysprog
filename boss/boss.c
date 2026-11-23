@@ -1,8 +1,9 @@
 /* 보스전 계산부. 규칙과 수치의 뜻은 boss.h와 boss/config.ini에 있다.
  *
  * 초파리의 움직임은 뇌가 정한다. 계산부는 장면을 자극으로 바꿔 줄 뿐이다.
- *   참가자가 다가온다   -> 그쪽의 다가옴 자극(BR_LOOM_L/R). 빨리 다가올수록, 가까울수록 세다
- *   벽이 앞에 있다      -> 그쪽의 다가옴 자극. 벽도 다가오는 큰 물체로 본다(벽에 박혀 서 있지 않게 한다)
+ *   참가자가 다가온다   -> 그쪽의 다가옴 자극(BR_LOOM_L/R). 빨리 다가올수록, 가까울수록 세다.
+ *                          빠르기는 최근 0.5초의 평균이다. 살금살금 다가가면 약해서 초파리가 뛰어오르지 않는다
+ *                          (다가옴을 보는 뉴런 가운데 LC4는 빠르기에, LPLC2는 크기에 반응한다)
  * 뇌의 반응: 한쪽에서 다가오면 반대쪽으로 돌아 달아나고(BR_TURN_*, BR_ESCAPE), 양쪽이면 뒤로 간다(BR_BACKWARD).
  *   참가자가 아주 가깝다 -> 서 있기만 해도 그쪽의 다가옴 자극(큰 물체가 눈앞에 있다)
  *   맞았다              -> 한동안 때린 쪽에서 가장 센 다가옴 자극(건드리면 달아난다)
@@ -11,9 +12,15 @@
  * 그래서 그 출력이 발화 기준(takeoff_level)을 넘으면 돌진 중이어도 뛰어오른다. 뛰는 방향은 그 순간 뇌의 방향 출력
  * (좌우 회전, 후진)을 합친 것이다: 한쪽에서 다가오면 반대쪽 앞으로, 앞에서 다가오면 뒤로 뛴다. 빠르기는 잰 값이다.
  * 떠 있는 시간과 내려앉은 뒤 쉬는 시간은 게임 규칙이다(실제 초파리는 그대로 날아가 버린다).
+ * 자극의 세기는 진짜 뇌에 맞췄다. 진짜 뇌는 다가옴 자극 0.23쯤에서 달아남 출력이 발화 기준 0.5를 넘는다
+ * (make bossbot BRAIN=real의 첫 줄이 이 곡선이다). 그래서 걸어서 다가오면 0.23을 넘고, 살금살금 다가오거나
+ * 가만히 서 있을 때는 넘지 않게 잡았다. 가짜 뇌는 덜 예민해서(0.42쯤) 덜 뛴다.
  * 공격할 때는 계산부의 규칙이 정한다. 몰리지 않을 때(다가옴 자극이 rush_level보다 약할 때)만 가까운 참가자에게
  * 돌진한다. 그래서 "달려드는 사람은 피하고, 몰리지 않으면 덤빈다"로 보인다.
- * 가려는데 오래 못 가면(구석에 낀 경우) 무작위로 크게 돈다. 뇌의 답을 바꾸는 것이 아니라 계산부의 규칙이다. */
+ * 벽은 뇌에 넣지 않는다. 다가옴 자극은 도약 회로의 입력이라 벽을 거기에 넣으면 벽을 볼 때마다 뛰어오른다
+ * (진짜 뇌는 양쪽에 0.15씩만 들어와도 뛴다). 벽을 느끼는 감각(더듬이, 시야의 흐름)은 이 뇌 모델의 입력에 없으므로
+ * 몸의 규칙으로 둔다: 앞쪽 좌우로 벽을 더듬어 가까운 쪽의 반대로 돈다. 그래도 오래 못 가면(구석에 낀 경우)
+ * 무작위로 크게 돈다. 둘 다 뇌의 답을 바꾸는 것이 아니라 계산부의 규칙이다. */
 #include "boss/boss.h"
 #include "core/cfg.h"
 
@@ -30,7 +37,7 @@ void boss_cfg_default(boss_cfg_t *c)
     c->fly_hp_per_player = 80.0f;
     c->fly_radius = 0.6f;
     c->player_radius = 0.25f;
-    c->step = 0.5f;
+    c->step = 0.5f; c->slow_step = 0.1f; c->step_ticks = 3;
     c->body_mm = 2.5f;
     c->walk_mm_s = 7.2f;  c->run_mm_s = 44.7f; c->back_mm_s = 7.2f;
     c->turn_deg_s = 200.0f;
@@ -43,8 +50,9 @@ void boss_cfg_default(boss_cfg_t *c)
     c->charge_range = 5.0f; c->charge_speed = 0.35f; c->charge_windup = 12; c->charge_ticks = 20;
     c->charge_cooldown = 80;
     c->wave_radius = 3.0f; c->wave_push = 2.5f; c->wave_period = 200;
-    c->loom_range = 5.0f;  c->wall_sense = 1.5f; c->rush_level = 0.4f;
-    c->near_range = 1.5f;  c->near_gain = 0.6f;  c->hurt_ticks = 20;
+    c->loom_range = 5.0f;  c->wall_sense = 1.5f; c->rush_level = 0.15f; c->wall_turn = 1.0f;
+    c->loom_base = 0.08f;  c->loom_gain = 0.55f; c->loom_speed = 0.15f; c->loom_avg_ticks = 10;
+    c->near_range = 1.5f;  c->near_gain = 0.12f; c->hurt_ticks = 20;
 }
 
 void boss_cfg_load(boss_cfg_t *c, const char *path)
@@ -53,7 +61,7 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     cfg_load(path);
 #define F(k) c->k = cfg_get(#k, c->k)
 #define I(k) c->k = (int)cfg_get(#k, (float)c->k)
-    I(ticks); F(fly_hp_per_player); F(fly_radius); F(player_radius); F(step);
+    I(ticks); F(fly_hp_per_player); F(fly_radius); F(player_radius); F(step); F(slow_step); I(step_ticks);
     F(body_mm); F(walk_mm_s); F(run_mm_s); F(back_mm_s); F(turn_deg_s); I(accel_ticks); F(speed_scale); F(turn_scale);
     F(takeoff_level); F(takeoff_mm_s); I(air_ticks); I(air_rest_ticks);
     F(swat_range); F(swat_damage); I(swat_cooldown);
@@ -61,7 +69,8 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     F(trap_speed); F(trap_range); I(trap_count); I(stun_ticks);
     F(charge_range); F(charge_speed); I(charge_windup); I(charge_ticks); I(charge_cooldown);
     F(wave_radius); F(wave_push); I(wave_period);
-    F(loom_range); F(wall_sense); F(rush_level); F(near_range); F(near_gain); I(hurt_ticks);
+    F(loom_range); F(wall_sense); F(rush_level); F(wall_turn); F(near_range); F(near_gain); I(hurt_ticks);
+    F(loom_base); F(loom_gain); F(loom_speed); I(loom_avg_ticks);
 #undef F
 #undef I
 }
@@ -147,7 +156,6 @@ void boss_init(boss_state_t *s, const boss_cfg_t *c, uint32_t seed, int n_player
         p->item = BOSS_SWATTER;
         p->ammo = c->spray_ammo;
         p->traps = c->trap_count;
-        p->last_dist = dist(p->x, p->y, 12.0f, 5.5f);
     }
     s->fly.x = 12.0f;
     s->fly.y = 5.5f;
@@ -162,9 +170,10 @@ void boss_input(boss_state_t *s, int player, int key)
     if (player < 0 || player >= s->n_players || s->outcome != BOSS_GOING) return;
     boss_player_t *p = &s->p[player];
     if (!p->alive) return;                           /* 쓰러진 사람의 키는 쓰지 않는다 */
-    switch (key) {
-    case SK_UP:    if (p->move < 2) p->move++; break;
-    case SK_DOWN:  if (p->move > -2) p->move--; break;
+    int slow = (key & BOSS_SLOW) != 0;
+    switch (key & ~BOSS_SLOW) {
+    case SK_UP:    p->move = 1;  p->slow = slow; break;
+    case SK_DOWN:  p->move = -1; p->slow = slow; break;
     case SK_LEFT:  if (p->turn > -2) p->turn--; break;
     case SK_RIGHT: if (p->turn < 2) p->turn++; break;
     case SK_1:     p->pick = 1 + BOSS_SWATTER; break;
@@ -212,15 +221,14 @@ static float threat(const boss_state_t *s, int i)
     float d = dist(p->x, p->y, s->fly.x, s->fly.y), gap = d - c->fly_radius - c->player_radius;
     if (!p->alive || gap >= c->loom_range) return 0.0f;
     if (gap < 0.0f) gap = 0.0f;
-    float approach = clamp01((p->last_dist - d) / c->step);      /* 이번 틱에 한 걸음 다가왔으면 1 */
-    float level = (1.0f - gap / c->loom_range) * (0.35f + 0.9f * approach);
+    float approach = clamp01(p->approach / c->loom_speed);       /* 최근에 다가온 평균 빠르기 */
+    float level = (1.0f - gap / c->loom_range) * (c->loom_base + c->loom_gain * approach);
     if (gap < c->near_range) level += c->near_gain * (1.0f - gap / c->near_range);
     return clamp01(level);
 }
 
 void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT])
 {
-    const boss_cfg_t *c = &s->cfg;
     const boss_fly_t *f = &s->fly;
     float hx = cosf(f->ang), hy = sinf(f->ang), l = 0.0f, r = 0.0f;
     memset(stim, 0, sizeof(float) * BRAIN_GROUP_COUNT);
@@ -237,12 +245,6 @@ void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT])
         float dx = f->hurt_x - f->x, dy = f->hurt_y - f->y, d = sqrtf(dx * dx + dy * dy);
         if (d > 1e-4f) add_side(&l, &r, 1.0f, side_of(hx, hy, dx, dy, d));
     }
-    /* 앞쪽 30도 좌우로 벽을 더듬는다 */
-    float dl = wall_dist(s, f->x, f->y, f->ang - PI_F / 6.0f, c->wall_sense + c->fly_radius) - c->fly_radius;
-    float dr = wall_dist(s, f->x, f->y, f->ang + PI_F / 6.0f, c->wall_sense + c->fly_radius) - c->fly_radius;
-    float wl = 0.8f * clamp01(1.0f - dl / c->wall_sense), wr = 0.8f * clamp01(1.0f - dr / c->wall_sense);
-    if (wl > l) l = wl;
-    if (wr > r) r = wr;
     stim[BR_LOOM_L] = l;
     stim[BR_LOOM_R] = r;
 }
@@ -308,11 +310,14 @@ static void players_act(boss_state_t *s)
     for (int i = 0; i < s->n_players; i++) {
         boss_player_t *p = &s->p[i];
         if (p->cool > 0) p->cool--;
+        if (p->move_cool > 0) p->move_cool--;
+        p->closing = 0.0f;
         if (!p->alive) { p->move = p->turn = p->use = p->pick = 0; continue; }
         p->dir = ((p->dir + p->turn) % BOSS_DIRS + BOSS_DIRS) % BOSS_DIRS;
-        if (p->move) {
-            float a = dir_angle(p->dir), len = c->step * (float)p->move;
-            float nx = p->x, ny = p->y;
+        if (p->move && p->move_cool == 0) {              /* 걷는 중에 온 키는 버린다(누르고 있으면 또 온다) */
+            float a = dir_angle(p->dir), len = (p->slow ? c->slow_step : c->step) * (float)p->move;
+            float nx = p->x, ny = p->y, ox = p->x, oy = p->y;
+            p->move_cool = c->step_ticks;
             slide(s, &nx, &ny, cosf(a) * len, sinf(a) * len, c->player_radius);
             /* 초파리 몸을 뚫고 지나가지 않는다 */
             if (dist(nx, ny, f->x, f->y) >= c->fly_radius + c->player_radius ||
@@ -320,6 +325,9 @@ static void players_act(boss_state_t *s)
                 p->x = nx;
                 p->y = ny;
             }
+            /* 초파리 쪽으로 움직인 만큼만 다가온 것으로 센다(초파리가 움직여 가까워진 것은 세지 않는다) */
+            float d = dist(ox, oy, f->x, f->y);
+            if (d > 1e-4f) p->closing = ((p->x - ox) * (f->x - ox) + (p->y - oy) * (f->y - oy)) / d;
         }
         if (p->pick) p->item = p->pick - 1;
         if (p->use) use_item(s, i);
@@ -477,7 +485,13 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
     float per_mm = 2.0f * c->fly_radius / c->body_mm * c->speed_scale / 20.0f;      /* mm/s -> 칸/틱 */
     float v_want = per_mm * (c->walk_mm_s * rate[BR_FORWARD] + c->run_mm_s * rate[BR_ESCAPE]
                              - c->back_mm_s * rate[BR_BACKWARD]);
-    float w_want = (rate[BR_TURN_R] - rate[BR_TURN_L]) * c->turn_deg_s * (PI_F / 180.0f) / 20.0f * c->turn_scale;
+    float turn = c->turn_deg_s * (PI_F / 180.0f) / 20.0f * c->turn_scale;        /* 반응 1일 때 한 틱에 도는 각도 */
+    float w_want = (rate[BR_TURN_R] - rate[BR_TURN_L]) * turn;
+    /* 벽 피하기(몸의 규칙): 앞쪽 30도 좌우로 벽을 더듬어 가까운 쪽의 반대로 돈다. 정면이면 오른쪽으로 돈다 */
+    float dl = wall_dist(s, f->x, f->y, f->ang - PI_F / 6.0f, c->wall_sense + c->fly_radius) - c->fly_radius;
+    float dr = wall_dist(s, f->x, f->y, f->ang + PI_F / 6.0f, c->wall_sense + c->fly_radius) - c->fly_radius;
+    float wl = clamp01(1.0f - dl / c->wall_sense), wr = clamp01(1.0f - dr / c->wall_sense);
+    if (wl > 0.0f || wr > 0.0f) w_want += (wl >= wr ? wl : -wr) * turn * c->wall_turn;
     int lag = c->accel_ticks > 1 ? c->accel_ticks : 1;
     f->v += (v_want - f->v) / (float)lag;
     f->w += (w_want - f->w) / (float)lag;
@@ -505,7 +519,7 @@ void boss_tick(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
     traps_fly(s);
     if (s->fly.hp > 0) fly_act(s, rate);
     for (int i = 0; i < s->n_players; i++)
-        s->p[i].last_dist = dist(s->p[i].x, s->p[i].y, s->fly.x, s->fly.y);
+        s->p[i].approach += (s->p[i].closing - s->p[i].approach) / (float)(s->cfg.loom_avg_ticks > 1 ? s->cfg.loom_avg_ticks : 1);
     s->tick++;
 
     int alive = 0;
