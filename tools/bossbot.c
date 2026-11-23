@@ -2,7 +2,7 @@
  *   build/dev/bossbot [--brain=real] [--games=N] [--config=boss/config.ini]
  *
  * 참가자 전략(사람처럼 3틱에 한 번만 키를 누른다)
- *   rush    초파리 쪽으로 돌아 다가가 파리채로 친다. 자기에게 돌진하려고 겨누면 끈끈이를 던진다
+ *   rush    초파리 쪽으로 돌아 다가가 파리채로 친다. 끈끈이가 닿는 거리면 먼저 던져 붙인다
  *   kite    3.5~7칸 거리를 지키며 스프레이를 쏜다. 다 쓰면 rush처럼 한다
  *   random  아무 키나 누른다
  *   mix     rush, kite, rush (3명일 때)
@@ -46,9 +46,10 @@ static int bot_key(const boss_state_t *s, int i, int strat, bot_t *b, stage_rng_
     if (b->blocked > 0) { b->blocked--; return b->blocked % 2 ? SK_RIGHT : SK_UP; }
     int turn = face_fly(s, i);
     float d = fdist(s, i);
-    if (f->windup > 0 && f->target == i && p->traps > 0 && d < 7.0f && !turn) return pick(s, i, BOSS_TRAP);
     if (turn) return turn;
-    if (strat == KITE && p->ammo > 0) {
+    /* 초파리는 다가가면 뛰어올라 달아난다. 먼저 끈끈이로 붙이고, 붙어 있는 동안 다가가 친다 */
+    if (p->traps > 0 && f->stun == 0 && f->air == 0 && d < s->cfg.trap_range - 1.0f) return pick(s, i, BOSS_TRAP);
+    if (strat == KITE && p->ammo > 0 && f->stun == 0) {
         /* 사거리 안에서 되도록 멀리 선다 */
         float far = s->cfg.spray_range - 1.0f < 7.0f ? s->cfg.spray_range - 1.0f : 7.0f;
         float near = far - 3.5f > 1.5f ? far - 3.5f : 1.5f;
@@ -63,7 +64,7 @@ static int bot_key(const boss_state_t *s, int i, int strat, bot_t *b, stage_rng_
 
 typedef struct {
     int games, wins;
-    double ticks, dealt, taken, charges, hits, escape, backward, near_wall, stuck_turns;
+    double ticks, dealt, taken, charges, hits, escape, backward, near_wall, stuck_turns, takeoffs;
 } stat_t;
 
 static int near_wall(const boss_state_t *s)
@@ -126,6 +127,7 @@ static void play(const boss_cfg_t *c, brain_mode_t mode, int strat, int n, uint3
         for (int e = 0; e < s.n_ev; e++) {
             st->charges += s.ev[e].kind == BOSS_EV_CHARGE;
             st->hits += s.ev[e].kind == BOSS_EV_HIT_PLAYER;
+            st->takeoffs += s.ev[e].kind == BOSS_EV_TAKEOFF;
         }
         if (s.fly.stun == 0 && s.fly.windup + s.fly.charging == 0) {
             st->escape += rate[BR_ESCAPE] >= 0.5f;
@@ -143,9 +145,9 @@ static void row(const char *brain, int strat, int n, const stat_t *st)
 {
     double g = st->games, t = st->ticks;
     printf("%-5s %-6s %d명 %4d판  승률 %5.1f%%  평균 %5.1f초  준 피해/명 %6.1f  받은 피해/명 %4.2f  "
-           "돌진/판 %5.1f  맞힘/판 %4.1f  | 달아남 %4.1f%%  뒤로 %4.1f%%  벽 옆 %4.1f%%  끼어서 돎/판 %4.1f\n",
+           "돌진/판 %5.1f  맞힘/판 %4.1f  도약/판 %5.1f  | 달아남 %4.1f%%  뒤로 %4.1f%%  벽 옆 %4.1f%%  끼어서 돎/판 %4.1f\n",
            brain, strat_name[strat], n, st->games, 100.0 * st->wins / g, t / g / 20.0, st->dealt / g / n, st->taken / g / n,
-           st->charges / g, st->hits / g, 100.0 * st->escape / t, 100.0 * st->backward / t, 100.0 * st->near_wall / t,
+           st->charges / g, st->hits / g, st->takeoffs / g, 100.0 * st->escape / t, 100.0 * st->backward / t, 100.0 * st->near_wall / t,
            st->stuck_turns / g);
 }
 

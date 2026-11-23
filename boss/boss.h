@@ -49,7 +49,9 @@ enum {
     BOSS_EV_HIT_PLAYER,                          /* 돌진에 부딪혔다 */
     BOSS_EV_WAVE,                                /* 날갯짓 */
     BOSS_EV_DEATH,                               /* 참가자가 쓰러졌다 */
-    BOSS_EV_FLY_DOWN                             /* 초파리가 쓰러졌다 */
+    BOSS_EV_FLY_DOWN,                            /* 초파리가 쓰러졌다 */
+    BOSS_EV_TAKEOFF,                             /* 초파리가 뛰어올랐다(x, y는 뛴 곳) */
+    BOSS_EV_LAND                                 /* 내려앉았다 */
 };
 
 typedef struct {
@@ -63,6 +65,9 @@ typedef struct {
     float turn_deg_s;                            /* 도는 빠르기(반응이 1일 때) */
     int   accel_ticks;                           /* 빠르기가 바뀌는 데 걸리는 시간. 한 틱에 차이의 1/accel_ticks만큼 따라간다 */
     float speed_scale, turn_scale;               /* 게임용 배율. 실제 비율 그대로면 사람이 따라갈 수 없어서 전체를 줄인다 */
+    /* 도약. 뇌의 달아남 출력(거대 섬유 뉴런)이 takeoff_level 이상이면 뛰어오른다 */
+    float takeoff_level, takeoff_mm_s;           /* 뛰는 기준(반응), 뛰어오른 직후의 빠르기(잰 값) */
+    int   air_ticks, air_rest_ticks;             /* 떠 있는 시간, 내려앉은 뒤 다시 뛰지 못하는 시간(둘 다 게임 규칙) */
     float swat_range, swat_damage; int swat_cooldown;
     float spray_range, spray_damage; int spray_ammo, spray_cooldown;
     float trap_speed, trap_range; int trap_count, stun_ticks;
@@ -89,6 +94,8 @@ typedef struct {
     int   stuck_ticks;           /* 가려고 했는데 거의 못 간 틱 수 */
     float v, w;                  /* 지금의 빠르기(칸/틱)와 도는 빠르기(라디안/틱). 한 번에 바뀌지 않는다 */
     int   hurt;                  /* 맞은 뒤 남은 틱 */
+    int   air, air_rest;         /* 떠 있는 남은 틱, 내려앉은 뒤 쉬는 남은 틱 */
+    float air_dx, air_dy;        /* 뛰어오른 방향(길이 1) */
     float hurt_x, hurt_y;        /* 때린 사람이 있던 곳 */
 } boss_fly_t;
 
@@ -122,6 +129,7 @@ typedef struct {
         uint16_t ang;            /* 0..65535가 한 바퀴 */
         int16_t  hp, hp_max;
         uint8_t  stun, windup, charging, wave_in;   /* stun, wave_in은 남은 틱(255에서 자른다) */
+        uint8_t  air, pad;                          /* 떠 있는 남은 틱 */
     } fly;
     struct { int16_t x, y; } proj[BOSS_PROJ];
     boss_event_t ev[BOSS_EVENTS];

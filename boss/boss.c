@@ -6,6 +6,11 @@
  * 뇌의 반응: 한쪽에서 다가오면 반대쪽으로 돌아 달아나고(BR_TURN_*, BR_ESCAPE), 양쪽이면 뒤로 간다(BR_BACKWARD).
  *   참가자가 아주 가깝다 -> 서 있기만 해도 그쪽의 다가옴 자극(큰 물체가 눈앞에 있다)
  *   맞았다              -> 한동안 때린 쪽에서 가장 센 다가옴 자극(건드리면 달아난다)
+ * 도약도 뇌가 정한다. 뇌의 달아남 출력(BR_ESCAPE)은 진짜 뇌에서 거대 섬유 뉴런(DNp01)의 발화다. 이 뉴런은 다가옴을
+ * 보는 시각 뉴런(LC4, LPLC2)에서 입력을 받고, 발화하면 하던 행동을 끊고 뛰어오르게 한다(von Reyn 외 2014).
+ * 그래서 그 출력이 발화 기준(takeoff_level)을 넘으면 돌진 중이어도 뛰어오른다. 뛰는 방향은 그 순간 뇌의 방향 출력
+ * (좌우 회전, 후진)을 합친 것이다: 한쪽에서 다가오면 반대쪽 앞으로, 앞에서 다가오면 뒤로 뛴다. 빠르기는 잰 값이다.
+ * 떠 있는 시간과 내려앉은 뒤 쉬는 시간은 게임 규칙이다(실제 초파리는 그대로 날아가 버린다).
  * 공격할 때는 계산부의 규칙이 정한다. 몰리지 않을 때(다가옴 자극이 rush_level보다 약할 때)만 가까운 참가자에게
  * 돌진한다. 그래서 "달려드는 사람은 피하고, 몰리지 않으면 덤빈다"로 보인다.
  * 가려는데 오래 못 가면(구석에 낀 경우) 무작위로 크게 돈다. 뇌의 답을 바꾸는 것이 아니라 계산부의 규칙이다. */
@@ -31,6 +36,7 @@ void boss_cfg_default(boss_cfg_t *c)
     c->turn_deg_s = 200.0f;
     c->accel_ticks = 2;
     c->speed_scale = 0.22f; c->turn_scale = 1.0f;
+    c->takeoff_level = 0.5f; c->takeoff_mm_s = 480.0f; c->air_ticks = 4; c->air_rest_ticks = 20;
     c->swat_range = 1.2f;  c->swat_damage = 10.0f; c->swat_cooldown = 8;
     c->spray_range = 5.0f; c->spray_damage = 3.0f; c->spray_ammo = 20; c->spray_cooldown = 8;
     c->trap_speed = 0.6f;  c->trap_range = 8.0f;  c->trap_count = 2; c->stun_ticks = 60;
@@ -49,6 +55,7 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
 #define I(k) c->k = (int)cfg_get(#k, (float)c->k)
     I(ticks); F(fly_hp_per_player); F(fly_radius); F(player_radius); F(step);
     F(body_mm); F(walk_mm_s); F(run_mm_s); F(back_mm_s); F(turn_deg_s); I(accel_ticks); F(speed_scale); F(turn_scale);
+    F(takeoff_level); F(takeoff_mm_s); I(air_ticks); I(air_rest_ticks);
     F(swat_range); F(swat_damage); I(swat_cooldown);
     F(spray_range); F(spray_damage); I(spray_ammo); I(spray_cooldown);
     F(trap_speed); F(trap_range); I(trap_count); I(stun_ticks);
@@ -178,6 +185,15 @@ static void add_side(float *l, float *r, float level, float side)
     if (level * wr > *r) *r = level * wr;
 }
 
+/* 초파리(머리 방향 hx, hy)가 볼 때 dx, dy에 있는 것이 어느 쪽인가. -1이 왼쪽 옆, 1이 오른쪽 옆, 0이 정면이다.
+ * 뒤에 있는 것은 가까운 쪽 옆으로 본다. 정면처럼 양쪽으로 나누면 뇌가 뒤로 가라고 답해서 위협 쪽으로 물러나게 된다 */
+static float side_of(float hx, float hy, float dx, float dy, float d)
+{
+    float side = (hx * dy - hy * dx) / d;
+    if (hx * dx + hy * dy < 0.0f) side = side >= 0.0f ? 1.0f : -1.0f;
+    return side;
+}
+
 /* 벽까지의 거리(앞쪽으로 ang 방향, 최대 range) */
 static float wall_dist(const boss_state_t *s, float x, float y, float ang, float range)
 {
@@ -215,11 +231,11 @@ void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT])
         if (!p->alive) continue;
         float dx = p->x - f->x, dy = p->y - f->y, d = sqrtf(dx * dx + dy * dy);
         if (d < 1e-4f) continue;
-        add_side(&l, &r, threat(s, i), (hx * dy - hy * dx) / d);
+        add_side(&l, &r, threat(s, i), side_of(hx, hy, dx, dy, d));
     }
     if (f->hurt > 0) {                               /* 방금 맞았다. 때린 쪽이 가장 센 자극이다 */
         float dx = f->hurt_x - f->x, dy = f->hurt_y - f->y, d = sqrtf(dx * dx + dy * dy);
-        if (d > 1e-4f) add_side(&l, &r, 1.0f, (hx * dy - hy * dx) / d);
+        if (d > 1e-4f) add_side(&l, &r, 1.0f, side_of(hx, hy, dx, dy, d));
     }
     /* 앞쪽 30도 좌우로 벽을 더듬는다 */
     float dl = wall_dist(s, f->x, f->y, f->ang - PI_F / 6.0f, c->wall_sense + c->fly_radius) - c->fly_radius;
@@ -376,6 +392,34 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
     if (f->hurt > 0) f->hurt--;
     if (f->stun > 0) { f->stun--; return; }          /* 붙어 있는 동안은 움직이지도 공격하지도 않는다 */
 
+    /* 떠 있는 동안: 뛰어오른 방향으로 곧게 간다. 빨라서 벽을 건너뛰지 않게 잘게 나눠 움직인다 */
+    if (f->air > 0) {
+        float len = c->takeoff_mm_s * 2.0f * c->fly_radius / c->body_mm * c->speed_scale / 20.0f;
+        int n = (int)(len / 0.2f) + 1;
+        for (int k = 0; k < n; k++)
+            slide(s, &f->x, &f->y, f->air_dx * len / (float)n, f->air_dy * len / (float)n, c->fly_radius);
+        if (--f->air == 0) {
+            f->air_rest = c->air_rest_ticks;
+            f->v = f->w = 0.0f;
+            event(s, BOSS_EV_LAND, 255, f->x, f->y);
+        }
+        return;
+    }
+    if (f->air_rest > 0) f->air_rest--;
+    /* 도약: 뇌의 달아남 출력(거대 섬유)이 발화 기준을 넘었다. 하던 일(돌진 포함)을 끊고 뛰어오른다.
+     * 방향은 몸 기준으로 앞뒤 = 1 - 2 x 후진, 좌우 = 오른쪽 회전 - 왼쪽 회전 */
+    if (f->air_rest == 0 && c->air_ticks > 0 && rate[BR_ESCAPE] >= c->takeoff_level) {
+        float a = f->ang + atan2f(rate[BR_TURN_R] - rate[BR_TURN_L], 1.0f - 2.0f * rate[BR_BACKWARD]);
+        f->air_dx = cosf(a);
+        f->air_dy = sinf(a);
+        f->air = c->air_ticks;
+        if (f->windup > 0 || f->charging > 0) f->charge_cool = c->charge_cooldown;
+        f->windup = f->charging = 0;
+        f->target = -1;
+        event(s, BOSS_EV_TAKEOFF, 255, f->x, f->y);
+        return;
+    }
+
     /* 날갯짓: 가까운 참가자를 모두 밀어낸다 */
     if (--f->wave_in <= 0) {
         f->wave_in = c->wave_period;
@@ -505,6 +549,7 @@ void boss_snapshot(const boss_state_t *s, boss_snap_t *o)
     o->fly.windup = (uint8_t)f->windup;
     o->fly.charging = (uint8_t)f->charging;
     o->fly.wave_in = (uint8_t)(f->wave_in > 255 ? 255 : f->wave_in);
+    o->fly.air = (uint8_t)(f->air > 255 ? 255 : f->air);
     for (int k = 0; k < BOSS_PROJ; k++) {
         if (!s->proj[k].on) continue;
         o->proj[n].x = (int16_t)(s->proj[k].x * BOSS_FIX);

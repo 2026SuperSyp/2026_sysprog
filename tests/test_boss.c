@@ -291,6 +291,66 @@ static void test_hurt(void)
     T_CHECK(S.fly.windup > 0);
 }
 
+/* 도약: 달아남 반응이 기준을 넘을 때만 뛴다. 방향은 뇌의 방향 반응을 따른다. 붙어 있으면 못 뛰고, 돌진도 끊는다 */
+static void test_takeoff(void)
+{
+    boss_cfg_t c = calm();
+    float r[BRAIN_GROUP_COUNT] = { 0 };
+    setup(&c, 1);
+    put_player(0, 20.0f, 20.0f, NORTH);
+    put_fly(8.5f, 9.0f);
+    S.fly.ang = 0.0f;                                             /* 오른쪽(+x)을 본다 */
+    r[BR_ESCAPE] = c.takeoff_level - 0.01f;                       /* 기준에 못 미친다 */
+    boss_tick(&S, r);
+    T_EQ_INT(count_ev(BOSS_EV_TAKEOFF), 0);
+
+    put_fly(8.5f, 9.0f);
+    S.fly.v = 0.0f;
+    r[BR_ESCAPE] = 1.0f;
+    r[BR_BACKWARD] = 1.0f;                                        /* 앞에서 다가왔다: 뒤(-x)로 뛴다 */
+    boss_tick(&S, r);
+    T_EQ_INT(count_ev(BOSS_EV_TAKEOFF), 1);
+    T_EQ_INT(S.fly.air, c.air_ticks);
+    int landed = 0;
+    for (int k = 0; k < c.air_ticks; k++) { boss_tick(&S, r); landed += count_ev(BOSS_EV_LAND); }
+    T_EQ_INT(landed, 1);
+    T_CHECK(S.fly.x < 8.5f - 3.0f);                               /* 걷기로는 갈 수 없는 거리 */
+    T_CHECK(S.fly.x >= 1.0f + c.fly_radius - 1e-3f);              /* 벽은 넘지 않는다 */
+    T_CHECK(fabsf(S.fly.y - 9.0f) < 0.01f);
+    int again = 0;
+    for (int k = 0; k < c.air_rest_ticks - 1; k++) { boss_tick(&S, r); again += count_ev(BOSS_EV_TAKEOFF); }
+    T_EQ_INT(again, 0);                                           /* 내려앉은 뒤에는 한동안 못 뛴다 */
+    boss_tick(&S, r);
+    T_EQ_INT(count_ev(BOSS_EV_TAKEOFF), 1);
+
+    setup(&c, 1);                                                 /* 왼쪽에서 다가왔다: 오른쪽 앞으로 뛴다 */
+    put_player(0, 20.0f, 20.0f, NORTH);
+    put_fly(8.5f, 9.0f);
+    S.fly.ang = 0.0f;
+    memset(r, 0, sizeof r);
+    r[BR_ESCAPE] = 1.0f;
+    r[BR_TURN_R] = 1.0f;
+    boss_tick(&S, r);
+    T_CHECK(S.fly.air_dx > 0.5f && S.fly.air_dy > 0.5f);
+
+    setup(&c, 1);                                                 /* 끈끈이에 붙어 있으면 못 뛴다 */
+    S.fly.stun = 5;
+    boss_tick(&S, r);
+    T_EQ_INT(count_ev(BOSS_EV_TAKEOFF), 0);
+
+    boss_cfg_default(&c);                                         /* 돌진하려고 겨누다가도 뛴다 */
+    c.wave_period = 1000000;
+    setup(&c, 1);
+    put_fly(8.5f, 9.0f);
+    put_player(0, 8.5f, 12.0f, NORTH);
+    boss_tick(&S, still);
+    T_CHECK(S.fly.windup > 0);
+    boss_tick(&S, r);
+    T_EQ_INT(count_ev(BOSS_EV_TAKEOFF), 1);
+    T_EQ_INT(S.fly.windup, 0);
+    T_EQ_INT(S.fly.charge_cool, c.charge_cooldown);
+}
+
 /* 뇌 대신 쓰는 정해진 규칙(가짜 뇌와 비슷하게) */
 static void rule_brain(const float *stim, float *rate)
 {
@@ -364,6 +424,7 @@ int main(void)
     test_same();
     test_dead_input();
     test_hurt();
+    test_takeoff();
     printf("  스냅숏 %zu바이트\n", sizeof(boss_snap_t));
     T_DONE();
 }
