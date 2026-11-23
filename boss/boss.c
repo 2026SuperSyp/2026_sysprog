@@ -22,12 +22,13 @@ void boss_cfg_default(boss_cfg_t *c)
 {
     memset(c, 0, sizeof *c);
     c->ticks = 180 * 20;
-    c->fly_hp_per_player = 100.0f;
+    c->fly_hp_per_player = 80.0f;
     c->fly_radius = 0.6f;
     c->player_radius = 0.25f;
     c->step = 0.5f;
     c->fly_speed = 0.08f;
-    c->fly_turn = 0.25f;
+    c->fly_turn = 0.33f;
+    c->escape_gain = 3.0f;
     c->swat_range = 1.2f;  c->swat_damage = 10.0f; c->swat_cooldown = 8;
     c->spray_range = 5.0f; c->spray_damage = 3.0f; c->spray_ammo = 20; c->spray_cooldown = 8;
     c->trap_speed = 0.6f;  c->trap_range = 8.0f;  c->trap_count = 2; c->stun_ticks = 60;
@@ -44,7 +45,7 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     cfg_load(path);
 #define F(k) c->k = cfg_get(#k, c->k)
 #define I(k) c->k = (int)cfg_get(#k, (float)c->k)
-    I(ticks); F(fly_hp_per_player); F(fly_radius); F(player_radius); F(step); F(fly_speed); F(fly_turn);
+    I(ticks); F(fly_hp_per_player); F(fly_radius); F(player_radius); F(step); F(fly_speed); F(fly_turn); F(escape_gain);
     F(swat_range); F(swat_damage); I(swat_cooldown);
     F(spray_range); F(spray_damage); I(spray_ammo); I(spray_cooldown);
     F(trap_speed); F(trap_range); I(trap_count); I(stun_ticks);
@@ -426,7 +427,7 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
 
     /* 평소: 뇌의 반응으로 움직인다 */
     f->ang += (rate[BR_TURN_R] - rate[BR_TURN_L]) * c->fly_turn;
-    float v = c->fly_speed * (0.6f * rate[BR_FORWARD] + 1.4f * rate[BR_ESCAPE] - 1.0f * rate[BR_BACKWARD]);
+    float v = c->fly_speed * (0.6f * rate[BR_FORWARD] + c->escape_gain * rate[BR_ESCAPE] - 1.0f * rate[BR_BACKWARD]);
     float ox = f->x, oy = f->y;
     slide(s, &f->x, &f->y, cosf(f->ang) * v, sinf(f->ang) * v, c->fly_radius);
     float moved = dist(ox, oy, f->x, f->y), want = fabsf(v);

@@ -57,6 +57,7 @@ typedef struct {
     float fly_hp_per_player;     /* 초파리 체력 = 이것 x 참가자 수 */
     float fly_radius, player_radius;
     float step, fly_speed, fly_turn;             /* 한 걸음(칸), 초파리의 빠르기(칸/틱), 도는 빠르기(라디안/틱) */
+    float escape_gain;                           /* 달아날 때 빠르기의 배수. 크면 위협을 받을 때 확 튄다 */
     float swat_range, swat_damage; int swat_cooldown;
     float spray_range, spray_damage; int spray_ammo, spray_cooldown;
     float trap_speed, trap_range; int trap_count, stun_ticks;
