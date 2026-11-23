@@ -97,6 +97,12 @@ make brain-compare                   (대조 실험. 배선을 섞은 뇌를 만
 - 난이도 숫자는 코드에 쓰지 않고 `config.ini`에 둔다.
 - 점수는 0 이상이고, 한 판을 잘하면 100 근처가 되게 맞춘다.
 
+## 화면을 직접 만들 때 (`screens/`)
+
+- `screens/` 안에 `screen_lobby`, `screen_result`, `screen_ranking`, `screen_spectate`를 같은 이름으로 만들면 코어의 기본 화면 대신 쓰인다. 넷 중 만들고 싶은 것만 만들면 된다.
+- 직접 만든 화면 위에는 코어가 아무것도 덧그리지 않는다. 화면 전체(240x134)가 자기 것이다. (기본 화면일 때는 코어가 빈 자리에 역대 순위를 그려 넣는다.)
+- `make screen SCREEN=lobby CASE=2`로 예시 상태를 넣어 본다.
+
 ## 한글 글자
 
 `ui_text`에 한글을 그대로 쓰면 된다(소스 파일은 UTF-8). 스테이지의 제목, 규칙, 조작법도 한글로 적는다. 예제(`stages/example/example.c`)를 참고한다.

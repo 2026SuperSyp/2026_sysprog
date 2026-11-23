@@ -11,6 +11,16 @@
 
 #define WEAK __attribute__((weak))
 
+/* 코어는 기본 화면의 빈 자리에 역대 순위를 덧그린다. 팀원이 같은 이름의 화면을 만들었으면
+ * 그 배치를 모르므로 덧그리면 안 된다. 그래서 기본 화면이 불렸는지를 여기서 알려 준다. */
+static int drew;
+int default_screen_drew(void)
+{
+    int was = drew;
+    drew = 0;
+    return was;
+}
+
 static void center(canvas_t *c, int y, const char *s, color_t col)
 {
     ui_text(c, (SCREEN_W - ui_text_w(s)) / 2, y, s, col);
@@ -34,6 +44,7 @@ static int row_pitch(int n, int top, int bottom, int tight)
 
 WEAK void screen_lobby(canvas_t *full, const lobby_state_t *s)
 {
+    drew = 1;
     char buf[64];
     int n = s->n < 8 ? s->n : 8;
     int pitch = row_pitch(n, 22, 120, 10);
@@ -53,6 +64,7 @@ WEAK void screen_lobby(canvas_t *full, const lobby_state_t *s)
 
 WEAK void screen_result(canvas_t *full, const round_result_t *r)
 {
+    drew = 1;
     char buf[64];
     int n = r->n < 8 ? r->n : 8;
     int pitch = row_pitch(n, 62, SCREEN_H, 8);
@@ -74,6 +86,7 @@ WEAK void screen_result(canvas_t *full, const round_result_t *r)
 
 WEAK void screen_ranking(canvas_t *full, const ranking_t *r)
 {
+    drew = 1;
     char buf[80];
     int n = r->n < 12 ? r->n : 12;
     int pitch = row_pitch(n, 16, SCREEN_H, 9);

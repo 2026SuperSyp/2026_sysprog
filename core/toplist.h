@@ -16,6 +16,10 @@ int  toplist_load(top_msg_t *m, const char *path, const rank_rec_t *just, int n_
  * mark_fresh가 1이면 방금 끝난 판의 기록을 밝게 그린다. */
 void toplist_draw(canvas_t *full, const top_msg_t *m, int y0, int y1, int mark_fresh);
 
+/* 직전에 불린 화면 함수가 코어의 기본 화면이었으면 1을 돌려준다(한 번 읽으면 지워진다).
+ * 팀원이 만든 화면 위에는 덧그리지 않으려고 쓴다. 화면 함수를 부르기 전에 한 번 읽어 지워 둔다. */
+int  default_screen_drew(void);
+
 /* 기본 화면(core/default_screens.c)에서 비어 있는 띠 */
 #define TOPLIST_RANK_Y0   (16 + 9 * PROTO_SEATS)     /* 이번 판 순위 줄들의 아래 */
 #define TOPLIST_RANK_Y1   SCREEN_H

@@ -217,8 +217,10 @@ static void draw(canvas_t *full)
             ls.n++;
         }
         ui_clear(full, C_BG);
+        default_screen_drew();
         screen_lobby(full, &ls);
-        toplist_draw(full, &S.top, TOPLIST_LOBBY_Y0, TOPLIST_LOBBY_Y1, 0);
+        /* 역대 순위는 코어의 기본 화면일 때만 덧그린다. 팀원이 만든 화면이면 그 배치를 모른다 */
+        if (default_screen_drew()) toplist_draw(full, &S.top, TOPLIST_LOBBY_Y0, TOPLIST_LOBBY_Y1, 0);
         break;
     }
     case PH_CARD:
@@ -294,8 +296,9 @@ static void draw(canvas_t *full)
         }
         rk.n = n;
         ui_clear(full, C_BG);
+        default_screen_drew();
         screen_ranking(full, &rk);
-        toplist_draw(full, &S.top, TOPLIST_RANK_Y0, TOPLIST_RANK_Y1, 1);
+        if (default_screen_drew()) toplist_draw(full, &S.top, TOPLIST_RANK_Y0, TOPLIST_RANK_Y1, 1);
         break;
     }
     default:
