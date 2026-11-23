@@ -2,7 +2,8 @@
  *   build/dev/stage_<이름> --local [--seed=N] [--players=N] [--brain=fast|slow|real]
  *   build/dev/stage_<이름> --bot   [--seed=N] [--players=N] [--brain=fast|slow|real] [--draws=N] [--solo=I]
  *   build/dev/stage_<이름> --pipe=R,W [...]   서버가 띄울 때. fd R에서 읽고 fd W로 쓴다
- * --brain=real은 진짜 배선으로 계산한다. 먼저 make brain-data로 data/ 를 만들어 두어야 한다. */
+ * --brain=real은 진짜 배선으로 계산한다. 먼저 make brain-data로 data/ 를 만들어 두어야 한다.
+ * --brain=shuffled는 대조 실험용이다. 같은 계산을 배선을 섞은 뇌(data/shuffled)로 한다. */
 #include "core/host.h"
 
 #include <stdio.h>
@@ -22,6 +23,7 @@ int main(int argc, char **argv)
     host_opts_t o = { .stage_dir = dir, .seed = 1, .n_players = 3, .n_ticks = 400,
                       .brain = BRAIN_FAKE_FAST, .draws_per_tick = 1 };
     int bot = 0, solo = -1, pipe_r = -1, pipe_w = -1;
+    const char *brain_dir = "data";
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -35,7 +37,8 @@ int main(int argc, char **argv)
         else if (sscanf(a, "--pipe=%d,%d", &pipe_r, &pipe_w) == 2) { }
         else if (strcmp(a, "--brain=slow") == 0)     o.brain = BRAIN_FAKE_SLOW;
         else if (strcmp(a, "--brain=fast") == 0)     o.brain = BRAIN_FAKE_FAST;
-        else if (strcmp(a, "--brain=real") == 0)     o.brain = BRAIN_REAL;
+        else if (strcmp(a, "--brain=real") == 0)     { o.brain = BRAIN_REAL; brain_dir = "data"; }
+        else if (strcmp(a, "--brain=shuffled") == 0) { o.brain = BRAIN_REAL; brain_dir = "data/shuffled"; }
         else {
             fprintf(stdout, "모르는 옵션: %s\n", a);
             return 2;
@@ -46,8 +49,9 @@ int main(int argc, char **argv)
     if (o.n_ticks < 1) o.n_ticks = 1;
     if (o.draws_per_tick < 0) o.draws_per_tick = 0;
     if (solo >= 0) o.n_players = 1;
-    if (o.brain == BRAIN_REAL && brain_host_open_real("data") != 0) {
+    if (o.brain == BRAIN_REAL && brain_host_open_real(brain_dir) != 0) {
         fprintf(stdout, "진짜 뇌의 자료가 없습니다. 먼저 make brain-data 를 실행하세요.\n");
+        if (strcmp(brain_dir, "data") != 0) fprintf(stdout, "섞은 배선(%s)은 make brain-compare 가 만듭니다.\n", brain_dir);
         return 2;
     }
 

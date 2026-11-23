@@ -1,6 +1,6 @@
 """배선 파일을 C가 읽는 바이너리로 바꾼다. 한 번만 돌리면 된다.
 
-    python3 tools/brain_convert.py <받은 파일 폴더> <결과 폴더>
+    python3 tools/brain_convert.py <받은 파일 폴더> <결과 폴더> [--shuffle=씨앗]
 
 받은 파일 폴더에 있어야 하는 것
     Connectivity_783.parquet   뉴런 사이의 연결 (FlyWire v783, Shiu 등 2024의 공개 자료)
@@ -13,6 +13,8 @@
     brain_groups.txt   게임이 쓰는 뉴런 집단. 한 줄에 "이름 개수 번호 번호 ..."
     brain_map.bin      뉴런의 위치(앞에서 본 모습). 뉴런마다 2바이트: 가로(0~255), 세로(0~254).
                        가로세로를 같은 비율로 줄였다. 위치를 모르는 뉴런은 세로가 255다
+    shuffled/          --shuffle을 주면 배선을 섞은 대조용 뇌도 만든다(위 세 파일이 다 들어간다).
+                       섞는 방법과 그대로 남는 통계는 tools/brain_shuffle.py에 있다
 """
 import csv
 import struct
@@ -99,6 +101,14 @@ def main(src, dst):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
+    paths = [a for a in sys.argv[1:] if not a.startswith("--")]
+    options = [a for a in sys.argv[1:] if a.startswith("--")]
+    if len(paths) != 2 or any(not a.startswith("--shuffle") for a in options):
         sys.exit(__doc__)
-    main(sys.argv[1], sys.argv[2])
+    main(paths[0], paths[1])
+    if options:
+        sys.dont_write_bytecode = True
+        import brain_shuffle
+        seed = int(options[0].partition("=")[2] or 1)
+        if not brain_shuffle.make(paths[1], f"{paths[1]}/shuffled", seed):
+            sys.exit(1)

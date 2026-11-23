@@ -12,6 +12,7 @@
 #   make demo-local              한 컴퓨터에서 서버, 봇 2명, 사람 1명으로 한 판
 #   make brain-data              진짜 뇌에 필요한 자료를 받아 data/ 에 준비 (한 번만)
 #   make brainprobe              진짜 뇌에 자극을 넣어 보고 반응과 계산 시간을 표로 봄
+#   make brain-compare           대조 실험: 진짜 배선과 섞은 배선의 반응을 나란히 봄 (BRAIN=shuffled로 실행도 됨)
 #
 # 경로는 전부 상대 경로다. 저장소 폴더 이름에 공백이 있어도 깨지지 않게 하려는 것이다.
 
@@ -180,6 +181,12 @@ brain-data:
 brainprobe:
 	@$(MAKE) --no-print-directory $(B)/brainprobe
 	@$(B)/brainprobe data
+
+# 섞은 배선(data/shuffled)이 없으면 만들고, 두 배선의 반응을 나란히 찍는다.
+.PHONY: brain-compare
+brain-compare:
+	@$(MAKE) --no-print-directory $(B)/brainprobe
+	@sh tools/brain_compare.sh data data/shuffled
 
 log: need-stage
 	@tail -n 50 -f build/logs/stage_$(STAGE).log
