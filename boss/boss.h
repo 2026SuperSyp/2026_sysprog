@@ -138,7 +138,7 @@ typedef struct {
         uint16_t ang;            /* 0..65535가 한 바퀴 */
         int16_t  hp, hp_max;
         uint8_t  stun, windup, charging, wave_in;   /* stun, wave_in은 남은 틱(255에서 자른다) */
-        uint8_t  air, pad;                          /* 떠 있는 남은 틱 */
+        uint8_t  air, target;                       /* 떠 있는 남은 틱, 돌진이 겨누는 참가자(없으면 255) */
     } fly;
     struct { int16_t x, y; } proj[BOSS_PROJ];
     boss_event_t ev[BOSS_EVENTS];

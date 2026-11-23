@@ -564,6 +564,7 @@ void boss_snapshot(const boss_state_t *s, boss_snap_t *o)
     o->fly.charging = (uint8_t)f->charging;
     o->fly.wave_in = (uint8_t)(f->wave_in > 255 ? 255 : f->wave_in);
     o->fly.air = (uint8_t)(f->air > 255 ? 255 : f->air);
+    o->fly.target = (uint8_t)(f->target < 0 ? 255 : f->target);
     for (int k = 0; k < BOSS_PROJ; k++) {
         if (!s->proj[k].on) continue;
         o->proj[n].x = (int16_t)(s->proj[k].x * BOSS_FIX);
