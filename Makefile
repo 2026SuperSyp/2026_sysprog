@@ -13,6 +13,8 @@
 #   make demo-local              한 컴퓨터에서 서버, 봇 2명, 사람 1명으로 한 판
 #   make brain-data              진짜 뇌에 필요한 자료를 받아 data/ 에 준비 (한 번만)
 #   make brainprobe              진짜 뇌에 자극을 넣어 보고 반응과 계산 시간을 표로 봄
+#   make test-stage STAGE=이름   그 스테이지가 서버에서도 도는지 봄(서버 + 봇 2명으로 2라운드). BRAIN=real도 됨
+#   make brain-table [BRAIN=real] 자극의 세기별로 뇌의 반응을 표로 봄(스테이지 수치를 정할 때)
 #   make bossbot [BRAIN=real]    보스전 계산부를 화면 없이 여러 판 돌려 전략별 승률을 표로 봄
 #   make brain-compare           대조 실험: 진짜 배선과 섞은 배선의 반응을 나란히 봄 (BRAIN=shuffled로 실행도 됨)
 #   make release                 발표용 빌드를 build/release/ 에 만듦 (make MODE=release 와 같다)
@@ -89,10 +91,13 @@ endif
 ifneq ($(wildcard tools/bossbot.c),)
 TOOL_BIN   += $(B)/bossbot
 endif
+ifneq ($(wildcard tools/braintable.c),)
+TOOL_BIN   += $(B)/braintable
+endif
 
 ALL_SRC := $(KIT_SRC) $(HOST_SRC) $(NET_SRC) $(SCREEN_SRC) $(TEST_SRC) $(STAGE_SRC) $(wildcard tools/*.c)
 
-.PHONY: bossbot all test run bot screen log termbench brain-data brainprobe server client demo-local clean need-stage need-screen test-fail release
+.PHONY: test-stage brain-table bossbot all test run bot screen log termbench brain-data brainprobe server client demo-local clean need-stage need-screen test-fail release
 all: $(KIT_OBJ) $(STAGE_BIN) $(TOOL_BIN)
 
 # 발표용 빌드를 한 번에 만든다.
@@ -114,6 +119,7 @@ $(B)/%.o: %.c
 define STAGE_RULE
 $(B)/stage_$(1): $$(HOST_OBJ) $$(KIT_OBJ) $$(SCREEN_OBJ) $$(patsubst %.c,$(B)/%.o,$$(wildcard stages/$(1)/*.c))
 	@mkdir -p $$(@D)
+	@sh tools/stage_check.sh $(1) $$(patsubst %.c,$(B)/%.o,$$(wildcard stages/$(1)/*.c))
 	$$(CC) $$(LDFLAGS) -o $$@ $$^ $$(LDLIBS)
 endef
 $(foreach s,$(STAGES),$(eval $(call STAGE_RULE,$(s))))
@@ -142,6 +148,10 @@ $(B)/client: $(B)/core/client.o $(B)/core/msg.o $(B)/core/frame.o $(B)/core/scen
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(B)/brainprobe: $(B)/tools/brainprobe.o $(B)/brain/lif.o
+	@mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(B)/braintable: $(B)/tools/braintable.o $(KIT_OBJ)
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
@@ -211,6 +221,15 @@ test-fail: all
 
 brain-data:
 	@sh tools/brain_data.sh
+
+# 그 스테이지가 서버에서도 도는지 본다. 포트 4670을 쓴다.
+test-stage: need-stage all
+	@SSP_BUILD=$(B) sh tests/stage.sh $(STAGE) $(or $(PORT),4670) $(or $(BRAIN),fast)
+
+# 자극의 세기별로 뇌의 반응을 표로 본다. BRAIN=real이면 진짜 뇌의 표도 찍는다
+brain-table:
+	@$(MAKE) --no-print-directory $(B)/braintable
+	@$(B)/braintable $(if $(filter real,$(BRAIN)),--brain=real)
 
 # 보스전 계산부를 화면 없이 여러 판 돌려 전략별 승률을 본다. BRAIN=real이면 진짜 뇌로도 돌린다
 bossbot:
