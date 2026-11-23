@@ -122,6 +122,56 @@ void scene_count(canvas_t *full, int tick)
             ui_rect(full, ox + 2 * x, oy + 2 * y, 2, 2, small->px[y * w + x]);
 }
 
+void scene_title(canvas_t *full, int tick, int selected)
+{
+    static sprite_id_t idle = SPR_MISSING;
+    static const char *const menu[3] = { "1 입장", "2 지난 랭킹", "3 나가기" };
+    static const color_t party[] = { C_PINK, C_CYAN, C_GREEN, C_YELLOW, C_ORANGE, C_PURPLE };
+    const int n_party = (int)(sizeof party / sizeof party[0]);
+    const char *name = "슈퍼 시프 파티";
+    const int ground = 110;
+
+    ui_clear(full, C_BG);
+
+    /* 간판: 둘레의 전구가 번갈아 켜진다 */
+    int sw = ui_text_w(name) + 24, sx = (SCREEN_W - sw) / 2;
+    ui_rect(full, sx, 4, sw, 20, C_BLACK);
+    for (int x = sx; x < sx + sw; x += 4) {
+        color_t on = ((x / 4 + tick / 5) % 2) ? C_YELLOW : C_GRAY1;
+        ui_rect(full, x, 4, 2, 2, on);
+        ui_rect(full, x, 22, 2, 2, on);
+    }
+    ui_text(full, sx + 12, 8, name, C_YELLOW);
+
+    /* 파티장: 건물, 색이 바뀌는 창문 둘, 빛이 새어 나오는 문 */
+    ui_rect(full, 142, 44, 90, ground - 44, C_GRAY1);
+    ui_rect(full, 138, 40, 98, 5, C_GRAY2);
+    for (int k = 0; k < 2; k++)
+        ui_rect(full, 152 + k * 52, 54, 18, 14, party[(tick / 8 + k * 2) % n_party]);
+    ui_rect(full, 174, 68, 26, ground - 68, C_BLACK);
+    ui_rect(full, 176, 70, 22, ground - 70, (tick / 6) % 2 ? C_WARN : C_YELLOW);
+    for (int k = 0; k < 6; k++)                                  /* 문에서 길로 퍼지는 빛 */
+        ui_rect(full, 174 - 2 * k, ground + k, 26 + 4 * k, 1, k % 2 ? C_GRAY1 : C_WARN);
+    ui_line(full, 0, ground, SCREEN_W - 1, ground, C_GRAY2);
+
+    /* 시프봇과 인사말 */
+    const char *hello = "어서 와요!\n파티가 곧 시작돼요";
+    scene_bubble(full, 8, 30, hello, C_TEXT, 40);
+    ui_sprite(full, sipbot("sipbot_idle", &idle), 30, ground - 40, (tick / 6) % 6);
+
+    /* 메뉴 셋. 고른 것은 노랗게 */
+    for (int i = 0; i < 3; i++) {
+        int bx = 8 + i * 77, bw = 70;
+        color_t col = i == selected ? C_YELLOW : C_GRAY2;
+        ui_rect(full, bx, 118, bw, 15, C_BLACK);
+        ui_line(full, bx, 118, bx + bw - 1, 118, col);
+        ui_line(full, bx, 132, bx + bw - 1, 132, col);
+        ui_line(full, bx, 118, bx, 132, col);
+        ui_line(full, bx + bw - 1, 118, bx + bw - 1, 132, col);
+        ui_text(full, bx + (bw - ui_text_w(menu[i])) / 2, 119, menu[i], i == selected ? C_YELLOW : C_GRAY3);
+    }
+}
+
 void scene_message(canvas_t *full, const char *line, color_t col)
 {
     ui_clear(full, C_BG);

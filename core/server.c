@@ -226,6 +226,8 @@ static void conn_limits(int fd, int recv_ms)
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcv, sizeof rcv);
 }
 
+static const char *ranking_path;             /* 랭킹 파일. 값은 아래 게임 마스터 쪽에서 정한다 */
+
 static void *reader_main(void *arg)
 {
     conn_t *c = arg;
@@ -247,6 +249,14 @@ static void *reader_main(void *arg)
         goto out;
     }
     hello.name[PROTO_NAME_LEN - 1] = '\0';
+    if (hello.peek) {
+        /* 순위만 보러 온 접속(입장 화면의 "지난 랭킹 보기"). 게임 마스터를 거치지 않고 여기서 답하고 끊는다 */
+        static __thread top_msg_t top;
+        memset(&top, 0, sizeof top);
+        toplist_load(&top, ranking_path, NULL, 0);
+        msg_send(c->fd, MSG_TOP, 0, 0, &top, sizeof top);
+        goto out;
+    }
     conn_limits(c->fd, 0);                           /* 들어온 뒤에는 말이 없어도 된다 */
     if (pthread_create(&writer, NULL, writer_main, c) != 0) goto out;
     writer_up = 1;

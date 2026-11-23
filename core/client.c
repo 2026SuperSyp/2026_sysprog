@@ -1,6 +1,7 @@
 /* 클라이언트. 서버에 접속해 화면을 그리고 입력을 올린다.
  *
- *   build/dev/client [--host=주소] [--port=N] [--name=이름]
+ *   build/dev/client [--host=주소] [--port=N] [--name=이름] [--no-title]
+ *       입장 화면(입장, 지난 랭킹 보기, 나가기)을 먼저 보여 준다. --no-title이면 바로 접속한다
  *   build/dev/client --bot [--wait=N] [...]   화면 없이 접속해 준비하고 무작위로 누른다(검사용).
  *                                             방장이면 참가자가 N명 이상일 때 시작한다
  *
@@ -31,6 +32,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -312,16 +314,109 @@ static void write_all(const char *buf, size_t n)
     }
 }
 
+/* 터미널에 그리는 데 쓰는 것들. 입장 화면과 게임 화면이 같이 쓴다 */
+static canvas_t *full_canvas;
+static present_state_t *ps;
+static char *out;
+static int notice;
+
+/* 전체 화면을 터미널에 보낸다. 터미널이 작으면 안내만 보인다. */
+static void show(canvas_t *full)
+{
+    int cols = 0, rows = 0;
+    term_size(&cols, &rows);
+    size_t n = present_encode(ps, full, cols, rows, out, OUT_CAP);
+    if (n > 0) {
+        write_all(out, n);
+        notice = 0;
+    } else if ((cols < SCREEN_W || rows < SCREEN_H / 2) && !notice) {
+        char msg[256];
+        int m = snprintf(msg, sizeof msg,
+            "\033[0m\033[2J\033[H지금 %d칸 %d줄입니다. 240칸 67줄 이상이 필요합니다.\r\n"
+            "Ctrl 과 - 를 눌러 글자를 줄이거나 창을 키워 주세요. (q: 나가기)\r\n", cols, rows);
+        write_all(msg, (size_t)m);
+        present_invalidate(ps);
+        notice = 1;
+    }
+}
+
+/* ---- 입장 화면 ---------------------------------------------------------------- */
+/* 서버에 잠깐 붙어 역대 순위만 받아 온다. 로비에는 나타나지 않는다. 1이면 받았다. */
+static int peek_top(const char *host, int port, top_msg_t *top)
+{
+    static uint8_t body[PROTO_MAX_LEN];
+    int fd = connect_to(host, port), got = 0;
+    if (fd < 0) return 0;
+    struct timeval tv = { 2, 0 };
+    setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    hello_msg_t hello = { .version = PROTO_VERSION, .peek = 1 };
+    msg_hdr_t h;
+    if (msg_send(fd, MSG_HELLO, 0, 0, &hello, sizeof hello) == 0) {
+        while (!got && msg_recv(fd, &h, body, sizeof body) == 1) {
+            if (h.type == MSG_TOP && h.len == sizeof *top) {
+                memcpy(top, body, sizeof *top);
+                got = 1;
+            }
+        }
+    }
+    close(fd);
+    return got;
+}
+
+/* 입장 화면을 돌린다. 1: 입장을 골랐다, 0: 나가기를 골랐다. 아직 서버에는 붙지 않은 상태다. */
+static int run_title(const char *host, int port)
+{
+    canvas_t *full = full_canvas;
+    static top_msg_t top;
+    uint8_t buf[256];
+    size_t len = 0;
+    int sel = 0, past = 0, past_ok = 0;
+
+    for (int tick = 0; ; tick++) {
+        if (past) {
+            /* 지난 랭킹 */
+            ui_clear(full, C_BG);
+            const char *head = "지난 랭킹", *foot = "아무 키나 누르면 돌아가요";
+            ui_text(full, (SCREEN_W - ui_text_w(head)) / 2, 8, head, C_YELLOW);
+            if (past_ok) toplist_draw(full, &top, 26, 112, 0);
+            else scene_bubble(full, 60, 50, "서버에 닿지 않아요\n서버가 켜져 있는지 봐 주세요", C_TEXT, -1);
+            ui_text(full, (SCREEN_W - ui_text_w(foot)) / 2, 119, foot, C_CYAN);
+        } else {
+            scene_title(full, tick, sel);
+        }
+        show(full);
+
+        struct pollfd pf = { STDIN_FILENO, POLLIN, 0 };
+        if (poll(&pf, 1, 50) > 0) {
+            ssize_t r = read(STDIN_FILENO, buf + len, sizeof buf - len);
+            if (r > 0) len += (size_t)r;
+        }
+        in_event_t ev;
+        size_t used;
+        while (len > 0 && input_parse(buf, len, &ev, &used)) {
+            memmove(buf, buf + used, len - used);
+            len -= used;
+            if (ev.kind != IN_KEY) continue;
+            if (ev.code == 'q' || ev.code == 'Q' || ev.code == 3) return 0;
+            if (past) { past = 0; continue; }
+            int go = 0;
+            if (ev.code == IN_K_UP || ev.code == IN_K_LEFT) sel = (sel + 2) % 3;
+            else if (ev.code == IN_K_DOWN || ev.code == IN_K_RIGHT) sel = (sel + 1) % 3;
+            else if (ev.code >= '1' && ev.code <= '3') { sel = ev.code - '1'; go = 1; }
+            else if (ev.code == ' ' || ev.code == '\r' || ev.code == '\n') go = 1;
+            if (!go) continue;
+            if (sel == 0) return 1;
+            if (sel == 2) return 0;
+            past_ok = peek_top(host, port, &top);
+            past = 1;
+        }
+        if (len == sizeof buf) len = 0;
+    }
+}
+
 static int run_screen(void)
 {
-    if (term_enter() != 0) {
-        printf("터미널에서 실행해 주세요\n");
-        return 2;
-    }
-    canvas_t *full = canvas_new(SCREEN_W, SCREEN_H);
-    present_state_t *ps = present_new();
-    char *out = malloc(OUT_CAP);
-    int notice = 0;
+    canvas_t *full = full_canvas;
     pthread_t t_recv, t_input;
     pthread_create(&t_recv, NULL, recv_main, NULL);
     pthread_create(&t_input, NULL, input_main, NULL);
@@ -339,21 +434,7 @@ static int run_screen(void)
         draw(full);
         pthread_mutex_unlock(&S.mu);
 
-        int cols = 0, rows = 0;
-        term_size(&cols, &rows);
-        size_t n = present_encode(ps, full, cols, rows, out, OUT_CAP);
-        if (n > 0) {
-            write_all(out, n);
-            notice = 0;
-        } else if ((cols < SCREEN_W || rows < SCREEN_H / 2) && !notice) {
-            char msg[256];
-            int m = snprintf(msg, sizeof msg,
-                "\033[0m\033[2J\033[H지금 %d칸 %d줄입니다. 240칸 67줄 이상이 필요합니다.\r\n"
-                "Ctrl 과 - 를 눌러 글자를 줄이거나 창을 키워 주세요. (q: 나가기)\r\n", cols, rows);
-            write_all(msg, (size_t)m);
-            present_invalidate(ps);
-            notice = 1;
-        }
+        show(full);
     }
 
     shutdown(sock, SHUT_RDWR);                       /* 수신 스레드를 깨운다 */
@@ -411,7 +492,7 @@ static int run_bot(int wait_players)
 int main(int argc, char **argv)
 {
     const char *host = "127.0.0.1", *name = "PLAYER";
-    int port = PROTO_PORT, bot = 0, wait_players = 1;
+    int port = PROTO_PORT, bot = 0, wait_players = 1, no_title = 0;
     setvbuf(stdout, NULL, _IOLBF, 0);
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -420,15 +501,32 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--name=", 7) == 0)   name = a + 7;
         else if (strncmp(a, "--wait=", 7) == 0)   wait_players = atoi(a + 7);
         else if (strcmp(a, "--bot") == 0)         bot = 1;
+        else if (strcmp(a, "--no-title") == 0)    no_title = 1;
         else { printf("모르는 옵션: %s\n", a); return 2; }
     }
     signal(SIGPIPE, SIG_IGN);
 
+    if (!bot) {
+        /* 입장 화면부터 보여 준다. 여기서는 아직 서버에 붙지 않는다 */
+        if (term_enter() != 0) {
+            printf("터미널에서 실행해 주세요\n");
+            return 2;
+        }
+        full_canvas = canvas_new(SCREEN_W, SCREEN_H);
+        ps = present_new();
+        out = malloc(OUT_CAP);
+        if (!no_title && !run_title(host, port)) { term_leave(); return 0; }
+    }
+
     sock = connect_to(host, port);
-    if (sock < 0) { printf("%s:%d 에 접속할 수 없습니다\n", host, port); return 1; }
+    if (sock < 0) {
+        if (!bot) term_leave();
+        printf("%s:%d 에 접속할 수 없습니다\n", host, port);
+        return 1;
+    }
     hello_msg_t hello = { .version = PROTO_VERSION };
     utf8_copy(hello.name, sizeof hello.name, name);
-    if (msg_send(sock, MSG_HELLO, 0, 0, &hello, sizeof hello) != 0) return 1;
+    if (msg_send(sock, MSG_HELLO, 0, 0, &hello, sizeof hello) != 0) { if (!bot) term_leave(); return 1; }
 
     if (bot) return run_bot(wait_players);
 

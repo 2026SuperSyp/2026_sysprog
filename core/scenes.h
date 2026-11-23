@@ -15,6 +15,9 @@ int  scene_bubble_h(const char *text);
 void scene_card(canvas_t *full, const char *title, const char *rule, const char *controls, int tick);
 /* 카운트다운: tick 0~9는 3, 10~19는 2, 20~29는 1, 그 뒤는 GO! 시프봇 그림이 크게 나온다 */
 void scene_count(canvas_t *full, int tick);
+/* 입장 화면: 파티장 앞에서 시프봇이 인사한다. 아래에 메뉴 셋(입장, 지난 랭킹, 나가기)이 있고
+ * selected(0~2)가 고른 것이다. tick으로 불빛과 시프봇이 움직인다. */
+void scene_title(canvas_t *full, int tick, int selected);
 /* 가운데에 한 줄 */
 void scene_message(canvas_t *full, const char *line, color_t col);
 

@@ -498,7 +498,7 @@ case_10() {
     if command -v script > /dev/null 2>&1; then
         ( sleep 0.7; printf '\t'; sleep 0.5; printf 'a\033[A\033[<35;120;30M'; sleep 0.5; printf '\t'
           wait_line $L/c10.watch.log '^END' 60; sleep 0.3; printf 'q'; sleep 0.2 ) |
-            script -qefc "stty cols 240 rows 70; $NOASLR $T/client --port=$PORT --name=HUMAN" /dev/null > $L/c10.human.log 2>&1 &
+            script -qefc "stty cols 240 rows 70; $NOASLR $T/client --no-title --port=$PORT --name=HUMAN" /dev/null > $L/c10.human.log 2>&1 &
         H=$!
         echo $H >> $L/pids
         # 화면 클라이언트가 들어와 그리기 시작할 때까지 기다린다(아래에서 접속 자리를 다 채우기 전에)

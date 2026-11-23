@@ -48,7 +48,7 @@ enum { PH_LOBBY = 0, PH_CARD, PH_READY, PH_PLAY, PH_VERDICT, PH_BOSS, PH_RANK };
 
 typedef struct {
     uint16_t version;                  /* PROTO_VERSION */
-    uint16_t reserved;
+    uint16_t peek;                     /* 1이면 역대 순위(MSG_TOP)만 받고 끊는다. 자리에 앉지 않는다 */
     char     name[PROTO_NAME_LEN];
 } hello_msg_t;
 
