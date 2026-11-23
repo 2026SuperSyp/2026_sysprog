@@ -5,8 +5,10 @@
 PORT=${1:-4699}
 B=build/dev
 mkdir -p build/logs
+RANK=build/logs/e2e_ranking_$PORT.txt        # 검사용 랭킹 파일. data/ranking.txt는 건드리지 않는다
+rm -f "$RANK"
 
-timeout 90 $B/server --port=$PORT --fast --once --seed=1 --order=example --rounds=2 > build/logs/e2e_server.log 2>&1 &
+timeout 90 $B/server --port=$PORT --fast --once --seed=1 --order=example --rounds=2 --ranking="$RANK" > build/logs/e2e_server.log 2>&1 &
 SV=$!
 sleep 0.5
 timeout 90 $B/client --bot --port=$PORT --name=BOT1 --wait=2 > build/logs/e2e_bot1.log 2>&1 &
@@ -19,10 +21,15 @@ wait $B1; r1=$?
 wait $B2; r2=$?
 wait $SV; rs=$?
 
-if [ $r1 -eq 0 ] && [ $r2 -eq 0 ] && [ $rs -eq 0 ]; then
+# 랭킹 파일에 봇 두 명의 기록이 한 줄씩 있어야 하고, 봇은 그 둘이 든 역대 순위를 받았어야 한다
+rk=1
+if [ "$(grep -c '^BOT1 ' "$RANK" 2>/dev/null)" = 1 ] && [ "$(grep -c '^BOT2 ' "$RANK" 2>/dev/null)" = 1 ] &&
+   grep -q ' top=2$' build/logs/e2e_bot1.log && grep -q ' top=2$' build/logs/e2e_bot2.log; then rk=0; fi
+
+if [ $r1 -eq 0 ] && [ $r2 -eq 0 ] && [ $rs -eq 0 ] && [ $rk -eq 0 ]; then
     echo "통과 e2e (서버 + 봇 2명): $(cat build/logs/e2e_bot1.log)"
     exit 0
 fi
-echo "실패 e2e: 봇1=$r1 봇2=$r2 서버=$rs"
-tail -n 5 build/logs/e2e_server.log build/logs/e2e_bot1.log build/logs/e2e_bot2.log
+echo "실패 e2e: 봇1=$r1 봇2=$r2 서버=$rs 랭킹=$rk"
+tail -n 5 build/logs/e2e_server.log build/logs/e2e_bot1.log build/logs/e2e_bot2.log "$RANK"
 exit 1

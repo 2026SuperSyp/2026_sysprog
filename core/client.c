@@ -12,6 +12,7 @@
 #include "core/frame.h"
 #include "core/msg.h"
 #include "core/scenes.h"
+#include "core/toplist.h"
 #include "brain.h"
 #include "protocol.h"
 #include "screen.h"
@@ -48,6 +49,7 @@ static struct {
     int have_frame;
     canvas_t *fly, *panes[PROTO_PANES];
     frame_map_t fm;
+    top_msg_t top;                   /* 서버가 마지막으로 보낸 역대 순위 */
     int watch;                       /* 오른쪽 위에 볼 칸. WATCH_FLY이면 키보드 치는 초파리 */
     int dirty, quit;
     char why[96];                    /* 끝난 이유 */
@@ -123,6 +125,12 @@ static void *recv_main(void *arg)
         } else if (h.type == MSG_FRAME) {
             pthread_mutex_lock(&S.mu);
             if (frame_unpack(body, h.len, h.flags, &S.head, S.fly, S.panes, &S.fm) == 0) S.have_frame = 1;
+            S.dirty = 1;
+            pthread_cond_broadcast(&S.cv);
+            pthread_mutex_unlock(&S.mu);
+        } else if (h.type == MSG_TOP && h.len == sizeof(top_msg_t)) {
+            pthread_mutex_lock(&S.mu);
+            memcpy(&S.top, body, sizeof S.top);
             S.dirty = 1;
             pthread_cond_broadcast(&S.cv);
             pthread_mutex_unlock(&S.mu);
@@ -208,6 +216,7 @@ static void draw(canvas_t *full)
         }
         ui_clear(full, C_BG);
         screen_lobby(full, &ls);
+        toplist_draw(full, &S.top, TOPLIST_LOBBY_Y0, TOPLIST_LOBBY_Y1, 0);
         break;
     }
     case PH_CARD:
@@ -284,6 +293,7 @@ static void draw(canvas_t *full)
         rk.n = n;
         ui_clear(full, C_BG);
         screen_ranking(full, &rk);
+        toplist_draw(full, &S.top, TOPLIST_RANK_Y0, TOPLIST_RANK_Y1, 1);
         break;
     }
     default:
@@ -368,10 +378,11 @@ static int run_bot(int wait_players)
 {
     static uint8_t body[PROTO_MAX_LEN];
     msg_hdr_t h;
-    int frames = 0, sent_ready = 0, sent_start = 0, rounds = 0, last_phase = -1;
+    int frames = 0, sent_ready = 0, sent_start = 0, rounds = 0, last_phase = -1, top_n = -1;
     alarm(120);                                      /* 멈춰 버리면 검사가 끝나지 않으므로 */
     for (;;) {
         if (msg_recv(sock, &h, body, sizeof body) != 1) { printf("BOT 접속이 끊겼습니다\n"); return 1; }
+        if (h.type == MSG_TOP && h.len == sizeof(top_msg_t)) top_n = body[offsetof(top_msg_t, n)];
         if (h.type == MSG_FRAME) {
             if (++frames % 4 == 0) send_key(frames % 8 == 0 ? IN_K_LEFT : IN_K_RIGHT);
             continue;
@@ -390,8 +401,8 @@ static int run_bot(int wait_players)
             for (int s = 0; s < PROTO_SEATS; s++) if (ph.seated[s] && !ph.ready[s]) all = 0;
             if (ph.me == ph.host && all && ph.n_seats >= wait_players && !sent_start) { send_key('f'); sent_start = 1; }
         } else if (ph.phase == PH_RANK) {
-            printf("BOT rounds=%d frames=%d me=%d total=%d\n", rounds, frames, ph.me,
-                   ph.me >= 0 ? ph.total[ph.me] : 0);
+            printf("BOT rounds=%d frames=%d me=%d total=%d top=%d\n", rounds, frames, ph.me,
+                   ph.me >= 0 ? ph.total[ph.me] : 0, top_n);
             return (rounds > 0 && frames > 0) ? 0 : 1;
         }
     }

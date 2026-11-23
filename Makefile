@@ -37,7 +37,7 @@ LDLIBS  := -lm
 RESTORE := stty sane 2>/dev/null; printf '\033[?1003l\033[?1006l\033[?25h\033[?1049l\033[0m'
 
 # ---- 소스 목록 -------------------------------------------------------------
-KIT_SRC    := $(filter-out brain/brain_proc.c,$(wildcard ui/*.c brain/*.c core/log.c core/cfg.c core/rng.c))
+KIT_SRC    := $(filter-out brain/brain_proc.c,$(wildcard ui/*.c brain/*.c core/log.c core/cfg.c core/rng.c) core/ranking.c core/toplist.c)
 HOST_SRC   := $(wildcard core/stage_host.c core/stage_main.c core/host_bot.c core/host_local.c core/host_pipe.c \
                          core/default_screens.c core/scenes.c core/msg.c core/frame.c)
 NET_SRC    := $(wildcard core/server.c core/client.c core/brain_sup.c brain/brain_proc.c)

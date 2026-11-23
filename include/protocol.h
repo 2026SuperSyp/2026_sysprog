@@ -36,6 +36,7 @@ enum {
     MSG_FRAME,                         /* 스테이지->S->C  frame_head_t와 줄여 담은 그림들 */
     MSG_PING,
     MSG_PONG,
+    MSG_TOP,                           /* S->C  top_msg_t. 접속한 직후와 한 판이 끝났을 때 */
     /* 서버 <-> 스테이지 */
     MSG_INFO = 32,                     /* 스테이지->S  info_msg_t. 뜨자마자 한 번 */
     MSG_TICK,                          /* S->스테이지  내용 없음. 한 틱을 진행하라 */
@@ -79,6 +80,16 @@ typedef struct {
     char     rule[96];
     char     controls[48];
 } phase_msg_t;
+
+/* 역대 순위. 랭킹 파일에서 점수가 높은 순서로 뽑은 것이다. i번째가 i+1등이다. */
+#define PROTO_TOP_N 10
+typedef struct {
+    int32_t  score[PROTO_TOP_N];
+    uint8_t  n;                        /* 채워진 줄 수 */
+    uint8_t  fresh[PROTO_TOP_N];       /* 방금 끝난 판에서 나온 기록이면 1 */
+    uint8_t  pad;
+    char     name[PROTO_TOP_N][PROTO_NAME_LEN];
+} top_msg_t;
 
 /* 입력. 클라이언트는 해석만 한 원시 사건을 올린다.
  *   C->S        kind, code는 ui의 in_event_t와 같다. 마우스의 x, y는 전체 화면(240x134) 픽셀이다.

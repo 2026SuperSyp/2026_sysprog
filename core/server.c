@@ -23,9 +23,10 @@
  * 뇌는 따로 뜬 프로세스(build/dev/brain_proc)가 계산하고 스테이지와는 공유 메모리로 주고받는다.
  * --brain-inproc을 주면 전처럼 스테이지 안에서 계산한다.
  *
- * 아직 없는 것: 보스전(4라운드 뒤 바로 랭킹으로 간다), 랭킹 저장. */
+ * 아직 없는 것: 보스전(4라운드 뒤 바로 랭킹으로 간다). */
 #include "core/brain_sup.h"
 #include "core/msg.h"
+#include "core/toplist.h"
 #include "protocol.h"
 #include "stage.h"
 #include "ui/ui_internal.h"
@@ -464,6 +465,44 @@ static void send_phase(void)
     }
 }
 
+/* ---- 역대 순위 ---------------------------------------------------------------- */
+static const char *ranking_path = RANKING_PATH;
+static top_msg_t top_now;                    /* 마지막으로 읽은 역대 순위 */
+static int top_loaded;
+
+/* 역대 순위를 보낸다. to가 음수이면 모두에게 보낸다.
+ * 파일은 첫 접속 때와 판이 끝날 때만 읽는다. 게임 도중에 들어온 사람 때문에 파일을 읽지는 않는다. */
+static void send_top(int to)
+{
+    if (!top_loaded && toplist_load(&top_now, ranking_path, NULL, 0) != 0)
+        fprintf(stderr, "서버: 랭킹 파일 %s 을 읽지 못했습니다\n", ranking_path);
+    top_loaded = 1;
+    for (int i = 0; i < MAX_CONN; i++)
+        if (members[i].in && (to < 0 || i == to)) conn_post(i, members[i].gen, MSG_TOP, 0, &top_now, sizeof top_now, 0);
+}
+
+/* 한 판이 끝났다. 자리에 앉았던 사람의 누적 점수를 파일에 붙이고 새 순위를 모두에게 보낸다. */
+static void save_ranking(void)
+{
+    rank_rec_t recs[PROTO_SEATS];
+    int n = 0;
+    int64_t when = (int64_t)time(NULL);
+    for (int s = 0; s < PROTO_SEATS; s++) {
+        if (!seats[s].used) continue;
+        memcpy(recs[n].name, seats[s].name, PROTO_NAME_LEN);
+        recs[n].score = seats[s].total;
+        recs[n].when = when;
+        n++;
+    }
+    if (ranking_append(ranking_path, recs, n) != 0)
+        fprintf(stderr, "서버: 랭킹 파일 %s 에 쓰지 못했습니다\n", ranking_path);
+    if (toplist_load(&top_now, ranking_path, recs, n) != 0)  /* 읽지 못하면 전에 읽은 순위를 그대로 보낸다 */
+        fprintf(stderr, "서버: 랭킹 파일 %s 을 읽지 못했습니다\n", ranking_path);
+    top_loaded = 1;
+    send_top(-1);
+    memset(top_now.fresh, 0, sizeof top_now.fresh);      /* 나중에 들어오는 사람에게는 새 기록 표시 없이 보낸다 */
+}
+
 /* 빈 자리를 접속한 순서대로 채운다. 로비에서만 부른다. */
 static void fill_seats(void)
 {
@@ -506,6 +545,7 @@ static void finish_game(void)
 {
     stage_kill();
     game_over = 1;
+    save_ranking();
     phase = PH_RANK;
     deadline = now_ms() + opt.rank_ms;
     send_phase();
@@ -661,6 +701,7 @@ static void on_join(const event_t *e)
     memcpy(members[e->slot].name, e->name, PROTO_NAME_LEN);
     /* 판이 진행 중일 때 들어온 사람은 관전자다. 로비에서는 빈 자리에 앉는다 */
     if (phase == PH_LOBBY) fill_seats();
+    send_top(e->slot);
     send_phase();
 }
 
@@ -761,6 +802,7 @@ int main(int argc, char **argv)
         if (strncmp(a, "--port=", 7) == 0)         opt.port = atoi(a + 7);
         else if (strncmp(a, "--rounds=", 9) == 0)  opt.n_rounds = atoi(a + 9);
         else if (strncmp(a, "--seed=", 7) == 0)    opt.seed = (uint32_t)strtoul(a + 7, NULL, 10);
+        else if (strncmp(a, "--ranking=", 10) == 0) ranking_path = a + 10;
         else if (strncmp(a, "--brain=", 8) == 0)   opt.brain = a + 8;
         else if (strcmp(a, "--fast") == 0)         opt.fast = 1;
         else if (strcmp(a, "--once") == 0)         opt.once = 1;
