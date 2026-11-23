@@ -194,7 +194,7 @@ static int run_watch(int flood)
         msg_hdr_t h;
         while (take(&h, body, sizeof body)) {
             now = now_ms();
-            if (h.type == MSG_FRAME) {
+            if (h.type == MSG_FRAME || h.type == MSG_BOSS) {     /* 보스전의 상태도 화면 한 장으로 센다 */
                 if (frames > 0 && now - last_frame > gap) gap = now - last_frame;
                 last_frame = now;
                 frames++;
