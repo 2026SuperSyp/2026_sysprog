@@ -26,9 +26,11 @@ void boss_cfg_default(boss_cfg_t *c)
     c->fly_radius = 0.6f;
     c->player_radius = 0.25f;
     c->step = 0.5f;
-    c->fly_speed = 0.08f;
-    c->fly_turn = 0.33f;
-    c->escape_gain = 3.0f;
+    c->body_mm = 2.5f;
+    c->walk_mm_s = 7.2f;  c->run_mm_s = 44.7f; c->back_mm_s = 7.2f;
+    c->turn_deg_s = 200.0f;
+    c->accel_ticks = 2;
+    c->speed_scale = 0.22f; c->turn_scale = 1.0f;
     c->swat_range = 1.2f;  c->swat_damage = 10.0f; c->swat_cooldown = 8;
     c->spray_range = 5.0f; c->spray_damage = 3.0f; c->spray_ammo = 20; c->spray_cooldown = 8;
     c->trap_speed = 0.6f;  c->trap_range = 8.0f;  c->trap_count = 2; c->stun_ticks = 60;
@@ -45,7 +47,8 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     cfg_load(path);
 #define F(k) c->k = cfg_get(#k, c->k)
 #define I(k) c->k = (int)cfg_get(#k, (float)c->k)
-    I(ticks); F(fly_hp_per_player); F(fly_radius); F(player_radius); F(step); F(fly_speed); F(fly_turn); F(escape_gain);
+    I(ticks); F(fly_hp_per_player); F(fly_radius); F(player_radius); F(step);
+    F(body_mm); F(walk_mm_s); F(run_mm_s); F(back_mm_s); F(turn_deg_s); I(accel_ticks); F(speed_scale); F(turn_scale);
     F(swat_range); F(swat_damage); I(swat_cooldown);
     F(spray_range); F(spray_damage); I(spray_ammo); I(spray_cooldown);
     F(trap_speed); F(trap_range); I(trap_count); I(stun_ticks);
@@ -425,9 +428,17 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
         }
     }
 
-    /* 평소: 뇌의 반응으로 움직인다 */
-    f->ang += (rate[BR_TURN_R] - rate[BR_TURN_L]) * c->fly_turn;
-    float v = c->fly_speed * (0.6f * rate[BR_FORWARD] + c->escape_gain * rate[BR_ESCAPE] - 1.0f * rate[BR_BACKWARD]);
+    /* 평소: 뇌의 반응으로 움직인다. 반응(0~1)에 실제 초파리의 빠르기를 곱한다. mm를 몸길이로 나눠 칸으로 옮기고
+     * (게임의 몸길이는 지름), 게임용 배율을 곱한다. 몸은 한 번에 빠르기를 바꾸지 못한다 */
+    float per_mm = 2.0f * c->fly_radius / c->body_mm * c->speed_scale / 20.0f;      /* mm/s -> 칸/틱 */
+    float v_want = per_mm * (c->walk_mm_s * rate[BR_FORWARD] + c->run_mm_s * rate[BR_ESCAPE]
+                             - c->back_mm_s * rate[BR_BACKWARD]);
+    float w_want = (rate[BR_TURN_R] - rate[BR_TURN_L]) * c->turn_deg_s * (PI_F / 180.0f) / 20.0f * c->turn_scale;
+    int lag = c->accel_ticks > 1 ? c->accel_ticks : 1;
+    f->v += (v_want - f->v) / (float)lag;
+    f->w += (w_want - f->w) / (float)lag;
+    f->ang += f->w;
+    float v = f->v;
     float ox = f->x, oy = f->y;
     slide(s, &f->x, &f->y, cosf(f->ang) * v, sinf(f->ang) * v, c->fly_radius);
     float moved = dist(ox, oy, f->x, f->y), want = fabsf(v);

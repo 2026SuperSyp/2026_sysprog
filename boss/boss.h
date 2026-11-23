@@ -56,8 +56,13 @@ typedef struct {
     int   ticks;                 /* 판의 길이(틱). 180초 */
     float fly_hp_per_player;     /* 초파리 체력 = 이것 x 참가자 수 */
     float fly_radius, player_radius;
-    float step, fly_speed, fly_turn;             /* 한 걸음(칸), 초파리의 빠르기(칸/틱), 도는 빠르기(라디안/틱) */
-    float escape_gain;                           /* 달아날 때 빠르기의 배수. 크면 위협을 받을 때 확 튄다 */
+    float step;                                  /* 참가자의 한 걸음(칸) */
+    /* 초파리의 몸. 실제 초파리에서 잰 값이다(출처는 docs/brain-notes.md). 몸길이로 나눠 거대 초파리에 옮긴다 */
+    float body_mm;                               /* 몸길이. 게임에서는 지름(fly_radius x 2)이 몸길이다 */
+    float walk_mm_s, run_mm_s, back_mm_s;        /* 앞으로 걷기, 달아나기, 뒤로 걷기의 빠르기(반응이 1일 때) */
+    float turn_deg_s;                            /* 도는 빠르기(반응이 1일 때) */
+    int   accel_ticks;                           /* 빠르기가 바뀌는 데 걸리는 시간. 한 틱에 차이의 1/accel_ticks만큼 따라간다 */
+    float speed_scale, turn_scale;               /* 게임용 배율. 실제 비율 그대로면 사람이 따라갈 수 없어서 전체를 줄인다 */
     float swat_range, swat_damage; int swat_cooldown;
     float spray_range, spray_damage; int spray_ammo, spray_cooldown;
     float trap_speed, trap_range; int trap_count, stun_ticks;
@@ -82,6 +87,7 @@ typedef struct {
     int   charge_cool, windup, charging, target;
     int   wave_in;
     int   stuck_ticks;           /* 가려고 했는데 거의 못 간 틱 수 */
+    float v, w;                  /* 지금의 빠르기(칸/틱)와 도는 빠르기(라디안/틱). 한 번에 바뀌지 않는다 */
     int   hurt;                  /* 맞은 뒤 남은 틱 */
     float hurt_x, hurt_y;        /* 때린 사람이 있던 곳 */
 } boss_fly_t;
