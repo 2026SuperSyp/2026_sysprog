@@ -1,7 +1,7 @@
 /* 서버. 접속을 받고, 게임의 단계를 진행하고, 라운드마다 스테이지 프로세스를 띄운다.
  *
  *   build/dev/server [--port=N] [--order=이름,이름,...] [--rounds=N] [--seed=N]
- *                    [--brain=fast|slow|real] [--fast] [--once] [--brain-inproc] [--brain-strict]
+ *                    [--brain=fast|slow|real] [--fast] [--once] [--brain-inproc] [--brain-strict] [--boss=초]
  *   검사용: [--tick-ms=N] 틱 사이를 N ms로 한다(--fast여도 지킨다), [--ticks=N] 한 판을 N틱으로 한다
  *
  * 스레드
@@ -25,7 +25,9 @@
  * --brain-inproc을 주면 전처럼 스테이지 안에서 계산한다.
  * 뇌가 뜨지 못하면 규칙으로 움직이는 뇌(fast)로 바꿔 이어 간다. --brain-strict를 주면 바꾸지 않는다(core/brain_sup.h).
  *
- * 아직 없는 것: 보스전(4라운드 뒤 바로 랭킹으로 간다). */
+ * 마지막 라운드 뒤에 살아남은 사람이 있으면 보스전을 한다(아래 "보스전"). --boss=초 로 길이를 바꾸고, 0이면 건너뛴다. */
+#include "boss/boss.h"
+#include "brain/brain_host.h"
 #include "core/brain_sup.h"
 #include "core/msg.h"
 #include "core/selfdir.h"
@@ -65,6 +67,7 @@
 #define INPUT_WIN_MAX 256        /* 이만큼만 받고 넘치는 것은 버린다 */
 #define EVQ_KEEP      64         /* 사건 큐에서 입력이 쓰지 못하게 남겨 두는 칸 */
 #define SCORE_MAX     1000000    /* 한 라운드 점수로 받아 주는 한도 */
+#define BOSS_WIN_BONUS 100       /* 보스전에서 이기고 살아남은 사람에게 더하는 점수 */
 
 /* ---- 옵션 ------------------------------------------------------------------ */
 static struct {
@@ -75,7 +78,8 @@ static struct {
     int n_order;
     int card_ms, ready_ms, verdict_ms, rank_ms;
     int tick_ms, ticks;              /* 검사용. 0이면 쓰지 않는다 */
-} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 3000, 2000, 2000, 6000, 0, 0 };
+    int boss_sec;                    /* 보스전 길이(초). 음수이면 boss/config.ini의 값, 0이면 보스전을 건너뛴다 */
+} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 3000, 2000, 2000, 6000, 0, 0, -1 };
 
 static int64_t now_ms(void)
 {
@@ -506,6 +510,7 @@ typedef struct {
 static struct { int in, gen, seat; long join_no; char name[PROTO_NAME_LEN]; } members[MAX_CONN];
 static seat_t seats[PROTO_SEATS];
 static int phase = PH_LOBBY, round_no, void_count, fly_score;
+static boss_state_t boss;                    /* 보스전의 상태(아래 "보스전") */
 static int64_t deadline;                     /* 이 단계의 마감(ms). 0이면 마감이 없다 */
 static uint32_t game_seed;
 static long join_counter;
@@ -532,6 +537,7 @@ static void send_phase(void)
     m.n_rounds = (uint8_t)opt.n_rounds;
     m.ms_left = deadline > now ? (uint32_t)(deadline - now) : 0;
     if (phase == PH_PLAY) m.ms_left = (uint32_t)((st.info.n_ticks - st.ticks_sent) * TICK_MS);
+    if (phase == PH_BOSS) m.ms_left = (uint32_t)((boss.cfg.ticks - boss.tick) * TICK_MS);
     m.host = (int8_t)host_seat();
     m.fly_score = fly_score;
     for (int s = 0; s < PROTO_SEATS; s++) {
@@ -630,7 +636,7 @@ static void to_lobby(void)
     send_phase();
 }
 
-/* 4라운드가 끝났다. 보스전은 아직 없어서 바로 랭킹으로 간다. */
+/* 판이 끝났다. 랭킹으로 간다. */
 static void finish_game(void)
 {
     stage_kill();
@@ -712,6 +718,75 @@ static void enter_verdict(void)
     send_phase();
 }
 
+/* ---- 보스전 ------------------------------------------------------------------ */
+/* 마지막 라운드 뒤에 살아남은 참가자들이 초파리와 싸운다. 계산은 boss/boss.c가 하고, 여기서는 틱마다
+ * 자극을 뇌에 넣고 반응을 받아 한 틱을 진행한 뒤 상태를 모두에게 보낸다. 뇌는 스테이지와 같은 창구
+ * (brain/brain_api.c)로 쓴다. 뇌 프로세스가 떠 있으면 공유 메모리로, 없으면(--brain-inproc) 서버 안에서 계산한다.
+ * 참가자 번호는 자리의 pane에 둔다(미니게임의 칸 번호와 같은 자리다). */
+static brain_mode_t boss_brain = BRAIN_FAKE_FAST;        /* 뇌 프로세스가 없을 때 서버 안에서 쓸 모델 */
+
+static void finish_game(void);
+
+static void finish_boss(void)
+{
+    int win = boss.outcome == BOSS_PLAYERS_WIN;
+    for (int s = 0; s < PROTO_SEATS; s++) {
+        int p = seats[s].pane;
+        if (!seats[s].used || p < 0) continue;
+        /* 점수: 초파리에게 준 피해. 이겼고 끝까지 살아 있었으면 BOSS_WIN_BONUS를 더한다 */
+        seats[s].passed = win && boss.p[p].alive && seats[s].connected;
+        seats[s].score = boss.dmg_dealt[p] + (seats[s].passed ? BOSS_WIN_BONUS : 0);
+        seats[s].total += seats[s].score;
+    }
+    fly_score = boss.fly.hp;
+    fprintf(stderr, "서버: 보스전 끝 (%s, %d틱, 초파리 체력 %d/%d)\n", win ? "참가자 승" : "초파리 승",
+            boss.tick, boss.fly.hp, boss.fly.hp_max);
+    finish_game();
+}
+
+static void start_boss(void)
+{
+    boss_cfg_t c;
+    int n = 0, lives[BOSS_PLAYERS];
+    stage_kill();
+    boss_cfg_load(&c, "boss/config.ini");
+    if (opt.boss_sec > 0) c.ticks = opt.boss_sec * 20;
+    for (int s = 0; s < PROTO_SEATS; s++) {
+        seats[s].passed = seats[s].score = 0;
+        seats[s].pane = -1;
+        if (seats[s].used && seats[s].connected && seats[s].lives > 0 && n < BOSS_PLAYERS) {
+            seats[s].pane = n;
+            lives[n++] = seats[s].lives;
+        }
+    }
+    if (n == 0) { finish_game(); return; }
+    boss_init(&boss, &c, game_seed ^ 0xB055u, n, lives);
+    brain_host_reset(game_seed, boss_brain);
+    memset(&st.info, 0, sizeof st.info);
+    snprintf(st.info.title, sizeof st.info.title, "보스전");
+    fly_score = boss.fly.hp;
+    fprintf(stderr, "서버: 보스전 시작 (참가자 %d명, %d틱, 초파리 체력 %d)\n", n, c.ticks, boss.fly.hp);
+    phase = PH_BOSS;
+    deadline = now_ms();
+    send_phase();
+}
+
+static void boss_step(void)
+{
+    float stim[BRAIN_GROUP_COUNT], rate[BRAIN_GROUP_COUNT];
+    boss_snap_t snap;
+    brain_host_begin_tick();
+    boss_stimulus(&boss, stim);
+    for (int g = 0; g < BRAIN_GROUP_COUNT; g++) if (stim[g] > 0.0f) brain_stimulate((brain_group_t)g, stim[g]);
+    for (int g = 0; g < BRAIN_GROUP_COUNT; g++) rate[g] = brain_rate((brain_group_t)g);
+    brain_host_end_tick();
+    boss_tick(&boss, rate);
+    boss_snapshot(&boss, &snap);
+    for (int i = 0; i < MAX_CONN; i++)
+        if (members[i].in) conn_post(i, members[i].gen, MSG_BOSS, 0, &snap, sizeof snap, 1);
+    if (boss.outcome != BOSS_GOING) finish_boss();
+}
+
 static void on_stage_readable(void)
 {
     msg_hdr_t h;
@@ -781,10 +856,17 @@ static void on_deadline(void)
         round_no++;
         for (int s = 0; s < PROTO_SEATS; s++)
             if (seats[s].used && seats[s].connected && seats[s].lives > 0) alive++;
-        if (round_no >= opt.n_rounds || alive == 0) finish_game();
+        if (alive == 0) finish_game();
+        else if (round_no >= opt.n_rounds) { if (opt.boss_sec != 0) start_boss(); else finish_game(); }
         else start_round();
         break;
     }
+    case PH_BOSS:
+        boss_step();
+        if (phase != PH_BOSS) break;                     /* 끝나서 랭킹으로 갔다 */
+        deadline = opt.tick_ms > 0 ? now + opt.tick_ms : (opt.fast ? now : deadline + TICK_MS);
+        if (deadline < now - 500) deadline = now;
+        break;
     case PH_RANK:
         to_lobby();
         break;
@@ -815,6 +897,8 @@ static void on_leave(const event_t *e)
     if (s >= 0) {
         if (phase == PH_LOBBY) seats[s].used = 0;
         else seats[s].connected = 0;                 /* 라운드는 계속한다 */
+        if (phase == PH_BOSS && seats[s].pane >= 0)      /* 보스전에서 나간 사람은 쓰러진 것으로 한다 */
+            boss.p[seats[s].pane].alive = boss.p[seats[s].pane].hp = 0;
     }
     for (int k = 0; k < PROTO_SEATS; k++) left += seats[k].used && seats[k].connected;
     if (phase != PH_LOBBY && left == 0) { to_lobby(); return; }      /* 참가자가 모두 나갔다 */
@@ -858,6 +942,10 @@ static void on_input(const event_t *e)
         /* 못 보낸 입력은 버린다. 통로가 가득 찼거나 스테이지가 이미 끝낸 것이다. 여기서 라운드를 무효로
          * 하면 스테이지가 끝내면서 보낸 결과까지 버리게 된다. 결과 없이 끝난 것인지는 읽는 쪽이 가린다 */
         (void)msg_send_once(st.to, MSG_INPUT, 0, 0, &out, sizeof out);
+    } else if (phase == PH_BOSS && seats[s].pane >= 0 && ie.kind == IN_KEY) {
+        /* 보스전: Shift와 함께 누른 이동은 살금살금이다 */
+        int key = input_stage_key(&ie);
+        if (key != SK_NONE) boss_input(&boss, seats[s].pane, key | ((ie.flags & IN_F_SHIFT) ? BOSS_SLOW : 0));
     }
 }
 
@@ -912,6 +1000,7 @@ int main(int argc, char **argv)
         else if (strcmp(a, "--once") == 0)         opt.once = 1;
         else if (strncmp(a, "--tick-ms=", 10) == 0) opt.tick_ms = atoi(a + 10);
         else if (strncmp(a, "--ticks=", 8) == 0)   opt.ticks = atoi(a + 8);
+        else if (strncmp(a, "--boss=", 7) == 0)    opt.boss_sec = atoi(a + 7);
         else if (strcmp(a, "--brain-inproc") == 0) brain_inproc = 1;
         else if (strcmp(a, "--brain-strict") == 0) brain_strict = 1;
         else if (strncmp(a, "--order=", 8) == 0) {
@@ -961,6 +1050,10 @@ int main(int argc, char **argv)
 
     /* 뇌 프로세스와 감시 스레드. 환경 변수를 바꾸므로 다른 스레드를 만들기 전에 한다 */
     if (!brain_inproc && brain_sup_start(opt.brain, opt.fast, brain_strict, brain_stall_event) != 0) return 1;
+    if (brain_inproc) {                              /* 보스전의 뇌를 서버 안에서 계산한다 */
+        if (strcmp(opt.brain, "slow") == 0) boss_brain = BRAIN_FAKE_SLOW;
+        else if (strcmp(opt.brain, "real") == 0 && brain_host_open_real("data") == 0) boss_brain = BRAIN_REAL;
+    }
 
     pthread_t t_sig, t_acc;
     pthread_create(&t_sig, NULL, signal_main, &set);

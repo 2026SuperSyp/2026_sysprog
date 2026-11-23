@@ -37,6 +37,7 @@ enum {
     MSG_PING,
     MSG_PONG,
     MSG_TOP,                           /* S->C  top_msg_t. 접속한 직후와 한 판이 끝났을 때 */
+    MSG_BOSS,                          /* S->C  boss_snap_t(boss/boss.h). 보스전 동안 틱마다. 최신 것만 있으면 된다 */
     /* 서버 <-> 스테이지 */
     MSG_INFO = 32,                     /* 스테이지->S  info_msg_t. 뜨자마자 한 번 */
     MSG_TICK,                          /* S->스테이지  내용 없음. 한 틱을 진행하라 */
@@ -92,7 +93,7 @@ typedef struct {
 } top_msg_t;
 
 /* 입력. 클라이언트는 해석만 한 원시 사건을 올린다.
- *   C->S        kind, code는 ui의 in_event_t와 같다. 마우스의 x, y는 전체 화면(240x134) 픽셀이다.
+ *   C->S        kind, flags, code는 ui의 in_event_t와 같다. 마우스의 x, y는 전체 화면(240x134) 픽셀이다.
  *   S->스테이지  player가 채워진다. 키는 code가 SK_*이고, 마우스의 x, y는 칸 기준 좌표다. */
 typedef struct {
     uint8_t  kind;                     /* 1: 키, 2: 마우스 */

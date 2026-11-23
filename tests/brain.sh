@@ -20,7 +20,7 @@ bad() { echo "실패 brain $1"; fail=$((fail + 1)); }
 
 # start_game <이름> <포트> <라운드 수> : 서버와 봇 2명을 띄운다. pid는 SV, B1, B2에 둔다
 start_game() {
-    $B/server --ranking=$L/brain_ranking.txt --port=$2 --fast --once --seed=1 --order=example --rounds=$3 > $L/brain_$1_server.log 2>&1 &
+    $B/server --ranking=$L/brain_ranking.txt --port=$2 --fast --once --seed=1 --order=example --rounds=$3 --boss=0 > $L/brain_$1_server.log 2>&1 &
     SV=$!
     sleep 1.2                # 뜬 지 1초가 안 된 뇌가 죽으면 서버가 간격을 두고 다시 띄운다. 그 경우를 피한다
     timeout 40 $B/client --bot --port=$2 --name=BOT1 --wait=2 > $L/brain_$1_bot1.log 2>&1 &

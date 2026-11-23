@@ -41,6 +41,7 @@ int input_parse(const uint8_t *buf, size_t n, in_event_t *ev, size_t *used)
     if (buf[0] != 0x1B) {                  /* 보통 글자 */
         ev->kind = IN_KEY;
         ev->code = buf[0];
+        if (buf[0] >= 'A' && buf[0] <= 'Z') ev->flags = IN_F_SHIFT;
         *used = 1;
         return 1;
     }
@@ -53,6 +54,19 @@ int input_parse(const uint8_t *buf, size_t n, in_event_t *ev, size_t *used)
     if (buf[1] == '[' && buf[2] == '<')
         return parse_mouse(buf, n, ev, used);
 
+    /* ESC [ 1 ; 수 글자: 조합 키와 함께 누른 방향키. 수에서 1을 뺀 값의 첫 비트가 Shift다(Shift만이면 2) */
+    if (buf[1] == '[' && buf[2] == '1' && n >= 4 && buf[3] == ';') {
+        if (n < 6) return 0;
+        uint16_t code = buf[5] == 'A' ? IN_K_UP : buf[5] == 'B' ? IN_K_DOWN
+                      : buf[5] == 'C' ? IN_K_RIGHT : buf[5] == 'D' ? IN_K_LEFT : 0;
+        if (buf[4] >= '2' && buf[4] <= '9' && code) {
+            ev->kind = IN_KEY;
+            ev->code = code;
+            ev->flags = ((buf[4] - '1') & 1) ? IN_F_SHIFT : 0;
+            *used = 6;
+            return 1;
+        }
+    }
     switch (buf[2]) {
     case 'A': ev->kind = IN_KEY; ev->code = IN_K_UP;    *used = 3; return 1;
     case 'B': ev->kind = IN_KEY; ev->code = IN_K_DOWN;  *used = 3; return 1;

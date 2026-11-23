@@ -90,7 +90,8 @@ int  term_size(int *cols, int *rows);
 
 /* ---- 입력 해석 (input.c) ---- */
 enum { IN_KEY = 1, IN_POINTER = 2 };
-enum { IN_F_PRESSED = 1 };       /* 포인터: 왼쪽 버튼이 눌려 있다 */
+enum { IN_F_PRESSED = 1,         /* 포인터: 왼쪽 버튼이 눌려 있다 */
+       IN_F_SHIFT = 2 };         /* 키: Shift와 함께 눌렀다(대문자, Shift+방향키). 보스전에서 살금살금 걷는 데 쓴다 */
 enum { IN_K_UP = 0x101, IN_K_DOWN, IN_K_RIGHT, IN_K_LEFT };   /* 그 밖의 키는 글자 코드 그대로 */
 typedef struct {
     uint8_t  kind;               /* IN_KEY 또는 IN_POINTER */

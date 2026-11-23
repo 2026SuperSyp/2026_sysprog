@@ -14,6 +14,7 @@
 #include "core/msg.h"
 #include "core/scenes.h"
 #include "core/toplist.h"
+#include "boss/boss.h"
 #include "brain.h"
 #include "protocol.h"
 #include "screen.h"
@@ -25,6 +26,7 @@
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <math.h>
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
@@ -52,6 +54,8 @@ static struct {
     canvas_t *fly, *panes[PROTO_PANES];
     frame_map_t fm;
     top_msg_t top;                   /* 서버가 마지막으로 보낸 역대 순위 */
+    boss_snap_t boss;                /* 보스전의 마지막 상태 */
+    int have_boss;
     int watch;                       /* 오른쪽 위에 볼 칸. WATCH_FLY이면 키보드 치는 초파리 */
     int dirty, quit;
     char why[96];                    /* 끝난 이유 */
@@ -119,6 +123,7 @@ static void *recv_main(void *arg)
             if (S.ph.phase != was) {
                 S.phase_at = now_ms();
                 if (S.ph.phase != PH_PLAY) S.have_frame = 0;
+                if (S.ph.phase != PH_BOSS) S.have_boss = 0;
                 if (S.ph.phase == PH_CARD) S.watch = -1;         /* 새 라운드: 볼 칸을 다시 고른다 */
             }
             S.dirty = 1;
@@ -133,6 +138,13 @@ static void *recv_main(void *arg)
         } else if (h.type == MSG_TOP && h.len == sizeof(top_msg_t)) {
             pthread_mutex_lock(&S.mu);
             memcpy(&S.top, body, sizeof S.top);
+            S.dirty = 1;
+            pthread_cond_broadcast(&S.cv);
+            pthread_mutex_unlock(&S.mu);
+        } else if (h.type == MSG_BOSS && h.len == sizeof(boss_snap_t)) {
+            pthread_mutex_lock(&S.mu);
+            memcpy(&S.boss, body, sizeof S.boss);
+            S.have_boss = 1;
             S.dirty = 1;
             pthread_cond_broadcast(&S.cv);
             pthread_mutex_unlock(&S.mu);
@@ -198,6 +210,68 @@ static void *input_main(void *arg)
 }
 
 /* ---- 그리기 ------------------------------------------------------------------ */
+/* 보스전 화면(임시): 위에서 내려다본 지도와 상태. 1인칭 3D 화면이 생기면 바꾼다. S.mu를 잡은 채로 부른다. */
+static void draw_boss(canvas_t *full, const phase_msg_t *ph)
+{
+    static boss_state_t map;                 /* 벽의 배치만 쓴다 */
+    static int have_map;
+    static const color_t pcol[BOSS_PLAYERS] = { C_CYAN, C_GREEN, C_PINK };
+    static const char *item_name[BOSS_ITEMS] = { "파리채", "스프레이", "끈끈이" };
+    const boss_snap_t *b = &S.boss;
+    const int cell = 5, ox = 4, oy = 7, tx = 132;
+    char line[80];
+    if (!have_map) {
+        boss_cfg_t c;
+        boss_cfg_default(&c);
+        boss_init(&map, &c, 0, 1, NULL);
+        have_map = 1;
+    }
+    ui_clear(full, C_BG);
+    if (!S.have_boss) { scene_message(full, "BOSS", C_YELLOW); return; }
+    for (int cy = 0; cy < BOSS_MAP; cy++)
+        for (int cx = 0; cx < BOSS_MAP; cx++)
+            if (boss_solid(&map, cx, cy)) ui_rect(full, ox + cx * cell, oy + cy * cell, cell, cell, C_GRAY2);
+
+    /* 초파리: 붙어 있으면 회색, 떠 있으면 노랑, 돌진하려 하면 빨강 */
+    int fx = ox + b->fly.x * cell / BOSS_FIX, fy = oy + b->fly.y * cell / BOSS_FIX;
+    float fa = (float)b->fly.ang * 6.2831853f / 65536.0f;
+    color_t fc = b->fly.stun ? C_GRAY3 : b->fly.air ? C_YELLOW : (b->fly.windup || b->fly.charging) ? C_RED : C_FLY_BODY;
+    ui_rect(full, fx - 3, fy - 3, 6, 6, fc);
+    ui_line(full, fx, fy, fx + (int)(cosf(fa) * 6.0f), fy + (int)(sinf(fa) * 6.0f), C_FLY_EYE);
+    for (int k = 0; k < b->n_proj && k < BOSS_PROJ; k++)
+        ui_rect(full, ox + b->proj[k].x * cell / BOSS_FIX - 1, oy + b->proj[k].y * cell / BOSS_FIX - 1, 2, 2, C_ORANGE);
+
+    int me = (ph->me >= 0 && ph->me < PROTO_SEATS) ? ph->pane_of[ph->me] : -1;
+    for (int i = 0; i < b->n_players && i < BOSS_PLAYERS; i++) {
+        int px = ox + b->p[i].x * cell / BOSS_FIX, py = oy + b->p[i].y * cell / BOSS_FIX;
+        float pa = (float)b->p[i].dir * 6.2831853f / BOSS_DIRS;
+        if (!b->p[i].alive) { ui_rect(full, px - 1, py - 1, 2, 2, C_GRAY1); continue; }
+        ui_rect(full, px - 1, py - 1, 3, 3, pcol[i]);
+        ui_line(full, px, py, px + (int)(cosf(pa) * 4.0f), py + (int)(sinf(pa) * 4.0f), i == me ? C_WHITE : pcol[i]);
+    }
+
+    /* 오른쪽: 초파리 체력, 남은 시간, 참가자 */
+    snprintf(line, sizeof line, "초파리 %d / %d", b->fly.hp, b->fly.hp_max);
+    ui_text(full, tx, 6, line, C_TEXT);
+    ui_bar(full, tx, 20, 100, b->fly.hp_max > 0 ? (float)b->fly.hp / (float)b->fly.hp_max : 0.0f, C_RED);
+    snprintf(line, sizeof line, "남은 시간 %d", b->ticks_left / 20);
+    ui_text(full, tx, 28, line, C_TEXT);
+    for (int i = 0; i < b->n_players && i < BOSS_PLAYERS; i++) {
+        const char *name = "?";
+        for (int s = 0; s < PROTO_SEATS; s++) if (ph->pane_of[s] == i) name = ph->name[s];
+        snprintf(line, sizeof line, "%s%.8s 체력 %d", i == me ? ">" : " ", name, b->p[i].hp);
+        ui_text(full, tx, 46 + i * 14, line, b->p[i].alive ? pcol[i] : C_GRAY1);
+    }
+    if (me >= 0 && me < b->n_players) {
+        snprintf(line, sizeof line, "%s  스프레이 %d  끈끈이 %d", item_name[b->p[me].item % BOSS_ITEMS], b->p[me].ammo, b->p[me].traps);
+        ui_text(full, 4, 0, line, C_YELLOW);
+        ui_text(full, tx, 94, "WASD 이동  Shift 살금살금", C_GRAY3);
+        ui_text(full, tx, 108, "1 2 3 무기  Space 쓰기", C_GRAY3);
+    } else {
+        ui_text(full, tx, 100, "관전 중", C_GRAY3);
+    }
+}
+
 /* 지금 상태를 전체 화면에 그린다. S.mu를 잡은 채로 부른다. */
 static void draw(canvas_t *full)
 {
@@ -301,8 +375,11 @@ static void draw(canvas_t *full)
         if (default_screen_drew()) toplist_draw(full, &S.top, TOPLIST_RANK_Y0, TOPLIST_RANK_Y1, 1);
         break;
     }
+    case PH_BOSS:
+        draw_boss(full, ph);
+        break;
     default:
-        scene_message(full, "BOSS", C_YELLOW);
+        scene_message(full, "...", C_YELLOW);
         break;
     }
 }
@@ -462,7 +539,8 @@ static int run_bot(int wait_players)
 {
     static uint8_t body[PROTO_MAX_LEN];
     msg_hdr_t h;
-    int frames = 0, sent_ready = 0, sent_start = 0, rounds = 0, last_phase = -1, top_n = -1;
+    static const uint16_t boss_keys[] = { 'w', IN_K_LEFT, ' ', 'w', '2', ' ', IN_K_RIGHT, 'W', '3', ' ', '1', 's' };
+    int frames = 0, sent_ready = 0, sent_start = 0, rounds = 0, last_phase = -1, top_n = -1, boss_seen = 0, boss_n = 0;
     alarm(120);                                      /* 멈춰 버리면 검사가 끝나지 않으므로 */
     for (;;) {
         if (msg_recv(sock, &h, body, sizeof body) != 1) { printf("BOT 접속이 끊겼습니다\n"); return 1; }
@@ -471,12 +549,17 @@ static int run_bot(int wait_players)
             if (++frames % 4 == 0) send_key(frames % 8 == 0 ? IN_K_LEFT : IN_K_RIGHT);
             continue;
         }
+        if (h.type == MSG_BOSS) {                    /* 보스전: 받은 상태 3개마다 키를 하나 누른다 */
+            if (++boss_n % 3 == 0) send_key(boss_keys[(boss_n / 3) % (int)(sizeof boss_keys / sizeof boss_keys[0])]);
+            continue;
+        }
         if (h.type != MSG_PHASE || h.len != sizeof(phase_msg_t)) continue;
         phase_msg_t ph;
         memcpy(&ph, body, sizeof ph);
         if (ph.phase != last_phase) {
             if (ph.phase == PH_LOBBY) sent_ready = sent_start = 0;
             if (ph.phase == PH_VERDICT) rounds++;
+            if (ph.phase == PH_BOSS) boss_seen = 1;
             last_phase = ph.phase;
         }
         if (ph.phase == PH_LOBBY && ph.me >= 0) {
@@ -485,8 +568,8 @@ static int run_bot(int wait_players)
             for (int s = 0; s < PROTO_SEATS; s++) if (ph.seated[s] && !ph.ready[s]) all = 0;
             if (ph.me == ph.host && all && ph.n_seats >= wait_players && !sent_start) { send_key('f'); sent_start = 1; }
         } else if (ph.phase == PH_RANK) {
-            printf("BOT rounds=%d frames=%d me=%d total=%d top=%d\n", rounds, frames, ph.me,
-                   ph.me >= 0 ? ph.total[ph.me] : 0, top_n);
+            printf("BOT rounds=%d frames=%d me=%d total=%d top=%d boss=%d\n", rounds, frames, ph.me,
+                   ph.me >= 0 ? ph.total[ph.me] : 0, top_n, boss_seen);
             return (rounds > 0 && frames > 0) ? 0 : 1;
         }
     }

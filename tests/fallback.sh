@@ -27,7 +27,7 @@ SWITCH="규칙으로 움직이는 뇌(fast)로 바꿉니다"
 # start_game <이름> <포트> <라운드 수> [서버 옵션...] : 서버와 봇 2명을 띄운다. pid는 SV, B1, B2에 둔다
 start_game() {
     n=$1; p=$2; r=$3; shift 3
-    $B/server --ranking=$L/fallback_ranking.txt --port=$p --fast --once --seed=1 --order=example --rounds=$r "$@" \
+    $B/server --ranking=$L/fallback_ranking.txt --port=$p --fast --once --seed=1 --order=example --rounds=$r --boss=0 "$@" \
         > $L/fallback_${n}_server.log 2>&1 &
     SV=$!
     # 서버가 포트를 열 때까지 기다린다(뇌를 바꾸는 동안 늦어질 수 있다)

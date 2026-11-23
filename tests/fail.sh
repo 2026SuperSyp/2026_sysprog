@@ -90,7 +90,7 @@ wait_gone() {   # wait_gone <pid> <초> : 내 자식이 아닌 프로세스가 �
 server() {      # server <경우> <옵션...> : 띄우고 SV에 pid를 둔다. NOFILE이 있으면 fd 한도를 그만큼으로 낮춘다
     _c=$1; shift
     PORT=$((BASE + _c % 10))
-    ( [ -n "$NOFILE" ] && ulimit -n $NOFILE; exec ${SERVER_BIN:-$B/server} --port=$PORT --ranking=$L/ranking.txt "$@" ) >> $L/c$_c.server.log 2>&1 &
+    ( [ -n "$NOFILE" ] && ulimit -n $NOFILE; exec ${SERVER_BIN:-$B/server} --port=$PORT --ranking=$L/ranking.txt --boss=0 "$@" ) >> $L/c$_c.server.log 2>&1 &
     SV=$!
     echo $SV >> $L/pids
     wait_line $L/c$_c.server.log "포트 $PORT에서 기다립니다" 5
