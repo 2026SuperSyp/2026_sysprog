@@ -8,6 +8,7 @@
  * 다시 띄우기 전에 뇌 쪽 칸을 비우고 재시작 횟수를 올린다. 심장 박동 수는 비우지 않는다
  * (지켜보는 쪽은 값이 바뀌는지만 본다). */
 #include "core/brain_sup.h"
+#include "core/selfdir.h"
 #include "brain/brain_shm.h"
 
 #include <dirent.h>
@@ -25,7 +26,7 @@
 #include <time.h>
 #include <unistd.h>
 
-#define BRAIN_BIN     "build/dev/brain_proc"
+static char brain_bin[SELFDIR_MAX + 16];     /* 서버 실행 파일 옆의 brain_proc. brain_sup_start가 채운다 */
 #define BRAIN_LOG     "build/logs/brain.log"
 #define WATCH_MS      100        /* 감시 스레드가 심장 박동을 보는 간격 */
 #define STALL_MS      1000       /* 돌던 뇌의 심장 박동이 이만큼 그대로면 멈춘 것으로 본다 */
@@ -76,7 +77,7 @@ static void *watchdog_main(void *arg)
 /* ---- 띄우기와 다시 띄우기 (게임 마스터) ------------------------------------------ */
 static int spawn(void)
 {
-    static char path[] = BRAIN_BIN;
+    char *path = brain_bin;
     char a_shm[96], a_model[32];
 
     /* fork와 exec 사이에는 안전한 함수만 부를 수 있으므로 글자열은 미리 만든다 */
@@ -194,8 +195,9 @@ static void sweep_stale(void)
 int brain_sup_start(const char *model, int wait_mode, void (*on_stall)(uint32_t epoch))
 {
     pthread_t t;
-    if (access(BRAIN_BIN, X_OK) != 0) {
-        fprintf(stderr, "서버: %s 가 없습니다. make 로 먼저 빌드하세요\n", BRAIN_BIN);
+    snprintf(brain_bin, sizeof brain_bin, "%s/brain_proc", selfdir());
+    if (access(brain_bin, X_OK) != 0) {
+        fprintf(stderr, "서버: %s 가 없습니다. make 로 먼저 빌드하세요\n", brain_bin);
         return -1;
     }
     sweep_stale();

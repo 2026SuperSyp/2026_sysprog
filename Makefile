@@ -14,6 +14,11 @@
 #   make brain-data              진짜 뇌에 필요한 자료를 받아 data/ 에 준비 (한 번만)
 #   make brainprobe              진짜 뇌에 자극을 넣어 보고 반응과 계산 시간을 표로 봄
 #   make brain-compare           대조 실험: 진짜 배선과 섞은 배선의 반응을 나란히 봄 (BRAIN=shuffled로 실행도 됨)
+#   make release                 발표용 빌드를 build/release/ 에 만듦 (make MODE=release 와 같다)
+#
+# 빌드 방식은 두 가지다. 위의 어느 명령에나 MODE=release 를 붙일 수 있다(예: make server MODE=release).
+#   MODE=dev (기본)              build/dev/ 에 만든다. 메모리 검사를 켠다. 만들고 검사할 때 쓴다
+#   MODE=release                 build/release/ 에 만든다. 검사 없이 최적화한다. 발표할 때 쓴다
 #
 # 경로는 전부 상대 경로다. 저장소 폴더 이름에 공백이 있어도 깨지지 않게 하려는 것이다.
 
@@ -25,14 +30,25 @@ ifeq ($$(origin $(1)),environment)
 override $(1) :=
 endif
 endef
-$(foreach v,STAGE SEED PLAYERS SCREEN CASE BRAIN HOST PORT ORDER NAME,$(eval $(call only_from_cmdline,$(v))))
+$(foreach v,STAGE SEED PLAYERS SCREEN CASE BRAIN HOST PORT ORDER NAME MODE,$(eval $(call only_from_cmdline,$(v))))
+
+# 빌드 방식. 방식마다 폴더가 달라서 두 방식의 목적 파일은 섞이지 않는다.
+override MODE := $(or $(MODE),dev)
 
 CC      := gcc
-B       := build/dev
+B       := build/$(MODE)
+ifeq ($(MODE),dev)
 CFLAGS  := -std=gnu11 -Wall -Wextra -g -O1 -fno-omit-frame-pointer \
            -fsanitize=address,undefined -fno-sanitize-recover=undefined \
            -D_GNU_SOURCE -Iinclude -I. -MMD -MP -pthread
 LDFLAGS := -fsanitize=address,undefined -pthread
+else ifeq ($(MODE),release)
+# assert는 남긴다(NDEBUG를 주지 않는다).
+CFLAGS  := -std=gnu11 -Wall -Wextra -g -O2 -D_GNU_SOURCE -Iinclude -I. -MMD -MP -pthread
+LDFLAGS := -pthread
+else
+$(error MODE는 dev 또는 release 입니다 (받은 값: $(MODE)))
+endif
 LDLIBS  := -lm
 
 # 터미널을 쓰는 프로그램이 어떻게 끝났든 터미널을 되돌린다.
@@ -42,7 +58,7 @@ RESTORE := stty sane 2>/dev/null; printf '\033[?1003l\033[?1006l\033[?25h\033[?1
 KIT_SRC    := $(filter-out brain/brain_proc.c,$(wildcard ui/*.c brain/*.c core/log.c core/cfg.c core/rng.c) core/ranking.c core/toplist.c)
 HOST_SRC   := $(wildcard core/stage_host.c core/stage_main.c core/host_bot.c core/host_local.c core/host_pipe.c \
                          core/default_screens.c core/scenes.c core/msg.c core/frame.c)
-NET_SRC    := $(wildcard core/server.c core/client.c core/brain_sup.c brain/brain_proc.c)
+NET_SRC    := $(wildcard core/server.c core/client.c core/brain_sup.c core/selfdir.c brain/brain_proc.c)
 SCREEN_SRC := $(wildcard screens/*.c)
 TEST_SRC   := $(wildcard tests/test_*.c)
 STAGES     := $(notdir $(patsubst %/,%,$(wildcard stages/*/)))
@@ -72,8 +88,12 @@ endif
 
 ALL_SRC := $(KIT_SRC) $(HOST_SRC) $(NET_SRC) $(SCREEN_SRC) $(TEST_SRC) $(STAGE_SRC) $(wildcard tools/*.c)
 
-.PHONY: all test run bot screen log termbench brain-data brainprobe server client demo-local clean need-stage need-screen test-fail
+.PHONY: all test run bot screen log termbench brain-data brainprobe server client demo-local clean need-stage need-screen test-fail release
 all: $(KIT_OBJ) $(STAGE_BIN) $(TOOL_BIN)
+
+# 발표용 빌드를 한 번에 만든다.
+release:
+	@$(MAKE) --no-print-directory MODE=release all
 
 # ---- 컴파일 ----------------------------------------------------------------
 # 스테이지와 화면 코드는 쓰지 않는 인자가 흔하다(t, dt 등). 그 경고는 끈다.
@@ -102,7 +122,7 @@ $(B)/termbench: $(B)/tools/termbench.o $(KIT_OBJ)
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-$(B)/server: $(B)/core/server.o $(B)/core/brain_sup.o $(B)/core/msg.o $(KIT_OBJ)
+$(B)/server: $(B)/core/server.o $(B)/core/brain_sup.o $(B)/core/selfdir.o $(B)/core/msg.o $(KIT_OBJ)
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
@@ -128,8 +148,8 @@ $(B)/tests/%: $(B)/tests/%.o $(KIT_OBJ)
 # ---- 실행 ------------------------------------------------------------------
 test: $(TEST_BIN) $(STAGE_BIN) $(B)/server $(B)/client $(B)/brain_proc
 	@sh tests/run.sh $(TEST_BIN)
-	@sh tests/e2e.sh
-	@sh tests/brain.sh
+	@SSP_BUILD=$(B) sh tests/e2e.sh
+	@SSP_BUILD=$(B) sh tests/brain.sh
 
 need-stage:
 	@if [ -z "$(STAGE)" ]; then echo "STAGE=이름 을 주세요. 있는 스테이지: $(STAGES)"; exit 2; fi
@@ -149,7 +169,7 @@ run: need-stage
 
 bot: need-stage
 	@$(MAKE) --no-print-directory $(B)/stage_$(STAGE)
-	@sh tools/bot.sh $(STAGE)
+	@SSP_BUILD=$(B) sh tools/bot.sh $(STAGE)
 
 screen: need-screen
 	@$(MAKE) --no-print-directory $(B)/screen_preview
@@ -178,7 +198,7 @@ demo-local: all
 
 # 서버와 클라이언트가 고장 상황을 버티는지 본다. 포트 4720~4729를 쓴다.
 test-fail: all
-	@sh tests/fail.sh
+	@SSP_BUILD=$(B) sh tests/fail.sh
 
 brain-data:
 	@sh tools/brain_data.sh
@@ -191,7 +211,7 @@ brainprobe:
 .PHONY: brain-compare
 brain-compare:
 	@$(MAKE) --no-print-directory $(B)/brainprobe
-	@sh tools/brain_compare.sh data data/shuffled
+	@SSP_BUILD=$(B) sh tools/brain_compare.sh data data/shuffled
 
 log: need-stage
 	@tail -n 50 -f build/logs/stage_$(STAGE).log

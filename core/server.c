@@ -27,6 +27,7 @@
  * 아직 없는 것: 보스전(4라운드 뒤 바로 랭킹으로 간다). */
 #include "core/brain_sup.h"
 #include "core/msg.h"
+#include "core/selfdir.h"
 #include "core/toplist.h"
 #include "protocol.h"
 #include "stage.h"
@@ -414,7 +415,7 @@ static void reap_children(void)
 
 static int stage_spawn(const char *name, uint32_t seed, int n_players)
 {
-    char path[128], a_pipe[48], a_seed[32], a_players[32], a_brain[32], a_ticks[32], log_path[128];
+    char path[SELFDIR_MAX + 64], a_pipe[48], a_seed[32], a_players[32], a_brain[32], a_ticks[32], log_path[128];
     int to_child[2], from_child[2];
     pid_t me = getpid();
 
@@ -425,7 +426,7 @@ static int stage_spawn(const char *name, uint32_t seed, int n_players)
     if (pipe2(from_child, O_CLOEXEC) != 0) { close(to_child[0]); close(to_child[1]); return -1; }
 
     /* fork와 exec 사이에는 안전한 함수만 부를 수 있으므로 글자열은 미리 만든다 */
-    snprintf(path, sizeof path, "build/dev/stage_%s", name);
+    snprintf(path, sizeof path, "%s/stage_%s", selfdir(), name);     /* 서버 실행 파일 옆의 것을 띄운다 */
     snprintf(a_pipe, sizeof a_pipe, "--pipe=%d,%d", to_child[0], from_child[1]);
     snprintf(a_seed, sizeof a_seed, "--seed=%u", seed);
     snprintf(a_players, sizeof a_players, "--players=%d", n_players);

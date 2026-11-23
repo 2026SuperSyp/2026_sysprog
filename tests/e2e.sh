@@ -1,9 +1,10 @@
 #!/bin/sh
 # 서버와 봇 접속자 2명이 화면 없이 로비부터 랭킹까지 가는지 본다.
 #   sh tests/e2e.sh [포트]
+# 다른 빌드를 보려면 SSP_BUILD=build/release 처럼 폴더를 준다(기본 build/dev).
 # 서버는 --fast(기다리지 않고 진행)와 --once(한 판 뒤 종료)로 띄운다.
 PORT=${1:-4699}
-B=build/dev
+B=${SSP_BUILD:-build/dev}
 mkdir -p build/logs
 RANK=build/logs/e2e_ranking_$PORT.txt        # 검사용 랭킹 파일. data/ranking.txt는 건드리지 않는다
 rm -f "$RANK"

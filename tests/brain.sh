@@ -9,7 +9,7 @@
 #   d. 서버가 끝난 뒤(정상 종료든 SIGTERM이든) 뇌와 스테이지 프로세스, /dev/shm 의 공유 메모리가 남지 않는다
 # 스테이지는 판이 끝날 때 로그에 "BRAIN shm=... stim_ticks=... fired_ticks=... late=..." 한 줄을 남긴다.
 PORT=${1:-4694}
-B=build/dev
+B=${SSP_BUILD:-build/dev}         # 다른 빌드를 보려면 SSP_BUILD=build/release 처럼 준다
 L=build/logs
 mkdir -p $L
 : > $L/stage_example.log

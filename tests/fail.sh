@@ -14,7 +14,7 @@
 BASE=${1:-4720}
 [ $# -gt 0 ] && shift
 CASES=${*:-1 2 3 4 5 6 7 8 9 10}
-B=build/dev
+B=${SSP_BUILD:-build/dev}         # 다른 빌드를 보려면 SSP_BUILD=build/release 처럼 준다
 L=build/logs/fail
 PEER=$B/tests/fail_peer
 T0=$(date +%s)
@@ -483,6 +483,8 @@ case_10() {
     make B=$T LDFLAGS="-fsanitize=thread -pthread" \
         CFLAGS="-std=gnu11 -w -g -O1 -fno-omit-frame-pointer -fsanitize=thread -D_GNU_SOURCE -Iinclude -I. -MMD -MP -pthread" \
         $T/server $T/client > $L/c10.build.log 2>&1 || { WHY=" 빌드 실패(build/logs/fail/c10.build.log)"; report 10 "스레드 검사"; return; }
+    # 서버는 자기 옆의 스테이지와 뇌를 띄운다. 여기서는 서버와 클라이언트의 스레드만 보므로 그 둘은 보통 빌드를 옆에 복사해 둔다
+    cp $B/stage_example $B/brain_proc $T/ || { WHY=" $T 에 스테이지와 뇌를 두지 못함"; report 10 "스레드 검사"; return; }
     export TSAN_OPTIONS="exitcode=66 log_path=$L/tsan"
     # 주소 배치가 무작위이면 이 검사 도구가 뜨지 못하는 커널이 있다. 그래서 끄고 띄운다
     NOASLR=""

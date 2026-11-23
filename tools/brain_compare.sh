@@ -6,7 +6,7 @@
 real=${1:-data}
 [ $# -gt 0 ] && shift
 [ $# -gt 0 ] || set -- "$real/shuffled"
-probe=build/dev/brainprobe
+probe=${SSP_BUILD:-build/dev}/brainprobe
 logs=build/logs
 mkdir -p "$logs"
 

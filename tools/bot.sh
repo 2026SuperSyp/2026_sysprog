@@ -8,7 +8,7 @@
 #   - 그리기를 틱마다 0번, 2번 불러도 점수가 같다
 #   - 3명 판에서 각자의 점수가 혼자 돌린 판의 점수와 같다
 stage=$1
-bin=build/dev/stage_$stage
+bin=${SSP_BUILD:-build/dev}/stage_$stage      # 다른 빌드를 보려면 SSP_BUILD=build/release 처럼 준다
 log=build/logs/bot_$stage.log
 mkdir -p build/logs
 : > "$log"
