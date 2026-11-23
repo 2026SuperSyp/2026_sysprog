@@ -255,6 +255,42 @@ static void test_players(void)
     T_EQ_INT(S.p[2].hp, 3);
 }
 
+/* 맞으면 때린 쪽에서 센 자극이 들어오고 그동안은 돌진하지 않는다. 가까이 서 있기만 해도 자극이 세다 */
+static void test_hurt(void)
+{
+    boss_cfg_t c;
+    float stim[BRAIN_GROUP_COUNT];
+    boss_cfg_default(&c);
+    c.wave_period = 1000000;
+    setup(&c, 1);
+    put_fly(8.5f, 9.0f);
+    S.fly.ang = 0.0f;                                             /* 오른쪽(+x)을 본다. 아래쪽(+y)이 초파리의 오른쪽이다 */
+    put_player(0, 8.5f, 13.0f, NORTH);                            /* 멀리 서 있다: 약하다 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_R] < c.rush_level);
+    put_player(0, 8.5f, 10.0f, NORTH);                            /* 바로 옆에 서 있다: 세다 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_R] >= c.rush_level && stim[BR_LOOM_L] < stim[BR_LOOM_R]);
+
+    put_player(0, 8.5f, 10.85f, NORTH);
+    S.fly.charge_cool = 0;
+    boss_input(&S, 0, SK_ACT);
+    boss_tick(&S, still);
+    T_EQ_INT(count_ev(BOSS_EV_SWAT_HIT), 1);
+    put_player(0, 8.5f, 13.0f, NORTH);                            /* 때리고 물러나도 */
+    int charges = 0;
+    for (int k = 0; k < c.hurt_ticks - 2; k++) {              /* 맞은 틱도 한 틱으로 센다 */
+        boss_stimulus(&S, stim);
+        T_CHECK(stim[BR_LOOM_R] >= 0.9f);                         /* 때린 쪽(오른쪽)에서 센 자극 */
+        boss_tick(&S, still);
+        charges += count_ev(BOSS_EV_CHARGE);
+        put_player(0, 8.5f, 13.0f, NORTH);
+    }
+    T_EQ_INT(charges, 0);
+    ticks(3, still);                                              /* 지나면 다시 덤빈다 */
+    T_CHECK(S.fly.windup > 0);
+}
+
 /* 뇌 대신 쓰는 정해진 규칙(가짜 뇌와 비슷하게) */
 static void rule_brain(const float *stim, float *rate)
 {
@@ -327,6 +363,7 @@ int main(void)
     test_players();
     test_same();
     test_dead_input();
+    test_hurt();
     printf("  스냅숏 %zu바이트\n", sizeof(boss_snap_t));
     T_DONE();
 }

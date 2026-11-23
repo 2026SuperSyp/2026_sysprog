@@ -63,6 +63,8 @@ typedef struct {
     float charge_range, charge_speed; int charge_windup, charge_ticks, charge_cooldown;
     float wave_radius, wave_push; int wave_period;
     float loom_range, wall_sense, rush_level;    /* 다가옴을 느끼는 거리, 벽을 느끼는 거리, 몰린다고 보는 자극 */
+    float near_range, near_gain;                 /* 이 거리 안의 참가자는 서 있기만 해도 자극이 된다(가장 가까울 때 near_gain만큼 더한다) */
+    int   hurt_ticks;                            /* 맞은 뒤 이만큼은 때린 쪽에서 강한 자극이 들어오고, 돌진하지 않는다 */
 } boss_cfg_t;
 
 typedef struct {
@@ -79,6 +81,8 @@ typedef struct {
     int   charge_cool, windup, charging, target;
     int   wave_in;
     int   stuck_ticks;           /* 가려고 했는데 거의 못 간 틱 수 */
+    int   hurt;                  /* 맞은 뒤 남은 틱 */
+    float hurt_x, hurt_y;        /* 때린 사람이 있던 곳 */
 } boss_fly_t;
 
 typedef struct { int on, owner; float x, y, vx, vy, left; } boss_proj_t;

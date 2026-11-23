@@ -4,6 +4,8 @@
  *   참가자가 다가온다   -> 그쪽의 다가옴 자극(BR_LOOM_L/R). 빨리 다가올수록, 가까울수록 세다
  *   벽이 앞에 있다      -> 그쪽의 다가옴 자극. 벽도 다가오는 큰 물체로 본다(벽에 박혀 서 있지 않게 한다)
  * 뇌의 반응: 한쪽에서 다가오면 반대쪽으로 돌아 달아나고(BR_TURN_*, BR_ESCAPE), 양쪽이면 뒤로 간다(BR_BACKWARD).
+ *   참가자가 아주 가깝다 -> 서 있기만 해도 그쪽의 다가옴 자극(큰 물체가 눈앞에 있다)
+ *   맞았다              -> 한동안 때린 쪽에서 가장 센 다가옴 자극(건드리면 달아난다)
  * 공격할 때는 계산부의 규칙이 정한다. 몰리지 않을 때(다가옴 자극이 rush_level보다 약할 때)만 가까운 참가자에게
  * 돌진한다. 그래서 "달려드는 사람은 피하고, 몰리지 않으면 덤빈다"로 보인다.
  * 가려는데 오래 못 가면(구석에 낀 경우) 무작위로 크게 돈다. 뇌의 답을 바꾸는 것이 아니라 계산부의 규칙이다. */
@@ -27,12 +29,13 @@ void boss_cfg_default(boss_cfg_t *c)
     c->fly_speed = 0.08f;
     c->fly_turn = 0.25f;
     c->swat_range = 1.2f;  c->swat_damage = 10.0f; c->swat_cooldown = 8;
-    c->spray_range = 5.0f; c->spray_damage = 3.0f; c->spray_ammo = 20; c->spray_cooldown = 3;
+    c->spray_range = 5.0f; c->spray_damage = 3.0f; c->spray_ammo = 20; c->spray_cooldown = 8;
     c->trap_speed = 0.6f;  c->trap_range = 8.0f;  c->trap_count = 2; c->stun_ticks = 60;
     c->charge_range = 5.0f; c->charge_speed = 0.35f; c->charge_windup = 12; c->charge_ticks = 20;
     c->charge_cooldown = 80;
     c->wave_radius = 3.0f; c->wave_push = 2.5f; c->wave_period = 200;
     c->loom_range = 5.0f;  c->wall_sense = 1.5f; c->rush_level = 0.4f;
+    c->near_range = 1.5f;  c->near_gain = 0.6f;  c->hurt_ticks = 20;
 }
 
 void boss_cfg_load(boss_cfg_t *c, const char *path)
@@ -47,7 +50,7 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     F(trap_speed); F(trap_range); I(trap_count); I(stun_ticks);
     F(charge_range); F(charge_speed); I(charge_windup); I(charge_ticks); I(charge_cooldown);
     F(wave_radius); F(wave_push); I(wave_period);
-    F(loom_range); F(wall_sense); F(rush_level);
+    F(loom_range); F(wall_sense); F(rush_level); F(near_range); F(near_gain); I(hurt_ticks);
 #undef F
 #undef I
 }
@@ -180,6 +183,21 @@ static float wall_dist(const boss_state_t *s, float x, float y, float ang, float
     return range + 1.0f;
 }
 
+/* 참가자 i가 초파리에게 주는 다가옴 자극(0~1). 가까울수록, 빨리 다가올수록 세다.
+ * 아주 가까우면(near_range 안) 서 있기만 해도 세다 */
+static float threat(const boss_state_t *s, int i)
+{
+    const boss_cfg_t *c = &s->cfg;
+    const boss_player_t *p = &s->p[i];
+    float d = dist(p->x, p->y, s->fly.x, s->fly.y), gap = d - c->fly_radius - c->player_radius;
+    if (!p->alive || gap >= c->loom_range) return 0.0f;
+    if (gap < 0.0f) gap = 0.0f;
+    float approach = clamp01((p->last_dist - d) / c->step);      /* 이번 틱에 한 걸음 다가왔으면 1 */
+    float level = (1.0f - gap / c->loom_range) * (0.35f + 0.9f * approach);
+    if (gap < c->near_range) level += c->near_gain * (1.0f - gap / c->near_range);
+    return clamp01(level);
+}
+
 void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT])
 {
     const boss_cfg_t *c = &s->cfg;
@@ -192,12 +210,12 @@ void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT])
         const boss_player_t *p = &s->p[i];
         if (!p->alive) continue;
         float dx = p->x - f->x, dy = p->y - f->y, d = sqrtf(dx * dx + dy * dy);
-        float gap = d - c->fly_radius - c->player_radius;
-        if (gap >= c->loom_range || d < 1e-4f) continue;
-        float close = 1.0f - gap / c->loom_range;
-        float approach = clamp01((p->last_dist - d) / c->step);      /* 이번 틱에 한 걸음 다가왔으면 1 */
-        float level = clamp01(close * (0.35f + 0.9f * approach));
-        add_side(&l, &r, level, (hx * dy - hy * dx) / d);
+        if (d < 1e-4f) continue;
+        add_side(&l, &r, threat(s, i), (hx * dy - hy * dx) / d);
+    }
+    if (f->hurt > 0) {                               /* 방금 맞았다. 때린 쪽이 가장 센 자극이다 */
+        float dx = f->hurt_x - f->x, dy = f->hurt_y - f->y, d = sqrtf(dx * dx + dy * dy);
+        if (d > 1e-4f) add_side(&l, &r, 1.0f, (hx * dy - hy * dx) / d);
     }
     /* 앞쪽 30도 좌우로 벽을 더듬는다 */
     float dl = wall_dist(s, f->x, f->y, f->ang - PI_F / 6.0f, c->wall_sense + c->fly_radius) - c->fly_radius;
@@ -215,6 +233,9 @@ static void hurt_fly(boss_state_t *s, int who, int dmg)
     if (dmg > s->fly.hp) dmg = s->fly.hp;
     s->fly.hp -= dmg;
     s->dmg_dealt[who] += dmg;
+    s->fly.hurt = s->cfg.hurt_ticks;
+    s->fly.hurt_x = s->p[who].x;
+    s->fly.hurt_y = s->p[who].y;
 }
 
 static void use_item(boss_state_t *s, int i)
@@ -348,6 +369,7 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
     const boss_cfg_t *c = &s->cfg;
     boss_fly_t *f = &s->fly;
     if (f->charge_cool > 0) f->charge_cool--;
+    if (f->hurt > 0) f->hurt--;
     if (f->stun > 0) { f->stun--; return; }          /* 붙어 있는 동안은 움직이지도 공격하지도 않는다 */
 
     /* 날갯짓: 가까운 참가자를 모두 밀어낸다 */
@@ -387,14 +409,10 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
         if (f->charging == 0) { f->target = -1; f->charge_cool = c->charge_cooldown; }
         return;
     }
-    if (f->charge_cool == 0) {
+    if (f->charge_cool == 0 && f->hurt == 0) {       /* 맞은 직후에는 덤비지 않고 달아난다 */
         float rushed = 0.0f;
         for (int i = 0; i < s->n_players; i++) {             /* 벽은 빼고 참가자가 몰아붙이는 정도만 본다 */
-            const boss_player_t *p = &s->p[i];
-            float d = dist(p->x, p->y, f->x, f->y);
-            if (!p->alive || d >= c->loom_range) continue;
-            float approach = clamp01((p->last_dist - d) / c->step);
-            float level = (1.0f - d / c->loom_range) * (0.35f + 0.9f * approach);
+            float level = threat(s, i);
             if (level > rushed) rushed = level;
         }
         int t = charge_target(s, rushed);
