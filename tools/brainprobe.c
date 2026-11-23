@@ -89,11 +89,15 @@ int main(int argc, char **argv)
     CASE("단맛 120 + 쓴맛 80", 1000, { "BR_SUGAR", 120 }, { "BR_BITTER", 80 });
     CASE("단맛 120 + 쓴맛 160", 1000, { "BR_SUGAR", 120 }, { "BR_BITTER", 160 });
     CASE("쓴맛 120", 1000, { "BR_BITTER", 120 });
-    CASE("단맛 120 + 짠맛 80", 1000, { "BR_SUGAR", 120 }, { "BR_SALT", 80 });
-    CASE("단맛 120 + 짠맛 160", 1000, { "BR_SUGAR", 120 }, { "BR_SALT", 160 });
+    /* 짠맛은 60까지만 넣는다. 게임이 넣는 최대가 60이고, 90 이상에서는 뇌 전체가 폭주한다. */
+    CASE("단맛 80 + 짠맛 30", 1000, { "BR_SUGAR", 80 }, { "BR_SALT", 30 });
+    CASE("단맛 80 + 짠맛 60", 1000, { "BR_SUGAR", 80 }, { "BR_SALT", 60 });
+    CASE("단맛 120 + 짠맛 60", 1000, { "BR_SUGAR", 120 }, { "BR_SALT", 60 });
+    CASE("짠맛 60", 1000, { "BR_SALT", 60 });
     CASE("물 120", 1000, { "BR_WATER", 120 });
-    CASE("전부 150", 1000, { "BR_LOOM_L", 150 }, { "BR_LOOM_R", 150 }, { "BR_SUGAR", 150 },
-         { "BR_BITTER", 150 }, { "BR_SALT", 150 }, { "BR_WATER", 150 });
+    CASE("단맛 120 + 물 160", 1000, { "BR_SUGAR", 120 }, { "BR_WATER", 160 });
+    CASE("전부 최대", 1000, { "BR_LOOM_L", 150 }, { "BR_LOOM_R", 150 }, { "BR_SUGAR", 160 },
+         { "BR_BITTER", 160 }, { "BR_SALT", 60 }, { "BR_WATER", 160 });
 
     lif_close(l);
     return 0;

@@ -27,7 +27,9 @@ GROUPS = {
     "BR_LOOM_R":   ("type", {"LC4", "LPLC2"}, "right"),
     "BR_SUGAR":    ("sub",  {"sugar"}, None),
     "BR_BITTER":   ("sub",  {"bitter"}, None),
-    "BR_SALT":     ("sub",  {"high_salt/heavy_metal"}, None),
+    # 표에서 짠맛이라고 적힌 집단(LB3d, LB3b)은 이 모델에서 먹기를 늘린다. 먹기를 줄이는 것은
+    # 'glutamate'라고 적힌 LB1e다. 초당 90번 이상 자극하면 뇌 전체가 폭주하므로 세게 넣지 않는다.
+    "BR_SALT":     ("sub",  {"glutamate"}, None),
     "BR_WATER":    ("sub",  {"water"}, None),
     "BR_ESCAPE":   ("type", {"DNp01"}, None),
     "BR_TURN_L":   ("type", {"DNa02", "DNa01"}, "left"),

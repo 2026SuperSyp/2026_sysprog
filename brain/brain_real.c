@@ -15,22 +15,26 @@
 
 #define TICK_STEPS   (50 * LIF_STEPS_PER_MS)
 #define TICK_SEC     0.05f
-#define WINDOW_MAX   4
+#define WINDOW_MAX   8
+#define RUNAWAY_SPIKES 20000     /* 한 틱의 발화가 이보다 많으면 폭주로 본다(정상 최대는 약 6,500) */
 #define OUT_MAX      8             /* 출력 집단 하나의 뉴런 수 상한 */
 
-/* 감각: 자극 1.0일 때 뉴런 하나가 초당 몇 번 발화하는가 */
+/* 감각: 자극 1.0일 때 뉴런 하나가 초당 몇 번 발화하는가.
+ * 짠맛(LB1e)은 60을 넘기지 않는다. 90 이상에서는 뇌 전체가 폭주해서 자극을 꺼도 멈추지 않는다
+ * (70까지는 60초씩 8번 돌려도 조용했다). */
 static struct { int group; const char *name; float full_hz; const uint32_t *idx; int n; } inputs[] = {
     { BR_LOOM_L, "BR_LOOM_L", 150.0f, NULL, 0 },
     { BR_LOOM_R, "BR_LOOM_R", 150.0f, NULL, 0 },
     { BR_SUGAR,  "BR_SUGAR",  160.0f, NULL, 0 },
     { BR_BITTER, "BR_BITTER", 160.0f, NULL, 0 },
-    { BR_SALT,   "BR_SALT",   160.0f, NULL, 0 },
+    { BR_SALT,   "BR_SALT",    60.0f, NULL, 0 },
     { BR_WATER,  "BR_WATER",  160.0f, NULL, 0 },
 };
 #define N_INPUTS ((int)(sizeof inputs / sizeof inputs[0]))
 
 /* 반응: 뉴런 하나가 초당 full_hz번 발화하면 1.0으로 본다. window는 평균을 내는 틱 수다.
- * 방향 전환과 후진은 뉴런이 몇 개뿐이라 들쭉날쭉해서 0.2초 동안 평균한다. */
+ * 방향 전환, 먹기는 뉴런이 몇 개뿐이라 들쭉날쭉해서 0.2초 동안 평균한다.
+ * 후진은 반응이 약해서(초당 8~24번) 0.4초 동안 평균하고 기준도 낮게 잡는다. */
 static struct {
     int group; const char *name; float full_hz; int window;
     const uint32_t *idx; int n;
@@ -41,14 +45,15 @@ static struct {
     { BR_ESCAPE,   "BR_ESCAPE",   150.0f, 2, NULL, 0, 0, {0}, {0} },
     { BR_TURN_L,   "BR_TURN_L",    15.0f, 4, NULL, 0, 0, {0}, {0} },
     { BR_TURN_R,   "BR_TURN_R",    15.0f, 4, NULL, 0, 0, {0}, {0} },
-    { BR_BACKWARD, "BR_BACKWARD",  20.0f, 4, NULL, 0, 0, {0}, {0} },
-    { BR_FEED,     "BR_FEED",      70.0f, 2, NULL, 0, 0, {0}, {0} },
+    { BR_BACKWARD, "BR_BACKWARD",  10.0f, 8, NULL, 0, 0, {0}, {0} },
+    { BR_FEED,     "BR_FEED",      70.0f, 4, NULL, 0, 0, {0}, {0} },
 };
 #define N_OUTPUTS ((int)(sizeof outputs / sizeof outputs[0]))
 
 static lif_t *brain;
 static uint64_t seen_total;
 static int tick_no;
+static uint32_t last_seed;
 
 /* 뇌 지도: 뉴런마다 어느 칸에 있는지와 칸별 값 */
 #define MAP_CELLS (BRAIN_MAP_W * BRAIN_MAP_H)
@@ -107,6 +112,7 @@ int brain_real_ready(void) { return brain != NULL; }
 void brain_real_reset(uint32_t seed)
 {
     if (!brain) return;
+    last_seed = seed;
     lif_reset(brain, seed);
     for (int i = 0; i < N_OUTPUTS; i++) {
         outputs[i].seen = 0;
@@ -127,6 +133,17 @@ void brain_real_tick(const float *stim, float *rate)
         lif_stim_add(brain, inputs[i].idx, inputs[i].n, stim[inputs[i].group] * inputs[i].full_hz);
 
     lif_run(brain, TICK_STEPS);
+
+    /* 폭주 막기. 이 뇌는 어떤 자극에서는 스스로 계속 발화하는 상태에 빠지고, 자극을 꺼도 멈추지 않는다.
+     * 그러면 한 틱 계산이 100ms를 넘는다. 그런 틱이 나오면 뇌를 처음 상태로 되돌리고 이번 틱은 조용한 것으로 한다. */
+    if (lif_total_spikes(brain) - seen_total > RUNAWAY_SPIKES) {
+        fprintf(stderr, "경고: 뇌가 폭주해서(한 틱에 %llu번 발화) 처음 상태로 되돌립니다\n",
+                (unsigned long long)(lif_total_spikes(brain) - seen_total));
+        brain_real_reset(last_seed + 1);
+        memset(rate, 0, sizeof(float) * BRAIN_GROUP_COUNT);
+        rate[BR_FORWARD] = 1.0f;
+        return;
+    }
 
     /* 뇌 지도: 방금 발화한 뉴런의 칸을 데운다 */
     if (cell_of) {
