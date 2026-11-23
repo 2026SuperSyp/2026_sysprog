@@ -220,7 +220,7 @@ static void draw(canvas_t *full)
         break;
     }
     case PH_CARD:
-        scene_card(full, ph->title, ph->rule, ph->controls);
+        scene_card(full, ph->title, ph->rule, ph->controls, (int)(t * 20.0));
         break;
     case PH_READY:
         scene_count(full, (int)(t * 20.0));

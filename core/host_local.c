@@ -167,7 +167,7 @@ static void scene(local_t *L, int ticks, void (*draw)(local_t *, int tick, void 
 static void draw_card(local_t *L, int tick, void *arg)
 {
     (void)tick; (void)arg;
-    scene_card(L->full, L->info->title, L->info->rule, L->info->controls);
+    scene_card(L->full, L->info->title, L->info->rule, L->info->controls, tick);
 }
 
 static void draw_count(local_t *L, int tick, void *arg)
