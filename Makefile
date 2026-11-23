@@ -13,6 +13,7 @@
 #   make demo-local              한 컴퓨터에서 서버, 봇 2명, 사람 1명으로 한 판
 #   make brain-data              진짜 뇌에 필요한 자료를 받아 data/ 에 준비 (한 번만)
 #   make brainprobe              진짜 뇌에 자극을 넣어 보고 반응과 계산 시간을 표로 봄
+#   make bossbot [BRAIN=real]    보스전 계산부를 화면 없이 여러 판 돌려 전략별 승률을 표로 봄
 #   make brain-compare           대조 실험: 진짜 배선과 섞은 배선의 반응을 나란히 봄 (BRAIN=shuffled로 실행도 됨)
 #   make release                 발표용 빌드를 build/release/ 에 만듦 (make MODE=release 와 같다)
 #
@@ -55,7 +56,7 @@ LDLIBS  := -lm
 RESTORE := stty sane 2>/dev/null; printf '\033[?1003l\033[?1006l\033[?25h\033[?1049l\033[0m'
 
 # ---- 소스 목록 -------------------------------------------------------------
-KIT_SRC    := $(filter-out brain/brain_proc.c,$(wildcard ui/*.c brain/*.c core/log.c core/cfg.c core/rng.c) core/ranking.c core/toplist.c)
+KIT_SRC    := $(filter-out brain/brain_proc.c,$(wildcard ui/*.c brain/*.c boss/*.c core/log.c core/cfg.c core/rng.c) core/ranking.c core/toplist.c)
 HOST_SRC   := $(wildcard core/stage_host.c core/stage_main.c core/host_bot.c core/host_local.c core/host_pipe.c \
                          core/default_screens.c core/scenes.c core/msg.c core/frame.c)
 NET_SRC    := $(wildcard core/server.c core/client.c core/brain_sup.c core/selfdir.c brain/brain_proc.c)
@@ -85,10 +86,13 @@ endif
 ifneq ($(wildcard tools/brainprobe.c),)
 TOOL_BIN   += $(B)/brainprobe
 endif
+ifneq ($(wildcard tools/bossbot.c),)
+TOOL_BIN   += $(B)/bossbot
+endif
 
 ALL_SRC := $(KIT_SRC) $(HOST_SRC) $(NET_SRC) $(SCREEN_SRC) $(TEST_SRC) $(STAGE_SRC) $(wildcard tools/*.c)
 
-.PHONY: all test run bot screen log termbench brain-data brainprobe server client demo-local clean need-stage need-screen test-fail release
+.PHONY: bossbot all test run bot screen log termbench brain-data brainprobe server client demo-local clean need-stage need-screen test-fail release
 all: $(KIT_OBJ) $(STAGE_BIN) $(TOOL_BIN)
 
 # 발표용 빌드를 한 번에 만든다.
@@ -138,6 +142,10 @@ $(B)/client: $(B)/core/client.o $(B)/core/msg.o $(B)/core/frame.o $(B)/core/scen
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
 $(B)/brainprobe: $(B)/tools/brainprobe.o $(B)/brain/lif.o
+	@mkdir -p $(@D)
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
+
+$(B)/bossbot: $(B)/tools/bossbot.o $(KIT_OBJ)
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
@@ -203,6 +211,11 @@ test-fail: all
 
 brain-data:
 	@sh tools/brain_data.sh
+
+# 보스전 계산부를 화면 없이 여러 판 돌려 전략별 승률을 본다. BRAIN=real이면 진짜 뇌로도 돌린다
+bossbot:
+	@$(MAKE) --no-print-directory $(B)/bossbot
+	@$(B)/bossbot $(if $(filter real,$(BRAIN)),--brain=real)
 
 brainprobe:
 	@$(MAKE) --no-print-directory $(B)/brainprobe

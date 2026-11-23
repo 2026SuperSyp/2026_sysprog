@@ -36,6 +36,7 @@ cd ~/2026_sysprog
 | `make test-fail` | 서버가 고장 상황을 버티는지 본다(스테이지 죽이기, 접속 끊기, 잘못된 메시지 등 10가지). 서버 코드를 고친 뒤에 돌린다 |
 | `make termbench` | 이 터미널이 초당 20장을 따라오는지 잰다. 도는 동안 마우스를 움직이면 마우스 보고도 확인한다 |
 | `make run STAGE=example BRAIN=real` | 진짜 초파리 뇌 배선으로 돌린다. 아래 "진짜 뇌"의 준비를 먼저 한다 |
+| `make bossbot` | 보스전 계산부(`boss/`)를 화면 없이 여러 판 돌려 전략별 승률을 표로 본다. 수치는 `boss/config.ini`에 있다. `BRAIN=real`이면 진짜 뇌로도 돌린다 |
 | `make release` | 발표용 빌드를 `build/release/`에 만든다. 메모리 검사 없이 최적화해서 빠르다. 다른 명령에도 `MODE=release`를 붙이면 그 빌드로 돈다(예: `make server MODE=release`). 만들고 검사할 때는 기본(`build/dev/`)을 쓰고, 발표할 때만 release를 쓴다 |
 
 ## 여러 명이 같이 하기
