@@ -98,7 +98,7 @@ static void test_spray(void)
     setup(&c, 1);
     put_fly(8.5f, 9.0f);
     int hp = S.fly.hp;
-    put_player(0, 8.5f, 17.0f, NORTH);
+    put_player(0, 8.5f, 13.0f, NORTH);
     press(0, SK_2);
     T_EQ_INT(S.p[0].item, BOSS_SPRAY);
     press(0, SK_ACT);
@@ -114,8 +114,8 @@ static void test_spray(void)
     put_player(0, 8.5f, 9.0f + c.fly_radius + c.spray_range + 0.5f, NORTH);     /* 닿지 않는 거리 */
     press(0, SK_2); press(0, SK_ACT);
     T_EQ_INT(S.fly.hp, hp);
-    put_fly(12.0f, 8.0f);
-    put_player(0, 12.0f, 16.0f, NORTH);                           /* 가운데 기둥(11~12, 11~12)이 가린다 */
+    put_fly(12.0f, 10.0f);
+    put_player(0, 12.0f, 14.0f, NORTH);                           /* 가운데 기둥(11~12, 11~12)이 가린다 */
     ticks(c.spray_cooldown, still);
     press(0, SK_ACT);
     T_EQ_INT(S.fly.hp, hp);

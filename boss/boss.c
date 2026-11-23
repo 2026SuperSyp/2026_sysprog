@@ -27,7 +27,7 @@ void boss_cfg_default(boss_cfg_t *c)
     c->fly_speed = 0.08f;
     c->fly_turn = 0.25f;
     c->swat_range = 1.2f;  c->swat_damage = 10.0f; c->swat_cooldown = 8;
-    c->spray_range = 10.0f; c->spray_damage = 3.0f; c->spray_ammo = 20; c->spray_cooldown = 3;
+    c->spray_range = 5.0f; c->spray_damage = 3.0f; c->spray_ammo = 20; c->spray_cooldown = 3;
     c->trap_speed = 0.6f;  c->trap_range = 8.0f;  c->trap_count = 2; c->stun_ticks = 60;
     c->charge_range = 5.0f; c->charge_speed = 0.35f; c->charge_windup = 12; c->charge_ticks = 20;
     c->charge_cooldown = 80;

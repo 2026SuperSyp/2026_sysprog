@@ -49,8 +49,11 @@ static int bot_key(const boss_state_t *s, int i, int strat, bot_t *b, stage_rng_
     if (f->windup > 0 && f->target == i && p->traps > 0 && d < 7.0f && !turn) return pick(s, i, BOSS_TRAP);
     if (turn) return turn;
     if (strat == KITE && p->ammo > 0) {
-        if (d < 3.5f) return SK_DOWN;
-        if (d > 7.0f) return SK_UP;
+        /* 사거리 안에서 되도록 멀리 선다 */
+        float far = s->cfg.spray_range - 1.0f < 7.0f ? s->cfg.spray_range - 1.0f : 7.0f;
+        float near = far - 3.5f > 1.5f ? far - 3.5f : 1.5f;
+        if (d < near) return SK_DOWN;
+        if (d > far) return SK_UP;
         return pick(s, i, BOSS_SPRAY);
     }
     float reach = s->cfg.fly_radius + s->cfg.player_radius + s->cfg.swat_range - 0.2f;
