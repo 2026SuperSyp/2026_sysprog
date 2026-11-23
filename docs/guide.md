@@ -26,6 +26,7 @@ cd ~/2026_sysprog
 | `make bot STAGE=example` | 화면 없이 여러 판을 돌려 검사한다. "통과"가 나와야 한다 |
 | `make screen SCREEN=lobby CASE=2` | 화면 하나를 예시 상태로 띄운다(`lobby`, `result`, `ranking`, `spectate`). 아무 키나 누르면 끝난다 |
 | `make log STAGE=example` | 스테이지의 `printf` 출력과 경고를 본다 |
+| `make termbench` | 이 터미널이 초당 20장을 따라오는지 잰다. 도는 동안 마우스를 움직이면 마우스 보고도 확인한다 |
 | `make run STAGE=example BRAIN=real` | 진짜 초파리 뇌 배선으로 돌린다. 아래 "진짜 뇌"의 준비를 먼저 한다 |
 
 ## 여러 명이 같이 하기
@@ -38,6 +39,7 @@ make client HOST=서버주소 NAME=이름  (접속. 같은 컴퓨터면 HOST를 
 make demo-local                      (한 컴퓨터에서 서버, 봇 2명, 나 1명으로 한 판)
 ```
 
+- 다른 컴퓨터에서 접속하려면 서버 컴퓨터에 설정이 필요하다. `docs/network.md`를 본다.
 - 로비에서 스페이스로 준비하고, 모두 준비되면 방장(가장 먼저 들어온 사람)이 F를 눌러 시작한다.
 - 흐름: 로비 -> 규칙 설명 3초 -> 3, 2, 1, GO -> 게임 20초 -> 판정 -> (4라운드 반복) -> 랭킹 -> 로비.
 - 서버는 라운드마다 스테이지 실행 파일(`build/dev/stage_이름`)을 따로 띄운다. 스테이지 코드는 `make run`일 때와 같다.
