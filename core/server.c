@@ -1,7 +1,7 @@
 /* 서버. 접속을 받고, 게임의 단계를 진행하고, 라운드마다 스테이지 프로세스를 띄운다.
  *
  *   build/dev/server [--port=N] [--order=이름,이름,...] [--rounds=N] [--seed=N]
- *                    [--brain=fast|slow|real] [--fast] [--once] [--brain-inproc]
+ *                    [--brain=fast|slow|real] [--fast] [--once] [--brain-inproc] [--brain-strict]
  *   검사용: [--tick-ms=N] 틱 사이를 N ms로 한다(--fast여도 지킨다), [--ticks=N] 한 판을 N틱으로 한다
  *
  * 스레드
@@ -23,6 +23,7 @@
  *
  * 뇌는 따로 뜬 프로세스(build/dev/brain_proc)가 계산하고 스테이지와는 공유 메모리로 주고받는다.
  * --brain-inproc을 주면 전처럼 스테이지 안에서 계산한다.
+ * 뇌가 뜨지 못하면 규칙으로 움직이는 뇌(fast)로 바꿔 이어 간다. --brain-strict를 주면 바꾸지 않는다(core/brain_sup.h).
  *
  * 아직 없는 것: 보스전(4라운드 뒤 바로 랭킹으로 간다). */
 #include "core/brain_sup.h"
@@ -430,7 +431,7 @@ static int stage_spawn(const char *name, uint32_t seed, int n_players)
     snprintf(a_pipe, sizeof a_pipe, "--pipe=%d,%d", to_child[0], from_child[1]);
     snprintf(a_seed, sizeof a_seed, "--seed=%u", seed);
     snprintf(a_players, sizeof a_players, "--players=%d", n_players);
-    snprintf(a_brain, sizeof a_brain, "--brain=%s", opt.brain);
+    snprintf(a_brain, sizeof a_brain, "--brain=%s", brain_sup_model() ? brain_sup_model() : opt.brain);
     snprintf(log_path, sizeof log_path, "build/logs/stage_%s.log", name);
     snprintf(a_ticks, sizeof a_ticks, "--ticks=%d", opt.ticks);
     char *argv[] = { path, a_pipe, a_seed, a_players, a_brain, opt.ticks > 0 ? a_ticks : NULL, NULL };
@@ -872,7 +873,7 @@ static void game_master(void)
 
 int main(int argc, char **argv)
 {
-    int brain_inproc = 0;
+    int brain_inproc = 0, brain_strict = 0;
     setvbuf(stdout, NULL, _IOLBF, 0);
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -886,6 +887,7 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--tick-ms=", 10) == 0) opt.tick_ms = atoi(a + 10);
         else if (strncmp(a, "--ticks=", 8) == 0)   opt.ticks = atoi(a + 8);
         else if (strcmp(a, "--brain-inproc") == 0) brain_inproc = 1;
+        else if (strcmp(a, "--brain-strict") == 0) brain_strict = 1;
         else if (strncmp(a, "--order=", 8) == 0) {
             const char *p = a + 8;
             while (*p && opt.n_order < MAX_ORDER) {
@@ -932,7 +934,7 @@ int main(int argc, char **argv)
     }
 
     /* 뇌 프로세스와 감시 스레드. 환경 변수를 바꾸므로 다른 스레드를 만들기 전에 한다 */
-    if (!brain_inproc && brain_sup_start(opt.brain, opt.fast, brain_stall_event) != 0) return 1;
+    if (!brain_inproc && brain_sup_start(opt.brain, opt.fast, brain_strict, brain_stall_event) != 0) return 1;
 
     pthread_t t_sig, t_acc;
     pthread_create(&t_sig, NULL, signal_main, &set);

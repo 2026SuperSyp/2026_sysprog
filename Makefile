@@ -150,6 +150,7 @@ test: $(TEST_BIN) $(STAGE_BIN) $(B)/server $(B)/client $(B)/brain_proc
 	@sh tests/run.sh $(TEST_BIN)
 	@SSP_BUILD=$(B) sh tests/e2e.sh
 	@SSP_BUILD=$(B) sh tests/brain.sh
+	@SSP_BUILD=$(B) sh tests/fallback.sh
 
 need-stage:
 	@if [ -z "$(STAGE)" ]; then echo "STAGE=이름 을 주세요. 있는 스테이지: $(STAGES)"; exit 2; fi

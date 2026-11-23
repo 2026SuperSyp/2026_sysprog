@@ -1,5 +1,6 @@
 /* 뇌 프로세스. 서버가 띄운다.
  *   build/dev/brain_proc --shm=<이름> --model=fast|slow|real [--data=data] [--own]
+ * 자료 폴더는 --data가 없으면 환경 변수 SSP_BRAIN_DATA, 그것도 없으면 data 다.
  *
  * 이미 있는 공유 메모리에 붙어서 아래를 되풀이한다(약속은 brain_shm.h).
  *   1. 게임 쪽 칸을 읽는다. 판 번호가 바뀌었으면 그 씨앗으로 상태를 처음으로 되돌린다.
@@ -16,6 +17,7 @@
 
 #include <signal.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
@@ -46,6 +48,8 @@ int main(int argc, char **argv)
     const char *name = NULL, *model_name = "fast", *data = "data";
     brain_mode_t model = BRAIN_FAKE_FAST;
     int own = 0;
+    const char *env_data = getenv(BRAIN_DATA_ENV);  /* 검사가 자료 폴더를 바꿀 때 쓴다. --data가 앞선다 */
+    if (env_data && env_data[0]) data = env_data;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];

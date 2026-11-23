@@ -24,6 +24,7 @@
 
 #define BRAIN_SHM_ENV      "SSP_BRAIN_SHM"     /* 공유 메모리 이름. 없으면 같은 프로세스 안의 뇌를 쓴다 */
 #define BRAIN_SHM_WAIT_ENV "SSP_BRAIN_WAIT"    /* "1"이면 스테이지가 뇌를 기다린다(화면 없이 빨리 돌 때) */
+#define BRAIN_DATA_ENV     "SSP_BRAIN_DATA"    /* 뇌 프로세스가 진짜 뇌의 자료를 읽을 폴더. 없으면 data */
 #define BRAIN_SHM_MAGIC    0x42505353u         /* 'S' 'S' 'P' 'B' */
 #define BRAIN_SHM_VERSION  1u
 #define BRAIN_SHM_CELLS    (BRAIN_MAP_W * BRAIN_MAP_H)

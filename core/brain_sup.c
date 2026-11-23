@@ -6,7 +6,13 @@
  * 감시 스레드가 알아낸다. 감시 스레드는 심장 박동 수만 보고 사건 하나를 넘길 뿐이고,
  * 죽이고 다시 띄우는 일은 게임 마스터가 한다. fork, exec, waitpid, kill은 게임 마스터만 한다.
  * 다시 띄우기 전에 뇌 쪽 칸을 비우고 재시작 횟수를 올린다. 심장 박동 수는 비우지 않는다
- * (지켜보는 쪽은 값이 바뀌는지만 본다). */
+ * (지켜보는 쪽은 값이 바뀌는지만 본다).
+ *
+ * 판이 멈추지 않게 하는 규칙. 뇌 하나가 떠서 끝날 때까지를 한 번의 삶으로 센다. 심장 박동을 한 번도
+ * 내지 못했거나 GOOD_LIFE_MS보다 빨리 끝난 삶은 실패다. fast가 아닌 모델이 FAIL_LIMIT번 연달아
+ * 실패하면 fast로 바꿔서 띄운다. 잘 돈 삶이 하나 있으면 센 것을 버린다. 시작할 때 준비되지 못해도
+ * 바로 fast로 바꾼다. strict이면 바꾸지 않는다. 바뀐 모델은 뇌가 공유 메모리에 내는 값(뇌 지도가
+ * 있는가)으로 스테이지와 화면에 그대로 드러난다. */
 #include "core/brain_sup.h"
 #include "core/selfdir.h"
 #include "brain/brain_shm.h"
@@ -32,6 +38,8 @@ static char brain_bin[SELFDIR_MAX + 16];     /* 서버 실행 파일 옆의 brai
 #define STALL_MS      1000       /* 돌던 뇌의 심장 박동이 이만큼 그대로면 멈춘 것으로 본다 */
 #define START_MS      10000      /* 막 띄운 뇌는 준비(배선 파일 읽기)에 시간이 걸린다. 첫 박동은 이만큼 기다린다 */
 #define MIN_LIFE_MS   1000       /* 이보다 빨리 죽으면 바로 다시 띄우지 않고 이 간격을 지킨다 */
+#define GOOD_LIFE_MS  10000      /* 이만큼 돌고 끝난 삶은 실패로 세지 않는다 */
+#define FAIL_LIMIT    3          /* fast가 아닌 모델이 이만큼 연달아 실패하면 fast로 바꾼다 */
 
 static struct {
     brain_shm_t *shm;
@@ -39,6 +47,8 @@ static struct {
     pid_t owner, pid;                /* pid: 지금 떠 있는 뇌. 없으면 0 */
     int64_t started, retry_at;       /* 마지막으로 띄운 시각, 다시 띄우기로 한 시각(0이면 예정 없음) */
     int stall_kill;                  /* 멈춰서 우리가 죽였다 */
+    int strict, fails;               /* 모델을 바꾸지 않는가, 연달아 실패한 삶의 수 */
+    uint32_t beat0;                  /* 띄울 때의 심장 박동 수. 그대로면 한 번도 뛰지 않은 것이다 */
     char why[64];                    /* 뇌가 마지막으로 끝난 이유(로그에 쓴다) */
     void (*on_stall)(uint32_t);
 } B;
@@ -89,6 +99,7 @@ static int spawn(void)
 
     B.started = now_ms();
     B.stall_kill = 0;
+    B.beat0 = brain_shm_load(&B.shm->heartbeat);
     pid_t pid = fork();
     if (pid < 0) {
         if (log_fd >= 0) close(log_fd);
@@ -119,8 +130,18 @@ static void restart(void)
         B.retry_at = now_ms() + MIN_LIFE_MS;
         return;
     }
-    fprintf(stderr, "서버: 뇌를 다시 띄웠습니다 (%u번째, pid %d, 이유: %s)\n",
-            brain_shm_load(&B.shm->restarts), (int)B.pid, B.why);
+    fprintf(stderr, "서버: 뇌를 다시 띄웠습니다 (%u번째, pid %d, 모델 %s, 이유: %s)\n",
+            brain_shm_load(&B.shm->restarts), (int)B.pid, B.model, B.why);
+}
+
+/* 모델을 fast로 바꾼다. 바꿨으면 1. 이미 fast이거나 strict이면 0 */
+static int fall_back(const char *what)
+{
+    if (B.strict || strcmp(B.model, "fast") == 0) return 0;
+    fprintf(stderr, "서버: 뇌(모델 %s)가 %s. 규칙으로 움직이는 뇌(fast)로 바꿉니다\n", B.model, what);
+    snprintf(B.model, sizeof B.model, "fast");
+    B.fails = 0;
+    return 1;
 }
 
 void brain_sup_reaped(pid_t pid, int status)
@@ -131,7 +152,18 @@ void brain_sup_reaped(pid_t pid, int status)
     else if (WIFSIGNALED(status)) snprintf(B.why, sizeof B.why, "시그널 %d로 죽음", WTERMSIG(status));
     else snprintf(B.why, sizeof B.why, "종료 코드 %d로 끝남", WEXITSTATUS(status));
 
-    if (now_ms() - B.started >= MIN_LIFE_MS) {
+    int64_t life = now_ms() - B.started;
+    int beat = brain_shm_load(&B.shm->heartbeat) != B.beat0;
+    if (beat && life >= GOOD_LIFE_MS) B.fails = 0;
+    else B.fails++;
+    char what[64];
+    snprintf(what, sizeof what, "%d번 연달아 제대로 뜨지 못했습니다", FAIL_LIMIT);
+    if (B.fails >= FAIL_LIMIT && fall_back(what)) {
+        restart();                                   /* 다른 모델이므로 간격을 두지 않는다 */
+        return;
+    }
+
+    if (life >= MIN_LIFE_MS) {
         restart();
     } else {
         /* 뜨자마자 죽는다(실행 파일이나 자료가 없는 경우 등). 쉬지 않고 되풀이하지 않게 간격을 둔다 */
@@ -192,9 +224,35 @@ static void sweep_stale(void)
     closedir(d);
 }
 
-int brain_sup_start(const char *model, int wait_mode, void (*on_stall)(uint32_t epoch))
+/* 막 띄운 뇌가 준비를 마칠 때까지(첫 심장 박동) 기다린다. 그 전에 끝나거나 START_MS를 넘으면 -1 */
+static int wait_ready(void)
+{
+    int64_t t0 = now_ms();
+    while (brain_shm_load(&B.shm->heartbeat) == B.beat0) {
+        struct timespec nap = { 0, 10 * 1000000L };
+        if (waitpid(B.pid, NULL, WNOHANG) == B.pid) {
+            B.pid = 0;
+            fprintf(stderr, "서버: 뇌(모델 %s)가 시작하지 못했습니다. %s 의 끝부분을 보세요\n", B.model, BRAIN_LOG);
+            return -1;
+        }
+        if (now_ms() - t0 > START_MS) {
+            fprintf(stderr, "서버: 뇌(모델 %s)가 %d초 안에 준비되지 않았습니다\n", B.model, START_MS / 1000);
+            return -1;
+        }
+        nanosleep(&nap, NULL);
+    }
+    return 0;
+}
+
+const char *brain_sup_model(void) { return B.shm ? B.model : NULL; }
+
+int brain_sup_start(const char *model, int wait_mode, int strict, void (*on_stall)(uint32_t epoch))
 {
     pthread_t t;
+    if (strcmp(model, "fast") != 0 && strcmp(model, "slow") != 0 && strcmp(model, "real") != 0) {
+        fprintf(stderr, "서버: 모르는 뇌 모델: %s (fast, slow, real 중 하나)\n", model);
+        return -1;
+    }
     snprintf(brain_bin, sizeof brain_bin, "%s/brain_proc", selfdir());
     if (access(brain_bin, X_OK) != 0) {
         fprintf(stderr, "서버: %s 가 없습니다. make 로 먼저 빌드하세요\n", brain_bin);
@@ -211,6 +269,7 @@ int brain_sup_start(const char *model, int wait_mode, void (*on_stall)(uint32_t 
     }
     B.owner = getpid();
     B.on_stall = on_stall;
+    B.strict = strict;
     B.shm = m;
     atexit(cleanup);
 
@@ -223,21 +282,20 @@ int brain_sup_start(const char *model, int wait_mode, void (*on_stall)(uint32_t 
         fprintf(stderr, "서버: 뇌를 띄우지 못했습니다(%s)\n", strerror(errno));
         return -1;
     }
-    /* 뇌가 준비를 마칠 때까지(첫 심장 박동) 기다린다. 그 전에 끝나 버리면 서버도 시작하지 않는다.
-     * 모델 이름이 틀렸거나 진짜 뇌의 자료가 없는 경우다 */
+    /* 준비되지 못하면(진짜 뇌의 자료가 없는 경우 등) fast로 바꿔 다시 띄운다. strict이면 서버도 시작하지 않는다 */
     int64_t t0 = now_ms();
-    while (brain_shm_load(&m->heartbeat) == 0) {
-        struct timespec nap = { 0, 10 * 1000000L };
-        if (waitpid(B.pid, NULL, WNOHANG) == B.pid) {
+    if (wait_ready() != 0) {
+        if (B.pid > 0) {                             /* 시간 안에 준비되지 않은 뇌. 아직 다른 스레드가 없으므로 여기서 거둔다 */
+            kill(B.pid, SIGKILL);
+            waitpid(B.pid, NULL, 0);
             B.pid = 0;
-            fprintf(stderr, "서버: 뇌가 시작하지 못했습니다. %s 의 끝부분을 보세요\n", BRAIN_LOG);
+        }
+        if (!fall_back("준비되지 못했습니다")) return -1;
+        brain_shm_clear_brain(m);
+        if (spawn() != 0 || wait_ready() != 0) {
+            fprintf(stderr, "서버: 바꾼 뇌도 띄우지 못했습니다\n");
             return -1;
         }
-        if (now_ms() - t0 > START_MS) {
-            fprintf(stderr, "서버: 뇌가 %d초 안에 준비되지 않았습니다\n", START_MS / 1000);
-            return -1;                               /* 끝날 때 cleanup이 거둔다 */
-        }
-        nanosleep(&nap, NULL);
     }
     fprintf(stderr, "서버: 뇌를 띄웠습니다 (pid %d, 모델 %s, 공유 메모리 %s, 준비 %dms)\n",
             (int)B.pid, B.model, B.name, (int)(now_ms() - t0));

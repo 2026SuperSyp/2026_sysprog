@@ -56,11 +56,12 @@ static void shm_report(void)
     int n = ls.samples > 0 ? ls.samples : 1;
     fprintf(stderr, "BRAIN shm=%s mode=%s game=%u ticks=%u stim_ticks=%d fired_ticks=%d late=%d skipped=%u "
             "restarts=%u wait_timeouts=%d wait_ms_sum=%.2f wait_ms_max=%.2f took_ms_avg=%.3f took_ms_max=%.3f "
-            "calc_ms_avg=%.3f calc_ms_max=%.3f took_hist=%d/%d/%d/%d/%d/%d/%d\n",
+            "calc_ms_avg=%.3f calc_ms_max=%.3f took_hist=%d/%d/%d/%d/%d/%d/%d map=%d\n",
             shm_name, shm_wait ? "wait" : "realtime", game.game_no, game.tick, stim_ticks, fired_ticks,
             ls.late, seen.game_no == game.game_no ? seen.skipped : 0, brain_shm_load(&shm->restarts),
             ls.timeouts, ls.wait_sum, ls.wait_max, ls.took_sum / n, ls.took_max, ls.calc_sum / n, ls.calc_max,
-            ls.hist[0], ls.hist[1], ls.hist[2], ls.hist[3], ls.hist[4], ls.hist[5], ls.hist[6]);
+            ls.hist[0], ls.hist[1], ls.hist[2], ls.hist[3], ls.hist[4], ls.hist[5], ls.hist[6],
+            seen.game_no == game.game_no && seen.has_map);   /* 판 끝에 화면이 뇌 지도를 그리고 있었는가 */
     game.game_no = 0;
 }
 
