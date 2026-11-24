@@ -786,22 +786,29 @@ static void hd_from_canvas(const canvas_t *full, const ui_text_item_t *items, in
     hd_items(hd_img, items, n_items, k, ox, oy);
 }
 
+/* 역대 순위를 한 줄씩 글자열로 만든다(픽셀 그림의 입장 화면과 로비에 적는다). 만든 줄 수를 돌려준다 */
+static int top_lines(const top_msg_t *m, const char *out[], int max)
+{
+    static char line[PROTO_TOP_N][PROTO_NAME_LEN + 24];
+    int n = 0;
+    for (int i = 0; i < m->n && i < max && i < PROTO_TOP_N; i++) {
+        snprintf(line[i], sizeof line[i], "%d   %.*s   %d", i + 1, PROTO_NAME_LEN, m->name[i], (int)m->score[i]);
+        out[n++] = line[i];
+    }
+    return n;
+}
+
 /* 로비를 픽셀 그림에 바로 그린다(ui/art.c). 글자 칸으로 보낼 때는 screen_lobby가 캔버스에 그린다.
  * S.mu를 잡은 채로 부른다 */
 static void draw_lobby_hd(void)
 {
-    static char top_line[6][PROTO_NAME_LEN + 24];
     const phase_msg_t *ph = &S.ph;
     art_seat_t seat[PROTO_SEATS];
-    const char *top[6];
-    int n = 0, n_top = 0;
+    const char *top[PROTO_TOP_N];
+    int n = 0;
     for (int s = 0; s < PROTO_SEATS; s++)
         if (ph->seated[s]) seat[n++] = (art_seat_t){ ph->name[s], ph->ready[s], s == ph->host, s == ph->me };
-    for (int i = 0; i < S.top.n && i < 6 && i < PROTO_TOP_N; i++) {
-        snprintf(top_line[i], sizeof top_line[i], "%d   %.*s   %d", i + 1, PROTO_NAME_LEN, S.top.name[i], (int)S.top.score[i]);
-        top[n_top++] = top_line[i];
-    }
-    art_lobby(hd_img, seat, n, top, n_top, (double)(now_ms() - S.phase_at) / 1000.0);
+    art_lobby(hd_img, seat, n, top, top_lines(&S.top, top, 6), (double)(now_ms() - S.phase_at) / 1000.0);
 }
 
 static void show_hd(void)
@@ -853,11 +860,17 @@ static int run_title(const char *host, int port)
     uint8_t buf[256];
     size_t len = 0;
     int sel = 0, past = 0, past_ok = 0;
+    int64_t began = now_ms();
 
     for (int tick = 0; ; tick++) {
         int hd = gfx_sixel && hd_prepare();
-        if (hd) ui_text_capture_begin(full);
-        if (past) {
+        if (hd) {                                    /* 픽셀 그림: 로비와 같은 그림 옆에 적는다(ui/art.c) */
+            const char *lines[PROTO_TOP_N];
+            double t = (double)(now_ms() - began) / 1000.0;
+            if (past) art_past(hd_img, lines, past_ok ? top_lines(&top, lines, 10) : 0, past_ok, t);
+            else art_title(hd_img, sel, t);
+            show_hd();
+        } else if (past) {
             /* 지난 랭킹 */
             ui_clear(full, C_BG);
             const char *head = "지난 랭킹", *foot = "아무 키나 누르면 돌아가요";
@@ -868,14 +881,7 @@ static int run_title(const char *host, int port)
         } else {
             scene_title(full, tick, sel);
         }
-        if (hd) {
-            const ui_text_item_t *items;
-            int n_items = ui_text_capture_end(&items);
-            hd_from_canvas(full, items, n_items);
-            show_hd();
-        } else {
-            show(full);
-        }
+        if (!hd) show(full);
 
         struct pollfd pf = { STDIN_FILENO, POLLIN, 0 };
         if (poll(&pf, 1, 50) > 0) {

@@ -54,9 +54,14 @@ static inline void hd_blend(image_t *im, int x, int y, rgb_t c, float a)
 void  hd_text(image_t *im, float x, float y, const char *s, rgb_t c, float cell, float a);
 float hd_text_w(const char *s, float cell);
 
-/* 로비를 글자로 찍은 그림으로 그린다(art.c): 유리 돔 안의 시프봇과 그 둘레를 도는 초파리, 내리는 색종이.
- * 오른쪽에 참가자(seat)와 안내, 역대 순위(top: 한 줄씩 다 만든 글자열)를 적는다. t는 로비에 들어온 뒤 흐른 초 */
+/* 입장 화면, 지난 랭킹, 로비를 글자로 찍은 그림으로 그린다(art.c): 유리 돔 안의 시프봇과 그 위를 도는 초파리, 내리는
+ * 색종이. 세 화면이 같은 그림을 쓰고 오른쪽의 글자만 다르다. t는 그 화면이 뜬 뒤 흐른 초다.
+ *   art_title  고를 것 셋(sel: 0 입장, 1 지난 랭킹, 2 나가기)
+ *   art_past   역대 순위(top: 한 줄씩 다 만든 글자열). ok가 0이면 서버에 닿지 못했다
+ *   art_lobby  참가자(seat)와 안내와 역대 순위 */
 typedef struct { const char *name; int ready, host, me; } art_seat_t;
+void art_title(image_t *im, int sel, double t);
+void art_past(image_t *im, const char *const top[], int n_top, int ok, double t);
 void art_lobby(image_t *im, const art_seat_t *seat, int n_seats, const char *const top[], int n_top, double t);
 
 /* 받아 둔 것들(ui_text_capture_end가 준 목록: 글자, 말풍선 상자, 시프봇)을 실제 해상도로 그린다(hd_art.c).

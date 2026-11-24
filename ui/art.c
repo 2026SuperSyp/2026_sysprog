@@ -1,4 +1,4 @@
-/* 글자로 찍는 그림: 로비 화면(픽셀 그림으로 보낼 때).
+/* 글자로 찍는 그림: 입장 화면, 지난 랭킹, 로비(픽셀 그림으로 보낼 때). 세 화면이 같은 그림을 쓰고 오른쪽의 글자만 다르다.
  *
  * 화면을 작은 글자 칸(가로 400, 세로 134)으로 나누고, 칸마다 "얼마나 밝은가"와 색을 정한 뒤 밝기에 맞는 글자를
  * 그 색으로 찍는다. 밝은 곳에는 획이 많은 글자(@, #)가, 어두운 곳에는 점(. :)이 찍혀서 멀리서 보면 명암이 있는
@@ -149,18 +149,22 @@ static void draw_cat(float cx, float by, double t)
 }
 
 /* ---- 화면 --------------------------------------------------------------------------- */
+static const rgb_t ink = { 226, 228, 236 }, dim = { 120, 126, 146 }, key = { 250, 215, 70 }, sky = { 70, 200, 220 }, good = { 110, 220, 150 };
+#define PANEL_X 600.0f               /* 오른쪽 글자들의 왼쪽 끝(화면을 960으로 본 단위) */
+
 static void text(image_t *im, float u, float x, float y, const char *s, rgb_t c, float k, float a)
 {
     hd_text(im, x * u, y * u, s, c, 12.0f * k * u, a);
 }
 
-void art_lobby(image_t *im, const art_seat_t *seat, int n_seats, const char *const top[], int n_top, double t)
+/* 가운데 그림(유리 돔)과 돔 아래의 한 줄을 그린다. 화면을 960으로 본 단위의 픽셀 수를 돌려준다. 그리지 못했으면 0 */
+static float art_scene(image_t *im, double t)
 {
     static const char ramp[] = " .':-~=+*xo%#8@";
     static const float confetti[5][3] = { { 236, 238, 244 }, { 250, 215, 70 }, { 245, 130, 180 }, { 70, 200, 220 }, { 150, 230, 190 } };
     static float gw_of[sizeof ramp], cell_of;
     const int levels = (int)sizeof ramp - 1;
-    if (!im || im->w < 400) return;
+    if (!im || im->w < 400) return 0.0f;
     GW = (float)im->w / COLS;
     GH = (float)im->h / ROWS;
     float W = (float)im->w, H = (float)im->h, u = W / 960.0f;
@@ -259,22 +263,43 @@ void art_lobby(image_t *im, const art_seat_t *seat, int n_seats, const char *con
         }
 
     /* 돔 아래의 한 줄: 터미널에서 돌리는 프로그램이라는 표시 */
-    const rgb_t ink = { 226, 228, 236 }, dim = { 120, 126, 146 }, key = { 250, 215, 70 }, sky = { 70, 200, 220 }, good = { 110, 220, 150 };
     float bx = gx / u - 150.0f, by = H / u - 34.0f;
     text(im, u, bx, by, "$ ./client", ink, 0.8f, 0.9f);
     if (((int)(t * 2.0) & 1) == 0) hd_rect(im, (bx + 54.0f) * u, (by + 2.0f) * u, 4.0f * u, 8.0f * u, ink, 0.9f);
     hd_ellipse(im, (bx + 232.0f) * u, (by + 6.0f) * u, 2.4f * u, 2.4f * u, good, 1.0f);
     text(im, u, bx + 239.0f, by, "running", dim, 0.8f, 1.0f);
 
-    /* 오른쪽: 제목, 참가자, 안내, 역대 순위. 글자는 작게 */
-    float x = 600.0f, y = 96.0f;
+    return u;
+}
+
+/* 오른쪽 위의 제목과 꼬리표. 그 아래 첫 줄의 높이를 돌려준다 */
+static float art_head(image_t *im, float u, const char *tag)
+{
+    const float x = PANEL_X, y = 96.0f, tw = (float)ui_text_w(tag) * 0.75f + 14.0f;
+    text(im, u, x, y, "슈퍼 시프 파티", key, 1.9f, 1.0f);
+    hd_rrect(im, x * u, (y + 34.0f) * u, tw * u, 14.0f * u, 7.0f * u, hd_rgb(84, 132, 240), 1.0f);
+    text(im, u, x + 7.0f, y + 36.5f, tag, hd_rgb(255, 255, 255), 0.75f, 1.0f);
+    text(im, u, x + tw + 8.0f, y + 36.5f, "초파리의 뇌와 겨루는 파티", dim, 0.75f, 1.0f);
+    return y + 76.0f;
+}
+
+/* 역대 순위를 max줄까지 적는다 */
+static void art_top(image_t *im, float u, float y, const char *const top[], int n_top, int max)
+{
+    const float x = PANEL_X;
+    text(im, u, x, y, "역대 순위", dim, 0.75f, 1.0f);
+    hd_rect(im, x * u, (y + 13.0f) * u, 210.0f * u, 0.6f * u, hd_rgb(60, 64, 84), 1.0f);
+    for (int i = 0; i < n_top && i < max; i++) text(im, u, x, y + 18.0f + 14.0f * (float)i, top[i], i == 0 ? ink : dim, 0.75f, 1.0f);
+}
+
+/* 로비: 참가자, 안내, 역대 순위. 글자는 작게 */
+void art_lobby(image_t *im, const art_seat_t *seat, int n_seats, const char *const top[], int n_top, double t)
+{
+    float u = art_scene(im, t);
+    if (u <= 0.0f) return;
+    float x = PANEL_X, y = art_head(im, u, "LOBBY");
     int ready = 0, me_host = 0;
     char line[64];
-    text(im, u, x, y, "슈퍼 시프 파티", key, 1.9f, 1.0f);
-    hd_rrect(im, x * u, (y + 34.0f) * u, 40.0f * u, 14.0f * u, 7.0f * u, hd_rgb(84, 132, 240), 1.0f);
-    text(im, u, x + 7.0f, y + 36.5f, "LOBBY", hd_rgb(255, 255, 255), 0.75f, 1.0f);
-    text(im, u, x + 48.0f, y + 36.5f, "초파리의 뇌와 겨루는 파티", dim, 0.75f, 1.0f);
-    y += 76.0f;
     for (int i = 0; i < n_seats; i++) {
         const art_seat_t *s = &seat[i];
         rgb_t c = s->me ? sky : ink;
@@ -299,10 +324,46 @@ void art_lobby(image_t *im, const art_seat_t *seat, int n_seats, const char *con
     text(im, u, x + 80.0f, y, me_host ? "시작" : "시작(방장)", ink, 0.8f, 1.0f);
     text(im, u, x + 150.0f, y, "Q", key, 0.8f, 1.0f);
     text(im, u, x + 160.0f, y, "나가기", ink, 0.8f, 1.0f);
-    if (n_top > 0) {
-        y += 36.0f;
-        text(im, u, x, y, "역대 순위", dim, 0.75f, 1.0f);
-        hd_rect(im, x * u, (y + 13.0f) * u, 210.0f * u, 0.6f * u, hd_rgb(60, 64, 84), 1.0f);
-        for (int i = 0; i < n_top && i < 6; i++) text(im, u, x, y + 18.0f + 14.0f * (float)i, top[i], i == 0 ? ink : dim, 0.75f, 1.0f);
+    if (n_top > 0) art_top(im, u, y + 36.0f, top, n_top, 6);
+}
+
+/* 입장 화면: 고를 것 셋. sel은 고른 줄이다(0 입장, 1 지난 랭킹, 2 나가기) */
+void art_title(image_t *im, int sel, double t)
+{
+    static const char *const item[3] = { "입장", "지난 랭킹", "나가기" };
+    float u = art_scene(im, t);
+    if (u <= 0.0f) return;
+    float x = PANEL_X, y = art_head(im, u, "WELCOME") + 4.0f;
+    for (int i = 0; i < 3; i++, y += 26.0f) {
+        const char num[2] = { (char)('1' + i), '\0' };
+        if (i == sel) {                              /* 고른 줄: 옅은 바탕과 왼쪽의 노란 막대 */
+            hd_rrect(im, (x - 10.0f) * u, (y - 5.0f) * u, 190.0f * u, 22.0f * u, 6.0f * u, hd_rgb(26, 32, 56), 1.0f);
+            hd_rrect(im, (x - 10.0f) * u, (y - 5.0f) * u, 3.0f * u, 22.0f * u, 1.5f * u, key, 1.0f);
+        }
+        text(im, u, x, y, num, i == sel ? key : dim, 1.0f, 1.0f);
+        text(im, u, x + 18.0f, y, item[i], i == sel ? ink : dim, 1.0f, 1.0f);
     }
+    y += 10.0f;
+    text(im, u, x, y, "1 2 3", key, 0.8f, 1.0f);
+    text(im, u, x + 34.0f, y, "고르기", ink, 0.8f, 1.0f);
+    text(im, u, x + 84.0f, y, "SPACE", key, 0.8f, 1.0f);
+    text(im, u, x + 118.0f, y, "들어가기", ink, 0.8f, 1.0f);
+    text(im, u, x, y + 34.0f, "어서 와요! 파티가 곧 시작돼요", sky, 0.85f, 1.0f);
+}
+
+/* 지난 랭킹: 순위를 적는다. ok가 0이면 서버에 닿지 못했다 */
+void art_past(image_t *im, const char *const top[], int n_top, int ok, double t)
+{
+    float u = art_scene(im, t);
+    if (u <= 0.0f) return;
+    float x = PANEL_X, y = art_head(im, u, "RANKING");
+    if (!ok) {
+        text(im, u, x, y, "서버에 닿지 않아요", ink, 0.9f, 1.0f);
+        text(im, u, x, y + 18.0f, "서버가 켜져 있는지 봐 주세요", dim, 0.8f, 1.0f);
+    } else if (n_top == 0) {
+        text(im, u, x, y, "아직 기록이 없어요", dim, 0.9f, 1.0f);
+    } else {
+        art_top(im, u, y, top, n_top, 10);
+    }
+    text(im, u, x, 372.0f, "아무 키나 누르면 돌아가요", sky, 0.8f, 1.0f);
 }
