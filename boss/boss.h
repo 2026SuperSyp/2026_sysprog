@@ -95,11 +95,15 @@ typedef struct {
     int   jump_buffer;                           /* 뛸 수 없을 때 누른 키를 기억해 두는 시간. 그 안에 뛸 수 있게 되면 뛴다 */
     int   jump_carry;                            /* 뛰기 전 이만큼 안에 걷고 있었으면 그 빠르기와 방향으로 날아간다 */
     float jump_height, jump_clear;               /* 꼭대기의 높이(칸), 이 높이 이상이면 돌진이 발밑으로 지나간다 */
-    /* 먹이. 초파리는 냄새가 닿는 거리(bait_smell) 안에 보이는 먹이로 걸어가고(bait_speed), 닿으면 단맛 자극
+    /* 먹이. 초파리는 bait_smell 안에 보이는 먹이를 물체로 보고 걸어가고(뇌의 걷기 명령), 닿으면 단맛 자극
      * (bait_sugar)이 뇌로 들어간다. 뇌의 먹기 반응이 feed_level 이상이면 먹는다. 다 먹는 데 bait_ticks가 걸리고
      * 다 먹으면 체력이 bait_heal만큼 돌아온다. 먹이 쪽에 있다가 맞으면 먹이를 버리고 bait_wary 동안 먹이를 찾지 않는다 */
     int   bait_count, bait_ticks, bait_wary;
-    float bait_throw, bait_smell, bait_speed, bait_sugar, bait_heal, feed_level;
+    float bait_throw, bait_smell, bait_sugar, bait_heal, feed_level;
+    /* 보이는 물체. 초파리는 see_range 안에 보이는 참가자와 bait_smell 안에 보이는 먹이를 물체로 본다. 가까울수록 세고,
+     * 세기에 see_player, see_bait를 곱한다. 이 자극이 뇌의 걷기 명령 뉴런을 켜서 초파리가 그쪽으로 걸어간다 */
+    float see_range, see_player, see_bait;
+    float pursue_turn;                           /* 걷기 명령의 좌우 차이가 도는 빠르기에 주는 몫 */
     int   air_ticks, air_rest_ticks;             /* 떠 있는 시간, 내려앉은 뒤 다시 뛰지 못하는 시간(둘 다 게임 규칙) */
     float swat_range, swat_damage; int swat_cooldown;
     float spray_range, spray_damage; int spray_ammo, spray_cooldown;

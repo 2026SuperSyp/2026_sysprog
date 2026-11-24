@@ -29,6 +29,8 @@ static struct { int group; const char *name; float full_hz; const uint32_t *idx;
     { BR_BITTER, "BR_BITTER", 160.0f, NULL, 0 },
     { BR_SALT,   "BR_SALT",    60.0f, NULL, 0 },
     { BR_WATER,  "BR_WATER",  160.0f, NULL, 0 },
+    { BR_OBJECT_L, "BR_OBJECT_L", 150.0f, NULL, 0 },       /* 물체를 보는 시각 뉴런(LC9) */
+    { BR_OBJECT_R, "BR_OBJECT_R", 150.0f, NULL, 0 },
 };
 #define N_INPUTS ((int)(sizeof inputs / sizeof inputs[0]))
 
@@ -47,6 +49,11 @@ static struct {
     { BR_TURN_R,   "BR_TURN_R",    15.0f, 4, NULL, 0, 0, {0}, {0} },
     { BR_BACKWARD, "BR_BACKWARD",  10.0f, 8, NULL, 0, 0, {0}, {0} },
     { BR_FEED,     "BR_FEED",      70.0f, 4, NULL, 0, 0, {0}, {0} },
+    /* 몸을 움직이는 명령 뉴런. 물체 자극 150에서 걷기 명령(DNp09)이 초당 45번쯤, 방향 전환(DNa02)이 25~60번 발화한다 */
+    { BR_WALK_L,   "BR_WALK_L",    45.0f, 4, NULL, 0, 0, {0}, {0} },
+    { BR_WALK_R,   "BR_WALK_R",    45.0f, 4, NULL, 0, 0, {0}, {0} },
+    { BR_STEER_L,  "BR_STEER_L",   40.0f, 4, NULL, 0, 0, {0}, {0} },
+    { BR_STEER_R,  "BR_STEER_R",   40.0f, 4, NULL, 0, 0, {0}, {0} },
 };
 #define N_OUTPUTS ((int)(sizeof outputs / sizeof outputs[0]))
 
@@ -101,6 +108,10 @@ int brain_real_open(const char *dir)
     for (int i = 0; i < N_INPUTS; i++)  inputs[i].n  = lif_group(brain, inputs[i].name,  &inputs[i].idx);
     for (int i = 0; i < N_OUTPUTS; i++) {
         outputs[i].n = lif_group(brain, outputs[i].name, &outputs[i].idx);
+        /* 집단이 없으면 그 반응은 늘 0이다. 자료를 만든 뒤에 집단이 늘었으면(보스전의 걷기 명령 뉴런) 다시 만들어야 한다 */
+        if (outputs[i].n == 0)
+            fprintf(stderr, "경고: 뇌 자료에 %s 집단이 없습니다. data/brain_groups.txt가 옛것입니다(tools/brain_convert.py를 다시 돌리세요)\n",
+                    outputs[i].name);
         if (outputs[i].n > OUT_MAX) outputs[i].n = OUT_MAX;
     }
     load_map(dir);
@@ -176,7 +187,8 @@ void brain_real_tick(const float *stim, float *rate)
         rate[outputs[i].group] = clamp01(hz / outputs[i].full_hz);
     }
 
-    /* 전진은 배선에서 확인하지 못해서 규칙으로 둔다: 다가오는 것이 없으면 걷는다. */
+    /* BR_FORWARD(스테이지용)는 규칙으로 둔다: 다가오는 것이 없으면 걷는다. 보스전은 이것 대신 걷기 명령 뉴런
+     * (BR_WALK_L/R)을 쓴다. */
     float loom = stim[BR_LOOM_L] > stim[BR_LOOM_R] ? stim[BR_LOOM_L] : stim[BR_LOOM_R];
     rate[BR_FORWARD] = 1.0f - clamp01(loom);
     /* 각성: 이번 틱에 뇌 전체가 발화한 횟수 */

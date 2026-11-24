@@ -38,6 +38,13 @@ GROUPS = {
     "BR_TURN_R":   ("type", {"DNa02", "DNa01"}, "right"),
     "BR_BACKWARD": ("type", {"MDN"}, None),
     "BR_FEED":     ("type", {"CB0701"}, None),      # 주둥이를 내미는 운동 뉴런(MN9)
+    # 몸을 움직이는 명령 뉴런(보스전). 근거와 잰 값은 docs/brain-notes.md
+    "BR_OBJECT_L": ("type", {"LC9"}, "left"),       # 물체를 보는 시각 뉴런. DNp09에 가장 많이 들어온다
+    "BR_OBJECT_R": ("type", {"LC9"}, "right"),
+    "BR_WALK_L":   ("type", {"DNp09"}, "left"),     # 앞으로 걷기 명령 뉴런(P9, Bidaye 외 2020)
+    "BR_WALK_R":   ("type", {"DNp09"}, "right"),
+    "BR_STEER_L":  ("type", {"DNa02"}, "left"),     # 방향 전환 명령 뉴런(Rayshubskiy 외 2024)
+    "BR_STEER_R":  ("type", {"DNa02"}, "right"),
 }
 
 

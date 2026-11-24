@@ -51,6 +51,14 @@ static void fake_targets(const float *s, float *t)
     float drive = s[BR_SUGAR] + 0.5f * s[BR_WATER] - s[BR_BITTER] - 0.7f * s[BR_SALT];
     t[BR_FEED] = drive < 0.3f ? 0.0f : clamp01(drive);
 
+    /* 몸을 움직이는 명령(보스전): 물체가 보이는 쪽의 걷기 명령이 켜지고 그쪽으로 돈다. 다가오는 것이 있으면
+     * 반대쪽으로 도는 것은 위의 방향 전환과 같다 */
+    float ol = s[BR_OBJECT_L], orr = s[BR_OBJECT_R];
+    t[BR_WALK_L]  = clamp01(ol);
+    t[BR_WALK_R]  = clamp01(orr);
+    t[BR_STEER_L] = clamp01(t[BR_TURN_L] + (ol > orr ? ol - orr : 0.0f));
+    t[BR_STEER_R] = clamp01(t[BR_TURN_R] + (orr > ol ? orr - ol : 0.0f));
+
     float sum = 0.0f;
     for (int i = BR_SUGAR; i <= BR_REPEL_R; i++) sum += s[i];
     t[BR_AROUSAL] = clamp01(sum * 0.5f);

@@ -982,7 +982,7 @@ static float draw_brain(image_t *im, const boss_snap_t *b, const boss_view_t *v)
     if (!small) return 0.0f;
     int n = im->w / SCREEN_W / 2 > 0 ? im->w / SCREEN_W / 2 : 1;                 /* 그림의 픽셀 하나가 몇 픽셀인가 */
     float pw = (float)((BRAIN_PANEL_W + 2) * n) / U, ph = (float)((BRAIN_PANEL_H + 2) * n) / U, x = 10.0f, y = 10.0f, w = pw + 10.0f;
-    plate(im, x, y, w, 13.0f + ph + 62.0f, 0.72f);
+    plate(im, x, y, w, 13.0f + ph + 84.0f, 0.72f);
     text(im, x + 5.0f, y + 3.0f, "초파리 뇌", SKY, 0.8f, 1.0f);
 
     const ui_text_item_t *items;
@@ -1002,14 +1002,20 @@ static float draw_brain(image_t *im, const boss_snap_t *b, const boss_view_t *v)
     bar(im, x + 5.0f + lw, gy + 3.0f, w - 10.0f - lw, 4.0f, loom, 0.0f, SKY);
     text(im, x + 5.0f, gy + 11.0f, "도약", DIM, 0.75f, 1.0f);
     bar(im, x + 5.0f + lw, gy + 14.0f, w - 10.0f - lw, 4.0f, rate[BR_ESCAPE], v->takeoff, jump ? hd_rgb(245, 190, 60) : SKY);
-    text(im, x + 5.0f, gy + 22.0f, "단맛", DIM, 0.75f, 1.0f);
-    bar(im, x + 5.0f + lw, gy + 25.0f, w - 10.0f - lw, 4.0f, stim[BR_SUGAR], 0.0f, hd_rgb(250, 200, 60));
-    text(im, x + 5.0f, gy + 33.0f, "먹기", DIM, 0.75f, 1.0f);
-    bar(im, x + 5.0f + lw, gy + 36.0f, w - 10.0f - lw, 4.0f, rate[BR_FEED], 0.5f, b->fly.feeding ? hd_rgb(85, 200, 120) : SKY);
+    /* 물체: 보이는 사람과 먹이(물체를 보는 시각 뉴런). 걷기: 뇌가 몸으로 내려보내는 걷기 명령 뉴런의 반응 */
+    float obj = maxf(stim[BR_OBJECT_L], stim[BR_OBJECT_R]), walk = maxf(rate[BR_WALK_L], rate[BR_WALK_R]);
+    text(im, x + 5.0f, gy + 22.0f, "물체", DIM, 0.75f, 1.0f);
+    bar(im, x + 5.0f + lw, gy + 25.0f, w - 10.0f - lw, 4.0f, obj, 0.0f, hd_rgb(196, 160, 240));
+    text(im, x + 5.0f, gy + 33.0f, "걷기", DIM, 0.75f, 1.0f);
+    bar(im, x + 5.0f + lw, gy + 36.0f, w - 10.0f - lw, 4.0f, walk, 0.0f, hd_rgb(196, 160, 240));
+    text(im, x + 5.0f, gy + 44.0f, "단맛", DIM, 0.75f, 1.0f);
+    bar(im, x + 5.0f + lw, gy + 47.0f, w - 10.0f - lw, 4.0f, stim[BR_SUGAR], 0.0f, hd_rgb(250, 200, 60));
+    text(im, x + 5.0f, gy + 55.0f, "먹기", DIM, 0.75f, 1.0f);
+    bar(im, x + 5.0f + lw, gy + 58.0f, w - 10.0f - lw, 4.0f, rate[BR_FEED], 0.5f, b->fly.feeding ? hd_rgb(85, 200, 120) : SKY);
     const char *doing = b->fly.hp <= 0 ? "쓰러짐" : (b->fly.stun ? "멈춤" : (b->fly.air ? "달아남" : ((b->fly.windup || b->fly.charging) ? "돌진" :
-                        (b->fly.feeding ? "먹는 중" : (b->fly.lured ? "먹이로 감" : (loom > 0.1f ? "경계" : "돌아다님"))))));
-    text(im, x + 5.0f, gy + 45.0f, "상태", DIM, 0.75f, 1.0f);
-    text(im, x + 5.0f + lw, gy + 45.0f, doing, b->fly.feeding ? hd_rgb(85, 200, 120) : INK, 0.75f, 1.0f);
+                        (b->fly.feeding ? "먹는 중" : (b->fly.lured ? "먹이로 감" : (loom > 0.1f ? "경계" : (walk > 0.15f ? "다가옴" : "가만히")))))));
+    text(im, x + 5.0f, gy + 67.0f, "상태", DIM, 0.75f, 1.0f);
+    text(im, x + 5.0f + lw, gy + 67.0f, doing, b->fly.feeding ? hd_rgb(85, 200, 120) : INK, 0.75f, 1.0f);
     return x + w;
 }
 
@@ -1208,7 +1214,7 @@ static void draw_hud(image_t *im, const boss_snap_t *b, const boss_view_t *v, in
     else if (b->fly.feeding) { note = "먹고 있다!  C 살금살금 다가가라"; note_col = hd_rgb(85, 200, 120); }
     else if (b->fly.stun) note = "멈췄다! 지금이다";
     else if (b->fly.air) note = "달아난다!  C 살금살금";
-    else if (b->fly.lured) note = "먹이 냄새를 맡았다";
+    else if (b->fly.lured) note = "먹이를 보고 다가간다";
     if (note && eye >= 0 && b->outcome == BOSS_GOING) {
         float w = (float)ui_text_w(note) * 1.1f, x = (HW - w) * 0.5f;
         plate(im, x - 10.0f, 38.0f, w + 20.0f, 19.0f, 0.7f);

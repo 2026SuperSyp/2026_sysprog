@@ -28,6 +28,10 @@ typedef enum {
     BR_BACKWARD, BR_LAND, BR_AROUSAL,
     /* 출력(반응): 카드 암기 스테이지용 */
     BR_VALENCE,
+    /* 보스전용: 몸을 움직이는 명령 뉴런. 진짜 뇌에서 뇌가 몸으로 내려보내는 뉴런들이다(docs/brain-notes.md) */
+    BR_OBJECT_L, BR_OBJECT_R,    /* 입력: 왼쪽, 오른쪽에 물체가 보인다(물체를 보는 시각 뉴런 LC9) */
+    BR_WALK_L, BR_WALK_R,        /* 출력: 앞으로 걸어라(명령 뉴런 DNp09). 한쪽만 세면 그쪽으로 휘어 걷는다 */
+    BR_STEER_L, BR_STEER_R,      /* 출력: 왼쪽, 오른쪽으로 돌아라(명령 뉴런 DNa02) */
     BRAIN_GROUP_COUNT            /* 새 항목은 이 줄 바로 앞에만 추가한다 */
 } brain_group_t;
 

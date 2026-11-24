@@ -15,6 +15,11 @@
  * 자극의 세기는 진짜 뇌에 맞췄다. 진짜 뇌는 다가옴 자극 0.23쯤에서 달아남 출력이 발화 기준 0.5를 넘는다
  * (make bossbot BRAIN=real의 첫 줄이 이 곡선이다). 그래서 걸어서 다가오면 0.23을 넘고, 살금살금 다가오거나
  * 가만히 서 있을 때는 넘지 않게 잡았다. 가짜 뇌는 덜 예민해서(0.42쯤) 덜 뛴다.
+ * 걷는 것도 뇌가 정한다. 초파리의 눈에 보이는 물체(참가자, 먹이)를 물체 자극(BR_OBJECT_L/R)으로 주면, 진짜 뇌에서는
+ * 물체를 보는 시각 뉴런(LC9)이 같은 쪽의 걷기 명령 뉴런(DNp09)을 켠다. DNp09는 뇌가 몸으로 내려보내는 뉴런이고,
+ * 켜지면 앞으로 걸으며 그쪽으로 휜다(Bidaye 외 2020). 그 반응(BR_WALK_L/R)이 걷는 빠르기이고, 좌우의 차이와
+ * 방향 전환 명령 뉴런(DNa02, BR_STEER_L/R)이 도는 빠르기다. 그래서 초파리는 보이는 사람과 먹이 쪽으로 걸어오고,
+ * 아무것도 보이지 않으면 걷지 않는다. 빨리 다가오면 위의 달아남 회로가 먼저 켜진다.
  * 공격할 때는 계산부의 규칙이 정한다. 몰리지 않을 때(다가옴 자극이 rush_level보다 약할 때)만 가까운 참가자에게
  * 돌진한다. 그래서 "달려드는 사람은 피하고, 몰리지 않으면 덤빈다"로 보인다.
  * 벽은 뇌에 넣지 않는다. 다가옴 자극은 도약 회로의 입력이라 벽을 거기에 넣으면 벽을 볼 때마다 뛰어오른다
@@ -40,7 +45,7 @@ void boss_cfg_default(boss_cfg_t *c)
     c->player_radius = 0.25f;
     c->step = 0.5f; c->slow_step = 0.1f; c->step_ticks = 3;
     c->body_mm = 2.5f;
-    c->walk_mm_s = 7.2f;  c->run_mm_s = 44.7f; c->back_mm_s = 7.2f;
+    c->walk_mm_s = 28.0f; c->run_mm_s = 44.7f; c->back_mm_s = 7.2f;
     c->turn_deg_s = 200.0f;
     c->accel_ticks = 2;
     c->speed_scale = 0.22f; c->turn_scale = 1.0f;
@@ -49,7 +54,8 @@ void boss_cfg_default(boss_cfg_t *c)
     c->guard_ticks = 10; c->guard_cooldown = 50; c->guard_stun = 24;
     c->jump_ticks = 10; c->jump_rest = 0; c->jump_buffer = 3; c->jump_carry = 4; c->jump_height = 1.0f; c->jump_clear = 0.35f;
     c->bait_count = 3; c->bait_ticks = 60; c->bait_wary = 100;
-    c->bait_throw = 3.0f; c->bait_smell = 8.0f; c->bait_speed = 0.12f; c->bait_sugar = 1.0f; c->bait_heal = 5.0f;
+    c->bait_throw = 3.0f; c->bait_smell = 8.0f; c->bait_sugar = 1.0f; c->bait_heal = 5.0f;
+    c->see_range = 12.0f; c->see_player = 0.35f; c->see_bait = 1.0f; c->pursue_turn = 1.0f;
     c->feed_level = 0.5f;
     c->swat_range = 1.2f;  c->swat_damage = 10.0f; c->swat_cooldown = 8;
     c->spray_range = 5.0f; c->spray_damage = 3.0f; c->spray_ammo = 20; c->spray_cooldown = 8;
@@ -76,7 +82,8 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     F(takeoff_level); F(takeoff_mm_s); I(air_ticks); I(air_rest_ticks); F(takeoff_scale);
     I(guard_ticks); I(guard_cooldown); I(guard_stun);
     I(jump_ticks); I(jump_rest); I(jump_buffer); I(jump_carry); F(jump_height); F(jump_clear);
-    I(bait_count); I(bait_ticks); I(bait_wary); F(bait_throw); F(bait_smell); F(bait_speed); F(bait_sugar); F(bait_heal);
+    I(bait_count); I(bait_ticks); I(bait_wary); F(bait_throw); F(bait_smell); F(bait_sugar); F(bait_heal);
+    F(see_range); F(see_player); F(see_bait); F(pursue_turn);
     F(feed_level);
     F(swat_range); F(swat_damage); I(swat_cooldown);
     F(spray_range); F(spray_damage); I(spray_ammo); I(spray_cooldown);
@@ -313,6 +320,23 @@ void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT])
     for (int k = 0; k < BOSS_BAITS; k++)
         if (s->bait[k].on && dist(s->bait[k].x, s->bait[k].y, f->x, f->y) <= s->cfg.fly_radius + BAIT_TOUCH)
             stim[BR_SUGAR] = s->cfg.bait_sugar;
+    /* 보이는 물체: 참가자와 먹이. 진짜 뇌에서는 물체를 보는 시각 뉴런(LC9)이고, 같은 쪽의 걷기 명령 뉴런을 켠다.
+     * 가까울수록 크게 보여서 세다. 벽에 가리면 보이지 않는다. 놀란 동안(wary)에는 먹이를 보지 않는다 */
+    float ol = 0.0f, orr = 0.0f;
+    for (int i = 0; i < s->n_players; i++) {
+        const boss_player_t *p = &s->p[i];
+        float dx = p->x - f->x, dy = p->y - f->y, d = sqrtf(dx * dx + dy * dy);
+        if (!p->alive || d < 1e-4f || d >= s->cfg.see_range || !line_clear(s, f->x, f->y, p->x, p->y)) continue;
+        add_side(&ol, &orr, s->cfg.see_player * (0.4f + 0.6f * (1.0f - d / s->cfg.see_range)), side_of(hx, hy, dx, dy, d));
+    }
+    for (int k = 0; k < BOSS_BAITS && f->wary == 0; k++) {
+        const boss_bait_t *b = &s->bait[k];
+        float dx = b->x - f->x, dy = b->y - f->y, d = sqrtf(dx * dx + dy * dy);
+        if (!b->on || d < 1e-4f || d >= s->cfg.bait_smell || !line_clear(s, f->x, f->y, b->x, b->y)) continue;
+        add_side(&ol, &orr, s->cfg.see_bait * (0.4f + 0.6f * (1.0f - d / s->cfg.bait_smell)), side_of(hx, hy, dx, dy, d));
+    }
+    stim[BR_OBJECT_L] = ol;
+    stim[BR_OBJECT_R] = orr;
 }
 
 /* ---- 참가자 ------------------------------------------------------------------------- */
@@ -619,8 +643,8 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
         if (f->charging == 0) { f->target = -1; f->charge_cool = c->charge_cooldown; }
         return;
     }
-    /* 먹이. 냄새가 닿는 거리 안에 보이는 먹이가 있으면 그쪽으로 간다. 이것은 몸의 규칙이다(이 뇌 모델에는 냄새를 따라
-     * 도는 입력을 넣지 않았다). 닿으면 단맛 자극이 뇌로 들어가고(boss_stimulus), 먹을지는 뇌가 정한다: 먹기 반응
+    /* 먹이. 보이는 먹이는 물체 자극으로 뇌에 들어가서(boss_stimulus) 뇌의 걷기 명령이 그쪽으로 걷게 한다. 여기서는
+     * 먹이로 가는 중인지만 적어 둔다(그동안은 돌진하지 않는다). 닿으면 단맛 자극이 들어가고, 먹을지도 뇌가 정한다: 먹기 반응
      * (진짜 뇌에서는 주둥이를 내미는 운동 뉴런 MN9)이 기준을 넘으면 그 자리에서 먹는다. 먹는 동안에도 다가옴 자극이
      * 세면 뇌의 달아남 출력이 먼저 켜져서 위에서 이미 뛰어올랐다. 그래서 먹는 초파리에게는 살금살금 다가가야 한다 */
     int bait = f->wary > 0 ? -1 : nearest_bait(s);
@@ -660,23 +684,17 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
     /* 평소: 뇌의 반응으로 움직인다. 반응(0~1)에 실제 초파리의 빠르기를 곱한다. mm를 몸길이로 나눠 칸으로 옮기고
      * (게임의 몸길이는 지름), 게임용 배율을 곱한다. 몸은 한 번에 빠르기를 바꾸지 못한다 */
     float per_mm = 2.0f * c->fly_radius / c->body_mm * c->speed_scale / 20.0f;      /* mm/s -> 칸/틱 */
-    float v_want = per_mm * (c->walk_mm_s * rate[BR_FORWARD] + c->run_mm_s * rate[BR_ESCAPE]
-                             - c->back_mm_s * rate[BR_BACKWARD]);
+    /* 앞으로 걷기는 걷기 명령 뉴런(DNp09)의 반응이다. 좌우 가운데 센 쪽을 쓴다(한쪽만 켜져도 걷는다) */
+    float walk = rate[BR_WALK_L] > rate[BR_WALK_R] ? rate[BR_WALK_L] : rate[BR_WALK_R];
+    float v_want = per_mm * (c->walk_mm_s * walk + c->run_mm_s * rate[BR_ESCAPE] - c->back_mm_s * rate[BR_BACKWARD]);
     float turn = c->turn_deg_s * (PI_F / 180.0f) / 20.0f * c->turn_scale;        /* 반응 1일 때 한 틱에 도는 각도 */
-    float w_want = (rate[BR_TURN_R] - rate[BR_TURN_L]) * turn;
+    /* 도는 것은 방향 전환 명령 뉴런(DNa02)의 좌우 차이에, 걷기 명령의 좌우 차이(켜진 쪽으로 휘어 걷는다)를 더한다 */
+    float w_want = ((rate[BR_STEER_R] - rate[BR_STEER_L]) + (rate[BR_WALK_R] - rate[BR_WALK_L]) * c->pursue_turn) * turn;
     /* 벽 피하기(몸의 규칙): 앞쪽 30도 좌우로 벽을 더듬어 가까운 쪽의 반대로 돈다. 정면이면 오른쪽으로 돈다 */
     float dl = wall_dist(s, f->x, f->y, f->ang - PI_F / 6.0f, c->wall_sense + c->fly_radius) - c->fly_radius;
     float dr = wall_dist(s, f->x, f->y, f->ang + PI_F / 6.0f, c->wall_sense + c->fly_radius) - c->fly_radius;
     float wl = clamp01(1.0f - dl / c->wall_sense), wr = clamp01(1.0f - dr / c->wall_sense);
     if (wl > 0.0f || wr > 0.0f) w_want += (wl >= wr ? wl : -wr) * turn * c->wall_turn;
-    if (f->lured) {                                  /* 먹이 쪽으로 돌아서 걸어간다 */
-        const boss_bait_t *bt = &s->bait[f->bait];
-        float diff = atan2f(bt->y - f->y, bt->x - f->x) - f->ang;
-        while (diff > PI_F) diff -= 2.0f * PI_F;
-        while (diff < -PI_F) diff += 2.0f * PI_F;
-        w_want = diff > turn ? turn : (diff < -turn ? -turn : diff);
-        v_want = fabsf(diff) < 1.0f ? c->bait_speed : 0.0f;
-    }
     int lag = c->accel_ticks > 1 ? c->accel_ticks : 1;
     f->v += (v_want - f->v) / (float)lag;
     f->w += (w_want - f->w) / (float)lag;

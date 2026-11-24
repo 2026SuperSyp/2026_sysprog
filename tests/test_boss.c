@@ -135,7 +135,7 @@ static void test_trap(void)
 {
     boss_cfg_t c = calm();
     float go[BRAIN_GROUP_COUNT] = { 0 };
-    go[BR_FORWARD] = 1.0f;
+    go[BR_WALK_L] = go[BR_WALK_R] = 0.25f;                         /* 걷기 명령: 곧게 걷는다 */
     setup(&c, 1);
     put_fly(8.5f, 9.0f);
     S.fly.ang = 0.0f;                                             /* 오른쪽(+x)을 본다 */
@@ -403,7 +403,9 @@ static void rule_brain(const float *stim, float *rate)
     rate[BR_TURN_L] = r > l ? r - l : 0.0f;
     rate[BR_ESCAPE] = l > r ? l : r;
     rate[BR_BACKWARD] = l < r ? l : r;
-    rate[BR_FORWARD] = 1.0f - rate[BR_ESCAPE];
+    rate[BR_WALK_L] = rate[BR_WALK_R] = 0.25f * (1.0f - rate[BR_ESCAPE]);
+    rate[BR_STEER_L] = rate[BR_TURN_L];
+    rate[BR_STEER_R] = rate[BR_TURN_R];
 }
 
 static void run_script(boss_state_t *s, boss_snap_t *snaps, int n)
@@ -574,8 +576,9 @@ static void test_jump(void)
 static void test_bait(void)
 {
     boss_cfg_t c = calm();
-    float eat[BRAIN_GROUP_COUNT] = { 0 }, stim[BRAIN_GROUP_COUNT];
+    float eat[BRAIN_GROUP_COUNT] = { 0 }, walk[BRAIN_GROUP_COUNT] = { 0 }, stim[BRAIN_GROUP_COUNT];
     eat[BR_FEED] = 1.0f;
+    walk[BR_WALK_L] = walk[BR_WALK_R] = 1.0f;                     /* 뇌의 걷기 명령: 곧게 걷는다 */
     setup(&c, 1);
     put_fly(8.5f, 9.0f);
     put_player(0, 8.5f, 14.5f, NORTH);
@@ -586,10 +589,15 @@ static void test_bait(void)
     T_CHECK(S.bait[0].on && fabsf(S.bait[0].x - 8.5f) < 0.01f && fabsf(S.bait[0].y - (14.5f - c.bait_throw)) < 0.15f);
     boss_stimulus(&S, stim);
     T_CHECK(stim[BR_SUGAR] == 0.0f);                              /* 아직 닿지 않았다 */
+    /* 먹이가 물체로 보인다. 초파리는 아래(먹이 쪽)를 보고 있으므로 정면이다: 좌우에 같은 세기로 들어간다 */
+    T_CHECK(stim[BR_OBJECT_L] > 0.2f && fabsf(stim[BR_OBJECT_L] - stim[BR_OBJECT_R]) < 0.05f);
     float d0 = S.bait[0].y - S.fly.y;
-    ticks(12, still);                                             /* 냄새를 따라 다가간다 */
+    ticks(4, still);                                              /* 걷기 명령이 없으면 걷지 않는다 */
+    T_CHECK(fabsf(S.bait[0].y - S.fly.y - d0) < 0.01f);
+    ticks(8, walk);                                               /* 걷기 명령이 켜지면 다가간다 */
     T_CHECK(S.fly.lured && S.bait[0].y - S.fly.y < d0 - 0.5f);
-    ticks(40, still);                                             /* 닿았지만 먹기 반응이 없으면 먹지 않는다 */
+    for (int k = 0; k < 40 && S.bait[0].y - S.fly.y > c.fly_radius + 0.1f; k++) boss_tick(&S, walk);
+    ticks(3, still);                                              /* 닿았지만 먹기 반응이 없으면 먹지 않는다 */
     boss_stimulus(&S, stim);
     T_CHECK(stim[BR_SUGAR] > 0.5f);
     T_EQ_INT(S.fly.feeding, 0);
@@ -609,6 +617,17 @@ static void test_bait(void)
     T_EQ_INT(S.fly.hp, hp - (int)c.swat_damage);
     T_EQ_INT(S.bait[0].on, 0);
     T_CHECK(S.fly.wary > 0);
+
+    setup(&c, 1);                                                 /* 참가자도 물체로 보인다: 초파리의 왼쪽에 서면 왼쪽이 세다 */
+    put_fly(8.5f, 9.0f);                                          /* 초파리는 아래(+y)를 본다. 그 왼쪽은 +x 쪽이다 */
+    put_player(0, 12.5f, 9.0f, NORTH);
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_OBJECT_L] > stim[BR_OBJECT_R] + 0.1f);
+    walk[BR_WALK_R] = 0.0f;                                       /* 왼쪽 걷기 명령만 켜지면 왼쪽으로 휘어 걷는다 */
+    float a0 = S.fly.ang;
+    ticks(6, walk);
+    T_CHECK(S.fly.ang < a0 - 0.1f);
+    walk[BR_WALK_R] = 1.0f;
 
     setup(&c, 1);                                                 /* 다 먹으면 먹이가 없어지고 체력이 조금 돌아온다 */
     put_fly(8.5f, 9.0f);
