@@ -286,13 +286,32 @@ static void draw_bars(canvas_t *c, const boss_snap_t *b, const boss_view_t *v, i
     }
 }
 
-/* 3D 화면 위에 얹는 것: 손에 든 무기, 가운데 표시, 작은 지도, 알림, 상태 줄. 배율 1의 좌표로 그린다 */
+/* 보스전이 끝났으면 가운데에 결과를 알린다. 서버는 끝난 상태를 잠깐 그대로 둔 뒤 랭킹으로 넘어간다 */
+static void draw_outcome(canvas_t *c, const boss_snap_t *b)
+{
+    if (b->outcome == BOSS_GOING) return;
+    int win = b->outcome == BOSS_PLAYERS_WIN, alive = 0;
+    for (int i = 0; i < b->n_players && i < BOSS_PLAYERS; i++) alive += b->p[i].alive;
+    const char *head = win ? "초파리를 잡았다!" : (alive ? "시간이 다 됐다" : "모두 쓰러졌다");
+    const char *sub  = win ? "살아남은 사람은 점수를 더 받아요" : "초파리가 이겼어요";
+    color_t col = win ? C_GOOD : C_BAD;
+    int hw = ui_text_w(head), sw = ui_text_w(sub);
+    /* 오른쪽 위의 작은 지도(세로 50픽셀)를 가리지 않게 화면의 아래쪽 절반에 놓는다 */
+    int bw = (hw > sw ? hw : sw) + 24, bh = 44, bx = (VW - bw) / 2, by = VY + VH / 2 + 2;
+    ui_rect(c, bx - 1, by - 1, bw + 2, bh + 2, col);
+    ui_rect(c, bx, by, bw, bh, C_BLACK);
+    ui_text(c, (VW - hw) / 2, by + 8, head, col);
+    ui_text(c, (VW - sw) / 2, by + 26, sub, C_TEXT);
+}
+
+/* 3D 화면 위에 얹는 것: 손에 든 무기, 가운데 표시, 작은 지도, 알림, 상태 줄, 결과. 배율 1의 좌표로 그린다 */
 static void draw_overlay(canvas_t *c, const boss_snap_t *b, const boss_view_t *v, int eye)
 {
     if (eye < 0) {                                   /* 볼 사람이 없다: 지도만 크게 */
         ui_rect(c, 0, VY, VW, VH, C_BG);
         draw_minimap(c, b, -1);
         draw_bars(c, b, v, eye);
+        draw_outcome(c, b);
         return;
     }
     if (eye == v->me) {
@@ -313,8 +332,9 @@ static void draw_overlay(canvas_t *c, const boss_snap_t *b, const boss_view_t *v
     else if (v->wave_ms >= 0 && v->wave_ms < 500) note = "날갯짓!";
     else if (b->fly.stun) note = "붙었다! 지금이다";
     else if (b->fly.air) note = "뛰어올랐다";
-    if (note) ui_text(c, (VW - ui_text_w(note)) / 2, VY + 4, note, note_col);
+    if (note && b->outcome == BOSS_GOING) ui_text(c, (VW - ui_text_w(note)) / 2, VY + 4, note, note_col);
     draw_bars(c, b, v, eye);
+    draw_outcome(c, b);
 }
 
 /* full이 240x134이면 전처럼 그린다. 배율 N으로 키운 화면(240N x 134N)이면 벽, 초파리, 참가자는 그 크기에

@@ -70,6 +70,7 @@
 #define EVQ_KEEP      64         /* 사건 큐에서 입력이 쓰지 못하게 남겨 두는 칸 */
 #define SCORE_MAX     1000000    /* 한 라운드 점수로 받아 주는 한도 */
 #define BOSS_WIN_BONUS 100       /* 보스전에서 이기고 살아남은 사람에게 더하는 점수 */
+#define BOSS_END_MS    3000      /* 보스전이 끝난 뒤 결과(이겼다, 졌다)를 보여 주는 시간. 그 뒤에 랭킹으로 간다 */
 
 /* ---- 옵션 ------------------------------------------------------------------ */
 static struct {
@@ -735,6 +736,7 @@ static void enter_verdict(void)
  * (brain/brain_api.c)로 쓴다. 뇌 프로세스가 떠 있으면 공유 메모리로, 없으면(--brain-inproc) 서버 안에서 계산한다.
  * 참가자 번호는 자리의 pane에 둔다(미니게임의 칸 번호와 같은 자리다). */
 static brain_mode_t boss_brain = BRAIN_FAKE_FAST;        /* 뇌 프로세스가 없을 때 서버 안에서 쓸 모델 */
+static int boss_over;                                    /* 승패가 났다. 결과를 보여 주는 동안은 틱을 더 돌리지 않는다 */
 
 static void finish_game(void);
 
@@ -771,6 +773,7 @@ static void start_boss(void)
         }
     }
     if (n == 0) { finish_game(); return; }
+    boss_over = 0;
     boss_init(&boss, &c, game_seed ^ 0xB055u, n, lives);
     brain_host_reset(game_seed, boss_brain);
     memset(&st.info, 0, sizeof st.info);
@@ -795,7 +798,9 @@ static void boss_step(void)
     boss_snapshot(&boss, &snap);
     for (int i = 0; i < MAX_CONN; i++)
         if (members[i].in) conn_post(i, members[i].gen, MSG_BOSS, 0, &snap, sizeof snap, 1);
-    if (boss.outcome != BOSS_GOING) finish_boss();
+    /* 승패가 났으면 여기서 멈춘다. 방금 보낸 상태에 결과가 들어 있어서 클라이언트가 그것을 그린다.
+     * 점수를 매기고 랭킹으로 넘어가는 일(finish_boss)은 BOSS_END_MS 뒤에 한다 */
+    if (boss.outcome != BOSS_GOING) boss_over = 1;
 }
 
 static void on_stage_readable(void)
@@ -873,8 +878,9 @@ static void on_deadline(void)
         break;
     }
     case PH_BOSS:
+        if (boss_over) { finish_boss(); break; }         /* 결과를 보여 준 시간이 지났다. 랭킹으로 간다 */
         boss_step();
-        if (phase != PH_BOSS) break;                     /* 끝나서 랭킹으로 갔다 */
+        if (boss_over) { deadline = now + (opt.fast ? 100 : BOSS_END_MS); break; }
         deadline = opt.tick_ms > 0 ? now + opt.tick_ms : (opt.fast ? now : deadline + TICK_MS);
         if (deadline < now - 500) deadline = now;
         break;
