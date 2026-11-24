@@ -1,5 +1,5 @@
 /* 터미널을 켜고 끄는 코드는 여기 한 곳에만 둔다.
- * 켜기: 원시 입력, 대체 화면, 커서 숨김, 마우스 보고(1003, 1006)
+ * 켜기: 원시 입력, 대체 화면, 커서 숨김, 마우스 보고(1003, 1006), 창이 뒤로 감 알림(1004), 키의 누름과 뗌(9001)
  * 끄기: 전부 되돌린다. 프로그램이 죽을 때도 되돌린다.
  * 켤 때 터미널에 무엇을 할 수 있는지도 한 번 물어 둔다(term_caps). */
 #include "ui/ui_internal.h"
@@ -26,7 +26,7 @@ void term_leave(void)
 {
     if (!active) return;
     active = 0;
-    static const char off[] = "\033[?1003l\033[?1006l\033[0m\033[?25h\033[?1049l";
+    static const char off[] = "\033[?9001l\033[?1004l\033[?1003l\033[?1006l\033[0m\033[?25h\033[?1049l";
     ssize_t r = write(STDOUT_FILENO, off, sizeof off - 1);
     (void)r;
     tcsetattr(STDIN_FILENO, TCSANOW, &saved);
@@ -97,7 +97,10 @@ int term_enter(void)
     if (tcsetattr(STDIN_FILENO, TCSANOW, &raw) != 0) return -1;
 
     /* 마우스 보고는 묻고 난 뒤에 켠다. 먼저 켜면 마우스가 움직일 때 답 사이에 마우스 사건이 끼어든다 */
-    static const char on[] = "\033[?1049h\033[?25l\033[2J", mouse[] = "\033[?1003h\033[?1006h";
+    static const char on[] = "\033[?1049h\033[?25l\033[2J", mouse[] = "\033[?1003h\033[?1006h"
+        /* 키의 누름과 뗌을 따로 알려 달라고 한다(9001, Windows Terminal). 알아듣지 못하는 터미널은 무시한다.
+         * 창이 뒤로 가는 것도 알려 달라고 한다(1004). 그때는 누르고 있던 키를 뗀 것으로 쳐야 한다 */
+        "\033[?1004h\033[?9001h";
     ssize_t r = write(STDOUT_FILENO, on, sizeof on - 1);
     active = 1;
     probe();

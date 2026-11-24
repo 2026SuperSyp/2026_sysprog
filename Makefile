@@ -55,7 +55,7 @@ endif
 LDLIBS  := -lm
 
 # 터미널을 쓰는 프로그램이 어떻게 끝났든 터미널을 되돌린다.
-RESTORE := stty sane 2>/dev/null; printf '\033[?1003l\033[?1006l\033[?25h\033[?1049l\033[0m'
+RESTORE := stty sane 2>/dev/null; printf '\033[?9001l\033[?1004l\033[?1003l\033[?1006l\033[?25h\033[?1049l\033[0m'
 
 # ---- 소스 목록 -------------------------------------------------------------
 KIT_SRC    := $(filter-out brain/brain_proc.c,$(wildcard ui/*.c brain/*.c boss/*.c core/log.c core/cfg.c core/rng.c) core/ranking.c core/toplist.c)

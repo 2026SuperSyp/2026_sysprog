@@ -132,13 +132,17 @@ typedef struct {
 const term_caps_t *term_caps(void);
 
 /* ---- 입력 해석 (input.c) ---- */
-enum { IN_KEY = 1, IN_POINTER = 2 };
+/* IN_KEY_UP: 누르고 있던 키를 뗐다. 터미널이 누름과 뗌을 따로 알려 줄 때만 온다(IN_F_HELD).
+ * IN_BLUR: 창이 뒤로 갔다(이 뒤로는 뗀 것을 받지 못한다). 3은 프로토콜의 INPUT_LOOK이 쓴다 */
+enum { IN_KEY = 1, IN_POINTER = 2, IN_KEY_UP = 4, IN_BLUR = 5 };
 enum { IN_F_PRESSED = 1,         /* 포인터: 왼쪽 버튼이 눌려 있다 */
        IN_F_SHIFT = 2,           /* 키: Shift와 함께 눌렀다(대문자, Shift+방향키). 보스전에서 그 걸음을 살금살금 걷는 데 쓴다 */
        IN_F_CLICK = 4,           /* 포인터: 왼쪽 버튼을 방금 눌렀다(누른 채 움직이는 동안에는 없다) */
        IN_F_WHEEL_UP = 8,        /* 포인터: 휠을 위로 굴렸다. 버튼이 눌린 것으로 치지 않는다 */
        IN_F_WHEEL_DOWN = 16,
-       IN_F_RCLICK = 32 };       /* 포인터: 오른쪽 버튼을 방금 눌렀다 */
+       IN_F_RCLICK = 32,         /* 포인터: 오른쪽 버튼을 방금 눌렀다 */
+       IN_F_REPEAT = 64,         /* 키: 누르고 있어서 되풀이된 것이다(IN_F_HELD일 때만 가려낸다) */
+       IN_F_HELD = 128 };        /* 키: 터미널이 누름과 뗌을 따로 알려 준다. 이 키를 떼면 IN_KEY_UP이 온다 */
 enum { IN_K_UP = 0x101, IN_K_DOWN, IN_K_RIGHT, IN_K_LEFT };   /* 그 밖의 키는 글자 코드 그대로 */
 typedef struct {
     uint8_t  kind;               /* IN_KEY 또는 IN_POINTER */

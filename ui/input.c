@@ -40,6 +40,68 @@ static int parse_mouse(const uint8_t *buf, size_t n, in_event_t *ev, size_t *use
     return 0;      /* 아직 끝이 안 왔다 */
 }
 
+int input_parse(const uint8_t *buf, size_t n, in_event_t *ev, size_t *used);
+
+/* ESC [ Vk ; Sc ; Uc ; Kd ; Cs ; Rc _   (win32-input-mode, Windows Terminal)
+ * 키를 누를 때와 뗄 때 한 번씩 온다. Vk는 가상 키 번호, Uc는 그 키의 글자(없으면 0), Kd는 눌렀으면 1 뗐으면 0,
+ * Cs는 같이 눌린 조합 키(0x10이 Shift)다. 누르고 있으면 Kd가 1인 것이 되풀이된다.
+ * 키가 아닌 입력(마우스 보고 같은 제어 문자열)은 Vk가 0인 사건으로 한 글자씩 싸여 올 수 있다. 그런 글자는 모아서
+ * 보통 때처럼 다시 해석한다. 돌려주는 값: 1 해석했다(사건이 없으면 kind가 0), 0 아직 다 안 왔다, -1 이 형식이 아니다 */
+static int parse_win32(const uint8_t *buf, size_t n, in_event_t *ev, size_t *used)
+{
+    static uint8_t down[256];            /* 가상 키 번호마다: 눌려 있는가. 되풀이를 가려내는 데 쓴다 */
+    static uint8_t raw[64];              /* 싸여 온 글자를 모은 것 */
+    static size_t n_raw;
+    int v[6] = { 0, 0, 0, 0, 0, 0 }, k = 0;
+    size_t i = 2;
+    for (; i < n; i++) {
+        uint8_t ch = buf[i];
+        if (ch >= '0' && ch <= '9') { if (k < 6 && v[k] < 1000000) v[k] = v[k] * 10 + (ch - '0'); }
+        else if (ch == ';') k++;
+        else break;
+    }
+    if (i >= n) return 0;
+    if (buf[i] != '_') return -1;
+    *used = i + 1;
+    int vk = v[0] & 0xff, uc = v[2], kd = v[3], shift = (v[4] & 0x10) != 0;
+    if (v[0] == 0) {                                 /* 싸여 온 글자 */
+        if (!kd || uc <= 0) return 1;
+        if (n_raw + 4 > sizeof raw) n_raw = 0;
+        if (uc < 0x80) raw[n_raw++] = (uint8_t)uc;
+        else if (uc < 0x800) { raw[n_raw++] = (uint8_t)(0xC0 | (uc >> 6)); raw[n_raw++] = (uint8_t)(0x80 | (uc & 0x3F)); }
+        else {
+            raw[n_raw++] = (uint8_t)(0xE0 | ((uc >> 12) & 0x0F));
+            raw[n_raw++] = (uint8_t)(0x80 | ((uc >> 6) & 0x3F));
+            raw[n_raw++] = (uint8_t)(0x80 | (uc & 0x3F));
+        }
+        in_event_t got;
+        size_t took;
+        while (n_raw > 0 && input_parse(raw, n_raw, &got, &took)) {
+            memmove(raw, raw + took, n_raw - took);
+            n_raw -= took;
+            if (got.kind) { *ev = got; break; }
+        }
+        return 1;
+    }
+    uint16_t code = vk == 0x25 ? IN_K_LEFT : vk == 0x26 ? IN_K_UP : vk == 0x27 ? IN_K_RIGHT : vk == 0x28 ? IN_K_DOWN
+                  : (uc > 0 && uc < 0x80 ? (uint16_t)uc : 0);
+    if (!code) {                                     /* Shift 같은 조합 키만 눌렀거나 뗐다 */
+        down[vk] = (uint8_t)(kd != 0);
+        return 1;
+    }
+    ev->code = code;
+    ev->flags = (uint8_t)(IN_F_HELD | (shift ? IN_F_SHIFT : 0));
+    if (kd) {
+        ev->kind = IN_KEY;
+        if (down[vk]) ev->flags |= IN_F_REPEAT;
+        down[vk] = 1;
+    } else {
+        ev->kind = IN_KEY_UP;
+        down[vk] = 0;
+    }
+    return 1;
+}
+
 int input_parse(const uint8_t *buf, size_t n, in_event_t *ev, size_t *used)
 {
     memset(ev, 0, sizeof *ev);
@@ -61,6 +123,11 @@ int input_parse(const uint8_t *buf, size_t n, in_event_t *ev, size_t *used)
     if (n < 3) return 0;
     if (buf[1] == '[' && buf[2] == '<')
         return parse_mouse(buf, n, ev, used);
+    if (buf[1] == '[' && buf[2] >= '0' && buf[2] <= '9') {       /* 누름과 뗌을 따로 알리는 키 사건인가 */
+        int r = parse_win32(buf, n, ev, used);
+        if (r >= 0) return r;
+        *used = 0;
+    }
 
     /* ESC [ 1 ; 수 글자: 조합 키와 함께 누른 방향키. 수에서 1을 뺀 값의 첫 비트가 Shift다(Shift만이면 2) */
     if (buf[1] == '[' && buf[2] == '1' && n >= 4 && buf[3] == ';') {
@@ -80,6 +147,8 @@ int input_parse(const uint8_t *buf, size_t n, in_event_t *ev, size_t *used)
     case 'B': ev->kind = IN_KEY; ev->code = IN_K_DOWN;  *used = 3; return 1;
     case 'C': ev->kind = IN_KEY; ev->code = IN_K_RIGHT; *used = 3; return 1;
     case 'D': ev->kind = IN_KEY; ev->code = IN_K_LEFT;  *used = 3; return 1;
+    case 'O': if (buf[1] == '[') ev->kind = IN_BLUR; *used = 3; return 1;      /* ESC [ O: 창이 뒤로 갔다 */
+    case 'I': *used = 3; return 1;                                             /* ESC [ I: 창이 앞으로 왔다 */
     }
     /* 그 밖의 제어 문자열은 끝 글자(0x40~0x7E)까지 건너뛴다 */
     for (size_t i = 2; i < n; i++) {

@@ -346,6 +346,48 @@ static int send_boss_key(uint16_t code)
     return msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m);
 }
 
+/* ---- 누르고 있는 이동 키 ----------------------------------------------------------------
+ * 터미널이 키의 누름과 뗌을 따로 알려 주면(Windows Terminal, ui/term.c가 켠다) 보스전의 이동 키는 여기서 직접
+ * 되풀이한다: 눌려 있는 동안 HELD_MS마다 그 키를 서버에 보낸다. 그러면
+ *   - 누르자마자 쉬지 않고 걷는다(터미널의 되풀이는 처음에 0.25~0.5초 쉬었다가 시작한다)
+ *   - 다른 키를 눌러도 걷던 것이 끊기지 않는다(터미널은 마지막에 누른 키만 되풀이한다). W를 누른 채 스페이스로
+ *     뛰고 내려서도 계속 걷는다
+ *   - W와 D를 같이 누르면 비스듬히 간다
+ * 알려 주지 않는 터미널에서는 이 표가 늘 비어 있고, 전처럼 터미널의 되풀이가 그대로 서버로 간다.
+ * 창이 뒤로 가면 뗀 것을 받지 못하므로 그때는 모두 뗀 것으로 친다(IN_BLUR). 입력 스레드만 쓴다 */
+#define HELD_MS 30
+static struct { int on[4], shift; int64_t next_at; } held;      /* on: w, a, s, d */
+
+/* 이동 키이면 눌렸는지를 적고 1을 돌려준다 */
+static int held_set(uint16_t code, int on, int shift)
+{
+    static const char keys[] = "wasd";
+    for (int i = 0; i < 4; i++)
+        if (code == (uint16_t)keys[i] || code == (uint16_t)(keys[i] - 32)) {
+            held.on[i] = on;
+            if (on) held.shift = shift;
+            return 1;
+        }
+    return 0;
+}
+
+/* 눌려 있는 이동 키를 때가 되면 서버에 보낸다. 보내지 못하면 -1 */
+static int held_send(void)
+{
+    static const char keys[] = "wasd";
+    int64_t now = now_ms();
+    if (now < held.next_at || !(held.on[0] | held.on[1] | held.on[2] | held.on[3])) return 0;
+    held.next_at = now + HELD_MS;
+    if (look_send(1) != 0) return -1;
+    for (int i = 0; i < 4; i++) {
+        if (!held.on[i]) continue;
+        input_msg_t m = { .kind = IN_KEY, .flags = (uint8_t)(held.shift ? IN_F_SHIFT : 0),
+                          .code = (uint16_t)(held.shift ? keys[i] - 32 : keys[i]) };
+        if (msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m) != 0) return -1;
+    }
+    return 0;
+}
+
 static void *input_main(void *arg)
 {
     uint8_t buf[512];
@@ -366,7 +408,9 @@ static void *input_main(void *arg)
         if (!boss) {
             look.last_cx = -1;
             look.edge = 0;
+            memset(&held, 0, sizeof held);
         } else {
+            if (held_send() != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
             /* 마우스가 화면 끝에 있는 동안은 계속 돈다. 그리고 바뀐 시선을 서버에 알린다 */
             if (look.edge) {
                 int64_t now = now_ms();
@@ -386,6 +430,8 @@ static void *input_main(void *arg)
         while (len > 0 && input_parse(buf, len, &ev, &used)) {
             memmove(buf, buf + used, len - used);
             len -= used;
+            if (ev.kind == IN_BLUR) { memset(&held, 0, sizeof held); continue; }       /* 창이 뒤로 갔다: 모두 뗀 것으로 친다 */
+            if (ev.kind == IN_KEY_UP) { held_set(ev.code, 0, 0); continue; }
             if (ev.kind == IN_KEY && (ev.code == 'q' || ev.code == 'Q' || ev.code == 3)) { quit_with(""); return NULL; }
             if (ev.kind == IN_KEY && ev.code == '\t') { next_watch(); continue; }
             if (ev.kind == IN_KEY && (ev.code == 'h' || ev.code == 'H') && toggle_boss_help()) continue;
@@ -414,9 +460,13 @@ static void *input_main(void *arg)
                 if (look_send(1) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
                 continue;
             }
+            if (boss && ev.kind == IN_KEY && (ev.flags & IN_F_HELD) && held_set(ev.code, 1, (ev.flags & IN_F_SHIFT) != 0)) {
+                if (ev.flags & IN_F_REPEAT) continue;        /* 눌려 있는 동안의 되풀이는 여기서 만든다(held_send) */
+                held.next_at = now_ms() + HELD_MS;
+            }
             if (boss && look_send(1) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
             if (boss && ev.kind == IN_KEY && ev.code == ' ') jump_predict();     /* 뛰어오르기는 누른 순간부터 그린다 */
-            input_msg_t m = { .kind = ev.kind, .flags = ev.flags, .code = ev.code };
+            input_msg_t m = { .kind = ev.kind, .flags = (uint8_t)(ev.flags & 0x3f), .code = ev.code };
             if (ev.kind == IN_POINTER) {
                 /* 터미널 글자 칸을 전체 화면의 픽셀로 바꿔서 올린다 */
                 int cols = 0, rows = 0, sx, sy;
