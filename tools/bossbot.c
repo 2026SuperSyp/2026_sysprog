@@ -1,5 +1,7 @@
 /* 보스전 봇. 계산부를 화면 없이 여러 판 돌려 전략별 승률과 초파리의 행동을 표로 낸다.
- *   build/dev/bossbot [--brain=real] [--games=N] [--config=boss/config.ini]
+ *   build/dev/bossbot [--brain=real] [--games=N] [--real-games=N] [--lives=N] [--config=boss/config.ini]
+ *   --games는 가짜 뇌로 도는 판 수(기본 40), --real-games는 진짜 뇌로 도는 판 수(기본 12)다
+ *   --lives는 참가자의 시작 체력(1~3, 기본 3)이다. 서버는 모두에게 3을 준다. 체력이 승률을 얼마나 바꾸는지 볼 때 쓴다
  *
  * 참가자 전략(사람처럼 3틱에 한 번만 키를 누른다)
  *   rush    초파리 쪽으로 돌아 다가가 파리채로 친다. 끈끈이가 닿는 거리면 먼저 던져 붙인다
@@ -107,12 +109,13 @@ static void probe(brain_mode_t mode, const char *name, int both)
 
 static double tick_ms_sum, tick_ms_max;
 static long tick_n;
+static int start_lives = 3;          /* --lives */
 
 static void play(const boss_cfg_t *c, brain_mode_t mode, int strat, int n, uint32_t seed, stat_t *st)
 {
     static boss_state_t s;
     static const int mix[3] = { SNEAK, KITE, SNEAK };
-    int lives[3] = { 3, 3, 3 };
+    int lives[3] = { start_lives, start_lives, start_lives };
     bot_t bots[3];
     stage_rng_t r;
     memset(bots, 0, sizeof bots);
@@ -175,19 +178,23 @@ static void row(const char *brain, int strat, int n, const stat_t *st)
 int main(int argc, char **argv)
 {
     const char *config = "boss/config.ini";
-    int real = 0, games = 40;
+    int real = 0, games = 40, real_games = 12;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--brain=real") == 0) real = 1;
         else if (strncmp(argv[i], "--games=", 8) == 0) games = atoi(argv[i] + 8);
+        else if (strncmp(argv[i], "--real-games=", 13) == 0) real_games = atoi(argv[i] + 13);
+        else if (strncmp(argv[i], "--lives=", 8) == 0) start_lives = atoi(argv[i] + 8);
         else if (strncmp(argv[i], "--config=", 9) == 0) config = argv[i] + 9;
         else { printf("모르는 옵션: %s\n", argv[i]); return 2; }
     }
+    if (start_lives < 1 || start_lives > 3) { printf("--lives는 1부터 3까지입니다\n"); return 2; }
     boss_cfg_t c;
     boss_cfg_load(&c, config);
+    if (start_lives != 3) printf("참가자의 체력 %d로 시작\n", start_lives);
 
     for (int pass = 0; pass < 1 + real; pass++) {
         brain_mode_t mode = pass ? BRAIN_REAL : BRAIN_FAKE_FAST;
-        int g = pass ? (games < 4 ? games : 4) : games;           /* 진짜 뇌는 한 판에 수십 초가 걸린다 */
+        int g = pass ? real_games : games;               /* 진짜 뇌는 발표용 빌드에서 한 판에 2초쯤 걸린다 */
         if (pass && brain_host_open_real("data") != 0) { printf("진짜 뇌의 자료(data/)가 없어 건너뜁니다\n"); break; }
         probe(mode, pass ? "real" : "fake", 0);
         probe(mode, pass ? "real" : "fake", 1);
@@ -196,7 +203,6 @@ int main(int argc, char **argv)
         for (int strat = 0; strat <= N_STRAT; strat++) {
             for (int n = 1; n <= 3; n++) {
                 if (strat == N_STRAT && n != 3) continue;
-                if (pass && n != 3) continue;                    /* 진짜 뇌는 3명 판만 */
                 stat_t st;
                 memset(&st, 0, sizeof st);
                 for (int k = 0; k < g; k++) play(&c, mode, strat, n, (uint32_t)(1000 * n + 17 * k + strat), &st);
