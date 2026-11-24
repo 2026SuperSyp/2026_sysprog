@@ -24,7 +24,7 @@
  *   BOSS_JUMP            뛰어오른다(jump_ticks 동안 포물선으로). 돌진이 닿는 순간에 jump_clear보다 높이 떠 있으면
  *                        돌진이 발밑으로 지나가서 맞지 않는다. 막기와 달리 초파리는 멈추지 않는다
  *   SK_LEFT / SK_RIGHT   한 칸(22.5도) 왼쪽 / 오른쪽으로 돈다(마우스가 없을 때와 봇이 쓴다)
- *   SK_1, SK_2, SK_3     파리채 / 스프레이 / 끈끈이를 고른다
+ *   SK_1, SK_2, SK_3, SK_4   파리채 / 스프레이 / 끈끈이 / 먹이를 고른다
  *   SK_SUB               다음 무기로 바꾼다
  *   SK_ACT               고른 무기를 쓴다
  * 시선은 boss_look으로도 정한다(마우스). 각도를 통째로 받아 다음 틱에 그쪽을 보게 한다.
@@ -41,6 +41,7 @@
 #define BOSS_MAP        18       /* 맵은 18 x 18칸(바깥 벽을 빼면 16 x 16). 24칸일 때는 쫓아다니는 길이 너무 길었다 */
 #define BOSS_PLAYERS    3
 #define BOSS_PROJ       8        /* 날아가는 끈끈이 수의 한도 */
+#define BOSS_BAITS      4        /* 바닥에 놓인 먹이 수의 한도 */
 #define BOSS_EVENTS     16       /* 한 틱에 남기는 사건 수의 한도 */
 #define BOSS_DIRS       16       /* 키로 돌 때 한 바퀴를 나누는 수(한 번에 22.5도) */
 #define BOSS_FIX        256      /* 스냅숏 좌표의 고정 소수점: 1칸 = 256 */
@@ -50,7 +51,7 @@
 #define BOSS_GUARD      0x800    /* boss_input의 키 하나: 막기 */
 #define BOSS_JUMP       0x1000   /* boss_input의 키 하나: 뛰어오르기 */
 
-enum { BOSS_SWATTER = 0, BOSS_SPRAY, BOSS_TRAP, BOSS_ITEMS };
+enum { BOSS_SWATTER = 0, BOSS_SPRAY, BOSS_TRAP, BOSS_BAIT, BOSS_ITEMS };
 enum { BOSS_GOING = 0, BOSS_PLAYERS_WIN, BOSS_FLY_WINS };
 
 /* 사건. who는 참가자 번호(초파리가 한 일이면 대상 참가자, 없으면 255), x와 y는 일어난 곳 */
@@ -67,7 +68,9 @@ enum {
     BOSS_EV_TAKEOFF,                             /* 초파리가 뛰어올랐다(x, y는 뛴 곳) */
     BOSS_EV_LAND,                                /* 내려앉았다 */
     BOSS_EV_BLOCK,                               /* 돌진을 막았다(who가 막은 참가자) */
-    BOSS_EV_DODGE                                /* 돌진을 뛰어넘어 피했다(who가 피한 참가자) */
+    BOSS_EV_DODGE,                               /* 돌진을 뛰어넘어 피했다(who가 피한 참가자) */
+    BOSS_EV_BAIT,                                /* 먹이를 놓았다(x, y는 놓인 곳) */
+    BOSS_EV_EAT                                  /* 초파리가 먹기 시작했다 */
 };
 
 typedef struct {
@@ -88,6 +91,11 @@ typedef struct {
     int   guard_ticks, guard_cooldown, guard_stun;   /* 막는 자세의 길이, 다시 쓸 때까지, 막힌 초파리가 멈추는 시간 */
     int   jump_ticks, jump_rest;                 /* 뛰어올라 떠 있는 시간, 내려선 뒤 다시 뛰지 못하는 시간 */
     float jump_height, jump_clear;               /* 꼭대기의 높이(칸), 이 높이 이상이면 돌진이 발밑으로 지나간다 */
+    /* 먹이. 초파리는 냄새가 닿는 거리(bait_smell) 안에 보이는 먹이로 걸어가고(bait_speed), 닿으면 단맛 자극
+     * (bait_sugar)이 뇌로 들어간다. 뇌의 먹기 반응이 feed_level 이상이면 먹는다. 다 먹는 데 bait_ticks가 걸리고
+     * 다 먹으면 체력이 bait_heal만큼 돌아온다. 먹이 쪽에 있다가 맞으면 먹이를 버리고 bait_wary 동안 먹이를 찾지 않는다 */
+    int   bait_count, bait_ticks, bait_wary;
+    float bait_throw, bait_smell, bait_speed, bait_sugar, bait_heal, feed_level;
     int   air_ticks, air_rest_ticks;             /* 떠 있는 시간, 내려앉은 뒤 다시 뛰지 못하는 시간(둘 다 게임 규칙) */
     float swat_range, swat_damage; int swat_cooldown;
     float spray_range, spray_damage; int spray_ammo, spray_cooldown;
@@ -113,6 +121,7 @@ typedef struct {
     int   guard, guard_cool;     /* 막는 자세가 남은 틱, 막기를 다시 쓸 때까지 남은 틱 */
     int   jump, jump_rest;       /* 뛰어올라 떠 있는 남은 틱, 내려선 뒤 다시 뛸 때까지 남은 틱 */
     float z;                     /* 발이 바닥에서 떠 있는 높이(칸) */
+    int   baits;                 /* 남은 먹이 */
     int   has_look;              /* boss_look이 왔다. 다음 틱에 look을 보는 방향으로 삼는다 */
     float look;
     int   step_left;             /* 걷고 있는 걸음의 남은 틱. 0이어야 새 걸음을 뗀다 */
@@ -130,11 +139,15 @@ typedef struct {
     int   hurt;                  /* 맞은 뒤 남은 틱 */
     int   air, air_rest;         /* 떠 있는 남은 틱, 내려앉은 뒤 쉬는 남은 틱 */
     int   dodged;                /* 이번 돌진을 뛰어넘어 피한 참가자들(비트). 피한 사람은 그 돌진에 다시 맞지 않는다 */
+    int   feeding, lured;        /* 이번 틱에 먹고 있다, 먹이 쪽으로 가고 있다 */
+    int   bait;                  /* 그 먹이의 번호 */
+    int   wary;                  /* 놀라서 먹이를 찾지 않는 남은 틱 */
     float air_dx, air_dy;        /* 뛰어오른 방향(길이 1) */
     float hurt_x, hurt_y;        /* 때린 사람이 있던 곳 */
 } boss_fly_t;
 
 typedef struct { int on, owner; float x, y, vx, vy, left; } boss_proj_t;
+typedef struct { int on; float x, y; int left; } boss_bait_t;      /* left: 다 먹을 때까지 남은 틱 */
 typedef struct { uint8_t kind, who; int16_t x, y; } boss_event_t;
 
 typedef struct {
@@ -145,6 +158,7 @@ typedef struct {
     boss_player_t p[BOSS_PLAYERS];
     boss_fly_t    fly;
     boss_proj_t   proj[BOSS_PROJ];
+    boss_bait_t   bait[BOSS_BAITS];
     boss_event_t  ev[BOSS_EVENTS];
     int           n_ev;
     /* 기록(봇과 조정에 쓴다) */
@@ -160,6 +174,7 @@ typedef struct {
         uint16_t ang;            /* 보는 방향. 0..65535가 한 바퀴 */
         uint8_t  hp, alive, item, ammo, traps, cool, sneak, guard;   /* guard: 막는 자세가 남은 틱 */
         uint8_t  guard_cool, z;  /* 막기를 다시 쓸 때까지 남은 틱(255에서 자른다), 뛰어오른 높이(칸의 1/100) */
+        uint8_t  baits, pad;     /* 남은 먹이 */
     } p[BOSS_PLAYERS];
     struct {
         int16_t  x, y;
@@ -167,8 +182,11 @@ typedef struct {
         int16_t  hp, hp_max;
         uint8_t  stun, windup, charging, wave_in;   /* stun, wave_in은 남은 틱(255에서 자른다) */
         uint8_t  air, target;                       /* 떠 있는 남은 틱, 돌진이 겨누는 참가자(없으면 255) */
+        uint8_t  feeding, lured;                    /* 먹고 있다, 먹이 쪽으로 가고 있다 */
     } fly;
     struct { int16_t x, y; } proj[BOSS_PROJ];
+    struct { int16_t x, y; uint8_t left, pad; } bait[BOSS_BAITS];      /* 놓인 먹이. left: 남은 양(255가 처음) */
+    uint8_t n_bait, pad;
     boss_event_t ev[BOSS_EVENTS];
 } boss_snap_t;
 

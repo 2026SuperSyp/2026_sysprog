@@ -543,6 +543,58 @@ static void test_jump(void)
     T_EQ_INT(S.p[0].hp, 2);
 }
 
+/* 먹이: 놓으면 초파리가 와서, 닿았을 때 뇌의 먹기 반응이 있으면 먹는다. 먹는 중에 맞으면 먹이를 버린다 */
+static void test_bait(void)
+{
+    boss_cfg_t c = calm();
+    float eat[BRAIN_GROUP_COUNT] = { 0 }, stim[BRAIN_GROUP_COUNT];
+    eat[BR_FEED] = 1.0f;
+    setup(&c, 1);
+    put_fly(8.5f, 9.0f);
+    put_player(0, 8.5f, 14.5f, NORTH);
+    press(0, SK_4);
+    T_EQ_INT(S.p[0].item, BOSS_BAIT);
+    press(0, SK_ACT);                                             /* 보는 쪽 앞에 놓인다 */
+    T_EQ_INT(S.p[0].baits, c.bait_count - 1);
+    T_CHECK(S.bait[0].on && fabsf(S.bait[0].x - 8.5f) < 0.01f && fabsf(S.bait[0].y - (14.5f - c.bait_throw)) < 0.15f);
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_SUGAR] == 0.0f);                              /* 아직 닿지 않았다 */
+    float d0 = S.bait[0].y - S.fly.y;
+    ticks(12, still);                                             /* 냄새를 따라 다가간다 */
+    T_CHECK(S.fly.lured && S.bait[0].y - S.fly.y < d0 - 0.5f);
+    ticks(40, still);                                             /* 닿았지만 먹기 반응이 없으면 먹지 않는다 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_SUGAR] > 0.5f);
+    T_EQ_INT(S.fly.feeding, 0);
+    T_EQ_INT(S.bait[0].left, c.bait_ticks);
+    boss_tick(&S, eat);                                           /* 먹기 반응이 나오면 먹는다 */
+    T_EQ_INT(S.fly.feeding, 1);
+    T_EQ_INT(count_ev(BOSS_EV_EAT), 1);
+    ticks(4, eat);
+    T_EQ_INT(S.bait[0].left, c.bait_ticks - 5);
+    boss_snap_t snap;
+    boss_snapshot(&S, &snap);
+    T_CHECK(snap.n_bait == 1 && snap.fly.feeding == 1 && snap.p[0].baits == c.bait_count - 1);
+    int hp = S.fly.hp;                                            /* 먹는 중에 맞으면 먹이를 버리고 한동안 찾지 않는다 */
+    put_player(0, S.fly.x, S.fly.y + c.fly_radius + c.player_radius + 0.5f, NORTH);
+    press(0, SK_1);
+    press(0, SK_ACT);
+    T_EQ_INT(S.fly.hp, hp - (int)c.swat_damage);
+    T_EQ_INT(S.bait[0].on, 0);
+    T_CHECK(S.fly.wary > 0);
+
+    setup(&c, 1);                                                 /* 다 먹으면 먹이가 없어지고 체력이 조금 돌아온다 */
+    put_fly(8.5f, 9.0f);
+    put_player(0, 8.5f, 12.0f, NORTH);
+    S.fly.hp -= 20;
+    hp = S.fly.hp;
+    press(0, SK_4);
+    press(0, SK_ACT);
+    ticks(c.bait_ticks + 2, eat);
+    T_EQ_INT(S.bait[0].on, 0);
+    T_EQ_INT(S.fly.hp, hp + (int)c.bait_heal);
+}
+
 /* 옆걸음, 마우스로 정하는 시선, 살금살금 켜고 끄기 */
 static void test_look_strafe(void)
 {
@@ -609,6 +661,7 @@ int main(void)
     test_look_strafe();
     test_guard();
     test_jump();
+    test_bait();
     printf("  스냅숏 %zu바이트\n", sizeof(boss_snap_t));
     T_DONE();
 }

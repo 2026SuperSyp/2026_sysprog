@@ -84,7 +84,7 @@ float boss_view_fly_lift(const boss_snap_t *b)
     int air = b->fly.air;
     float want = BOSS_VIEW_FLY_HOVER;
     air_full = air > air_full ? air : (air == 0 ? 0 : air_full);
-    if (b->fly.hp <= 0 || b->fly.stun) want = 0.0f;
+    if (b->fly.hp <= 0 || b->fly.stun || b->fly.feeding) want = 0.0f;      /* 먹을 때는 먹이에 내려앉는다 */
     else if (b->fly.charging) want = 0.12f;
     else if (air > 0 && air_full > 0) {
         float t = 1.0f - (float)air / (float)air_full;
@@ -247,9 +247,22 @@ static void draw_trap(canvas_t *c, const thing_t *t)
     }
 }
 
+/* 먹이: 바닥에 놓인 노란 덩이 */
+static void draw_bait(canvas_t *c, const thing_t *t)
+{
+    float scale = UNIT / t->depth;
+    int cx = (int)((float)VW / 2.0f * (1.0f + t->side / t->depth)), cy = VY + VH / 2 + (int)((EZ - 0.1f) * scale);
+    int r = (int)(0.16f * scale) + 1;
+    for (int x = cx - r; x <= cx + r; x++) {
+        if (x < 0 || x >= VW || t->depth >= zbuf[x]) continue;
+        for (int y = cy - r * 2 / 3; y <= cy + r * 2 / 3; y++)
+            if ((x - cx) * (x - cx) * 4 + (y - cy) * (y - cy) * 9 <= r * r * 4) px_view(c, x, y, C_YELLOW);
+    }
+}
+
 static void draw_things(canvas_t *c, const boss_snap_t *b, int eye, float px, float py, float dx, float dy)
 {
-    thing_t list[1 + BOSS_PLAYERS + BOSS_PROJ];
+    thing_t list[1 + BOSS_PLAYERS + BOSS_PROJ + BOSS_BAITS];
     float plx = -dy * PLANE, ply = dx * PLANE, inv = 1.0f / (plx * dy - dx * ply);
     int n = 0;
     list[n++] = (thing_t){ (float)b->fly.x / BOSS_FIX, (float)b->fly.y / BOSS_FIX, 0, 0, 0, 0 };
@@ -257,6 +270,8 @@ static void draw_things(canvas_t *c, const boss_snap_t *b, int eye, float px, fl
         if (i != eye) list[n++] = (thing_t){ (float)b->p[i].x / BOSS_FIX, (float)b->p[i].y / BOSS_FIX, 0, 0, 1, i };
     for (int k = 0; k < b->n_proj && k < BOSS_PROJ; k++)
         list[n++] = (thing_t){ (float)b->proj[k].x / BOSS_FIX, (float)b->proj[k].y / BOSS_FIX, 0, 0, 2, k };
+    for (int k = 0; k < b->n_bait && k < BOSS_BAITS; k++)
+        list[n++] = (thing_t){ (float)b->bait[k].x / BOSS_FIX, (float)b->bait[k].y / BOSS_FIX, 0, 0, 3, k };
     for (int i = 0; i < n; i++) {                    /* 눈 기준 좌표: side는 오른쪽으로, depth는 앞으로 */
         float rx = list[i].x - px, ry = list[i].y - py;
         list[i].side = inv * (dy * rx - dx * ry);
@@ -270,7 +285,8 @@ static void draw_things(canvas_t *c, const boss_snap_t *b, int eye, float px, fl
         if (list[i].depth < 0.2f) continue;          /* 등 뒤에 있다 */
         if (list[i].kind == 0) draw_fly(c, b, &list[i], px, py);
         else if (list[i].kind == 1) draw_player(c, b, &list[i]);
-        else draw_trap(c, &list[i]);
+        else if (list[i].kind == 2) draw_trap(c, &list[i]);
+        else draw_bait(c, &list[i]);
     }
 }
 
@@ -410,12 +426,12 @@ static void speech_box(canvas_t *c, int x, int y, int w, int h, int tail_x)
 static void draw_guide(canvas_t *c, int intro, int age_ms)
 {
     static sprite_id_t cat = SPR_MISSING;
-    static const key_hint_t rows[][4] = {
+    static const key_hint_t rows[][5] = {             /* 줄마다 끝에 빈 칸(NULL)이 있어야 한다 */
         { { "W S", "앞뒤" }, { "A D", "옆걸음" }, { "마우스", "시선" }, { NULL, NULL } },
-        { { "클릭/E", "쓰기" }, { "SPACE", "점프" }, { "R/오른쪽 클릭", "막기" }, { NULL, NULL } },
-        { { "1", "파리채" }, { "2", "스프레이" }, { "3", "끈끈이" }, { "F/휠", "다음" } },
-        { { "C", "살금살금" }, { "H", "이 안내" }, { "Q", "나가기" }, { NULL, NULL } },
-        { { "TAB", "쓰러진 뒤 다른 사람 보기" }, { NULL, NULL } },
+        { { "클릭/E", "쓰기" }, { "SPACE", "점프" }, { "R", "막기" }, { NULL, NULL } },
+        { { "1", "파리채" }, { "2", "스프레이" }, { "3", "끈끈이" }, { "4", "먹이" }, { NULL, NULL } },
+        { { "F/휠", "다음 무기" }, { "C", "살금살금" }, { "H", "안내" }, { NULL, NULL } },
+        { { "TAB", "쓰러진 뒤 다른 사람 보기" }, { "Q", "나가기" }, { NULL, NULL } },
     };
     const int n = (int)(sizeof rows / sizeof rows[0]), bx = 6, by = 18, bw = 228, bh = 10 + n * 13;
     const char *right = intro ? "곧 시작해요" : "H 닫기";
@@ -426,13 +442,13 @@ static void draw_guide(canvas_t *c, int intro, int age_ms)
     put_text(c, SCREEN_W - 8 - ui_text_w(right), 3, right, C_CYAN);
 
     speech_box(c, bx, by, bw, bh, 34);
-    for (int i = 0; i < n; i++) put_hints(c, bx + 8, by + 5 + i * 13, rows[i], 10, -1);
+    for (int i = 0; i < n; i++) put_hints(c, bx + 8, by + 5 + i * 13, rows[i], 8, -1);
 
     /* 시프봇은 말풍선 아래 왼쪽에 서고, 그 옆에 가장 중요한 한마디를 둔다 */
     int cy = SCREEN_H - ui_sprite_h(cat), frames = ui_sprite_frames(cat);
     ui_sprite(c, cat, 10, cy, frames > 0 ? (age_ms < 0 ? 0 : age_ms / 300) % frames : 0);
-    put_text(c, 72, by + bh + 8, "다가가면 달아나요. C로 살금살금", C_TEXT);
-    put_text(c, 72, by + bh + 22, "돌진은 R로 막거나 뛰어넘어요", C_CYAN);
+    put_text(c, 72, by + bh + 8, "먹이(4)를 놓으면 와서 먹어요", C_TEXT);
+    put_text(c, 72, by + bh + 22, "먹을 때 C로 살금살금 다가가요", C_CYAN);
 }
 
 /* 싸우는 동안 3D 화면의 왼쪽 아래에 늘 보이는 짧은 안내. 무기를 고르는 숫자 키는 아래 상태 줄에 적혀 있다.
@@ -449,7 +465,7 @@ static void draw_legend(canvas_t *c, int sneak)
 /* ---- 상태 줄, 결과 ------------------------------------------------------------------- */
 static void draw_bars(canvas_t *c, const boss_snap_t *b, const boss_view_t *v, int eye)
 {
-    static const char *item_name[BOSS_ITEMS] = { "파리채", "스프레이", "끈끈이" };
+    static const char *item_name[BOSS_ITEMS] = { "파리채", "스프레이", "끈끈이", "먹이" };
     char line[64];
     int bar_w = CW - 42 - 76;                                    /* 초파리 체력 막대. 화면이 넓으면 길어진다 */
     ui_rect(c, 0, 0, CW, VY, C_BLACK);
@@ -476,11 +492,12 @@ static void draw_bars(canvas_t *c, const boss_snap_t *b, const boss_view_t *v, i
     for (int k = 0; k < BOSS_ITEMS; k++) {
         const char key[2] = { (char)('1' + k), '\0' };               /* 무기 k를 고르는 키는 SK_1 + k다 */
         int on = k == b->p[eye].item;
-        if (k == BOSS_SPRAY) snprintf(line, sizeof line, "%s %d", item_name[k], b->p[eye].ammo);
-        else if (k == BOSS_TRAP) snprintf(line, sizeof line, "%s %d", item_name[k], b->p[eye].traps);
+        /* 남은 수는 고른 무기에만 적는다(넷을 다 적으면 좁은 화면에서 넘친다) */
+        int left = k == BOSS_SPRAY ? b->p[eye].ammo : (k == BOSS_TRAP ? b->p[eye].traps : b->p[eye].baits);
+        if (on && k != BOSS_SWATTER) snprintf(line, sizeof line, "%s %d", item_name[k], left);
         else snprintf(line, sizeof line, "%s", item_name[k]);
-        x += put_text(c, x, y, key, on ? C_WHITE : C_GRAY3) + 4;
-        x += put_text(c, x, y, line, on ? C_YELLOW : C_GRAY2) + 6;
+        x += put_text(c, x, y, key, on ? C_WHITE : C_GRAY3) + 2;
+        x += put_text(c, x, y, line, on ? C_YELLOW : C_GRAY2) + 4;
     }
 }
 
@@ -538,6 +555,7 @@ static void draw_overlay(canvas_t *c, const boss_snap_t *b, const boss_view_t *v
     else if (v->block_ms >= 0 && v->block_ms < 700) { note = "막았다!"; note_col = C_GOOD; }
     else if (v->dodge_ms >= 0 && v->dodge_ms < 700) { note = "뛰어넘었다!"; note_col = C_GOOD; }
     else if (v->wave_ms >= 0 && v->wave_ms < 500) note = "날갯짓!";
+    else if (b->fly.feeding) { note = "먹고 있다! C 살금살금"; note_col = C_GOOD; }
     else if (b->fly.stun) note = "붙었다! 지금이다";
     else if (b->fly.air) note = "달아났다! C 살금살금";
     if (note && b->outcome == BOSS_GOING) {          /* 가운데에 놓되, 왼쪽의 뇌 표시와 오른쪽의 작은 지도를 피한다 */

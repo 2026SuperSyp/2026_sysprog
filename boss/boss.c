@@ -28,6 +28,7 @@
 #include <string.h>
 
 #define PI_F 3.14159265f
+#define BAIT_TOUCH 0.2f              /* 초파리의 몸이 먹이에 닿았다고 보는 틈(칸) */
 
 /* ---- 설정 ---------------------------------------------------------------------- */
 void boss_cfg_default(boss_cfg_t *c)
@@ -47,6 +48,9 @@ void boss_cfg_default(boss_cfg_t *c)
     c->takeoff_scale = 0.055f;
     c->guard_ticks = 10; c->guard_cooldown = 50; c->guard_stun = 24;
     c->jump_ticks = 12; c->jump_rest = 4; c->jump_height = 1.0f; c->jump_clear = 0.5f;
+    c->bait_count = 3; c->bait_ticks = 60; c->bait_wary = 100;
+    c->bait_throw = 3.0f; c->bait_smell = 8.0f; c->bait_speed = 0.12f; c->bait_sugar = 1.0f; c->bait_heal = 5.0f;
+    c->feed_level = 0.5f;
     c->swat_range = 1.2f;  c->swat_damage = 10.0f; c->swat_cooldown = 8;
     c->spray_range = 5.0f; c->spray_damage = 3.0f; c->spray_ammo = 20; c->spray_cooldown = 8;
     c->trap_speed = 0.6f;  c->trap_range = 8.0f;  c->trap_count = 2; c->stun_ticks = 60;
@@ -72,6 +76,8 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     F(takeoff_level); F(takeoff_mm_s); I(air_ticks); I(air_rest_ticks); F(takeoff_scale);
     I(guard_ticks); I(guard_cooldown); I(guard_stun);
     I(jump_ticks); I(jump_rest); F(jump_height); F(jump_clear);
+    I(bait_count); I(bait_ticks); I(bait_wary); F(bait_throw); F(bait_smell); F(bait_speed); F(bait_sugar); F(bait_heal);
+    F(feed_level);
     F(swat_range); F(swat_damage); I(swat_cooldown);
     F(spray_range); F(spray_damage); I(spray_ammo); I(spray_cooldown);
     F(trap_speed); F(trap_range); I(trap_count); I(stun_ticks);
@@ -169,6 +175,7 @@ void boss_init(boss_state_t *s, const boss_cfg_t *c, uint32_t seed, int n_player
         p->item = BOSS_SWATTER;
         p->ammo = c->spray_ammo;
         p->traps = c->trap_count;
+        p->baits = c->bait_count;
     }
     s->fly.x = 9.0f;
     s->fly.y = 3.5f;
@@ -208,6 +215,7 @@ void boss_input(boss_state_t *s, int player, int key)
     case SK_1:     p->pick = 1 + BOSS_SWATTER; break;
     case SK_2:     p->pick = 1 + BOSS_SPRAY; break;
     case SK_3:     p->pick = 1 + BOSS_TRAP; break;
+    case SK_4:     p->pick = 1 + BOSS_BAIT; break;
     case SK_SUB:   p->pick = 1 + (p->item + 1) % BOSS_ITEMS; break;
     case SK_ACT:   p->use = 1; break;
     default: break;
@@ -285,12 +293,21 @@ void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT])
     }
     stim[BR_LOOM_L] = l;
     stim[BR_LOOM_R] = r;
+    /* 먹이에 닿아 있으면 단맛. 진짜 뇌에서는 단맛을 느끼는 뉴런들이고, 이것이 주둥이를 내미는 운동 뉴런(먹기)을 켠다 */
+    for (int k = 0; k < BOSS_BAITS; k++)
+        if (s->bait[k].on && dist(s->bait[k].x, s->bait[k].y, f->x, f->y) <= s->cfg.fly_radius + BAIT_TOUCH)
+            stim[BR_SUGAR] = s->cfg.bait_sugar;
 }
 
 /* ---- 참가자 ------------------------------------------------------------------------- */
 static void hurt_fly(boss_state_t *s, int who, int dmg)
 {
     if (dmg > s->fly.hp) dmg = s->fly.hp;
+    if (s->fly.lured) s->bait[s->fly.bait].on = 0;                   /* 놀라서 가던 먹이를 버린다 */
+    for (int k = 0; k < BOSS_BAITS; k++)                             /* 닿아 있던 먹이도 버린다 */
+        if (s->bait[k].on && dist(s->bait[k].x, s->bait[k].y, s->fly.x, s->fly.y) <= s->cfg.fly_radius + BAIT_TOUCH)
+            s->bait[k].on = 0;
+    s->fly.wary = s->cfg.bait_wary;
     s->fly.hp -= dmg;
     s->dmg_dealt[who] += dmg;
     s->fly.hurt = s->cfg.hurt_ticks;
@@ -328,7 +345,7 @@ static void use_item(boss_state_t *s, int i)
         }
         if (hit) hurt_fly(s, i, (int)c->spray_damage);
         event(s, hit ? BOSS_EV_SPRAY_HIT : BOSS_EV_SPRAY_MISS, i, ex, ey);
-    } else {
+    } else if (p->item == BOSS_TRAP) {
         if (p->traps <= 0) return;
         for (int k = 0; k < BOSS_PROJ; k++) {
             if (s->proj[k].on) continue;
@@ -337,6 +354,21 @@ static void use_item(boss_state_t *s, int i)
             s->proj[k] = (boss_proj_t){ 1, i, p->x + ux * 0.4f, p->y + uy * 0.4f,
                                         ux * c->trap_speed, uy * c->trap_speed, c->trap_range };
             event(s, BOSS_EV_TRAP_THROW, i, p->x, p->y);
+            break;
+        }
+    } else {                                         /* 먹이: 보는 쪽으로 bait_throw만큼 앞, 벽에 막히면 그 앞에 놓는다 */
+        if (p->baits <= 0) return;
+        for (int k = 0; k < BOSS_BAITS; k++) {
+            if (s->bait[k].on) continue;
+            float bx = p->x, by = p->y;
+            for (float d = 0.2f; d <= c->bait_throw && !blocked(s, p->x + ux * d, p->y + uy * d, 0.2f); d += 0.1f) {
+                bx = p->x + ux * d;
+                by = p->y + uy * d;
+            }
+            p->baits--;
+            p->cool = c->swat_cooldown;
+            s->bait[k] = (boss_bait_t){ 1, bx, by, c->bait_ticks };
+            event(s, BOSS_EV_BAIT, i, bx, by);
             break;
         }
     }
@@ -432,6 +464,20 @@ static void hurt_player(boss_state_t *s, int i, float from_x, float from_y)
     }
 }
 
+/* 냄새가 닿는 거리 안에 있고 보이는 먹이 가운데 가장 가까운 것. 없으면 -1 */
+static int nearest_bait(const boss_state_t *s)
+{
+    int best = -1;
+    float best_d = s->cfg.bait_smell;
+    for (int k = 0; k < BOSS_BAITS; k++) {
+        const boss_bait_t *b = &s->bait[k];
+        if (!b->on) continue;
+        float d = dist(b->x, b->y, s->fly.x, s->fly.y);
+        if (d < best_d && line_clear(s, s->fly.x, s->fly.y, b->x, b->y)) { best = k; best_d = d; }
+    }
+    return best;
+}
+
 /* 몰리지 않았을 때 가까이 있고 보이는 참가자를 고른다. 없으면 -1 */
 static int charge_target(const boss_state_t *s, float rushed)
 {
@@ -455,6 +501,9 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
 {
     const boss_cfg_t *c = &s->cfg;
     boss_fly_t *f = &s->fly;
+    int was_feeding = f->feeding;
+    f->feeding = f->lured = 0;
+    if (f->wary > 0) f->wary--;
     if (f->charge_cool > 0) f->charge_cool--;
     if (f->hurt > 0) f->hurt--;
     if (f->stun > 0) { f->stun--; return; }          /* 붙어 있는 동안은 움직이지도 공격하지도 않는다 */
@@ -539,7 +588,29 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
         if (f->charging == 0) { f->target = -1; f->charge_cool = c->charge_cooldown; }
         return;
     }
-    if (f->charge_cool == 0 && f->hurt == 0) {       /* 맞은 직후에는 덤비지 않고 달아난다 */
+    /* 먹이. 냄새가 닿는 거리 안에 보이는 먹이가 있으면 그쪽으로 간다. 이것은 몸의 규칙이다(이 뇌 모델에는 냄새를 따라
+     * 도는 입력을 넣지 않았다). 닿으면 단맛 자극이 뇌로 들어가고(boss_stimulus), 먹을지는 뇌가 정한다: 먹기 반응
+     * (진짜 뇌에서는 주둥이를 내미는 운동 뉴런 MN9)이 기준을 넘으면 그 자리에서 먹는다. 먹는 동안에도 다가옴 자극이
+     * 세면 뇌의 달아남 출력이 먼저 켜져서 위에서 이미 뛰어올랐다. 그래서 먹는 초파리에게는 살금살금 다가가야 한다 */
+    int bait = f->wary > 0 ? -1 : nearest_bait(s);
+    if (bait >= 0) {
+        boss_bait_t *bt = &s->bait[bait];
+        f->bait = bait;
+        if (dist(bt->x, bt->y, f->x, f->y) > c->fly_radius + BAIT_TOUCH) {
+            f->lured = 1;
+        } else if (rate[BR_FEED] >= c->feed_level) {
+            f->feeding = 1;
+            f->v = f->w = 0.0f;
+            if (!was_feeding) event(s, BOSS_EV_EAT, 255, bt->x, bt->y);
+            if (--bt->left <= 0) {                   /* 다 먹었다: 기운을 조금 차린다 */
+                bt->on = 0;
+                f->hp += (int)c->bait_heal;
+                if (f->hp > f->hp_max) f->hp = f->hp_max;
+            }
+            return;
+        }
+    }
+    if (f->charge_cool == 0 && f->hurt == 0 && !f->lured) {      /* 맞은 직후와 먹이로 가는 동안에는 덤비지 않는다 */
         float rushed = 0.0f;
         for (int i = 0; i < s->n_players; i++) {             /* 벽은 빼고 참가자가 몰아붙이는 정도만 본다 */
             float level = threat(s, i);
@@ -567,6 +638,14 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
     float dr = wall_dist(s, f->x, f->y, f->ang + PI_F / 6.0f, c->wall_sense + c->fly_radius) - c->fly_radius;
     float wl = clamp01(1.0f - dl / c->wall_sense), wr = clamp01(1.0f - dr / c->wall_sense);
     if (wl > 0.0f || wr > 0.0f) w_want += (wl >= wr ? wl : -wr) * turn * c->wall_turn;
+    if (f->lured) {                                  /* 먹이 쪽으로 돌아서 걸어간다 */
+        const boss_bait_t *bt = &s->bait[f->bait];
+        float diff = atan2f(bt->y - f->y, bt->x - f->x) - f->ang;
+        while (diff > PI_F) diff -= 2.0f * PI_F;
+        while (diff < -PI_F) diff += 2.0f * PI_F;
+        w_want = diff > turn ? turn : (diff < -turn ? -turn : diff);
+        v_want = fabsf(diff) < 1.0f ? c->bait_speed : 0.0f;
+    }
     int lag = c->accel_ticks > 1 ? c->accel_ticks : 1;
     f->v += (v_want - f->v) / (float)lag;
     f->w += (w_want - f->w) / (float)lag;
@@ -625,6 +704,7 @@ void boss_snapshot(const boss_state_t *s, boss_snap_t *o)
         o->p[i].guard = (uint8_t)p->guard;
         o->p[i].guard_cool = (uint8_t)(p->guard_cool > 255 ? 255 : p->guard_cool);
         o->p[i].z = (uint8_t)(p->z >= 2.55f ? 255 : (int)(p->z * 100.0f + 0.5f));
+        o->p[i].baits = (uint8_t)p->baits;
         o->p[i].hp = (uint8_t)p->hp;
         o->p[i].alive = (uint8_t)p->alive;
         o->p[i].item = (uint8_t)p->item;
@@ -644,6 +724,16 @@ void boss_snapshot(const boss_state_t *s, boss_snap_t *o)
     o->fly.wave_in = (uint8_t)(f->wave_in > 255 ? 255 : f->wave_in);
     o->fly.air = (uint8_t)(f->air > 255 ? 255 : f->air);
     o->fly.target = (uint8_t)(f->target < 0 ? 255 : f->target);
+    o->fly.feeding = (uint8_t)f->feeding;
+    o->fly.lured = (uint8_t)f->lured;
+    for (int k = 0; k < BOSS_BAITS; k++) {
+        if (!s->bait[k].on) continue;
+        int left = s->cfg.bait_ticks > 0 ? s->bait[k].left * 255 / s->cfg.bait_ticks : 255;
+        o->bait[o->n_bait].x = (int16_t)(s->bait[k].x * BOSS_FIX);
+        o->bait[o->n_bait].y = (int16_t)(s->bait[k].y * BOSS_FIX);
+        o->bait[o->n_bait].left = (uint8_t)(left < 0 ? 0 : (left > 255 ? 255 : left));
+        o->n_bait++;
+    }
     for (int k = 0; k < BOSS_PROJ; k++) {
         if (!s->proj[k].on) continue;
         o->proj[n].x = (int16_t)(s->proj[k].x * BOSS_FIX);
