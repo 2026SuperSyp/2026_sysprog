@@ -47,7 +47,7 @@ void boss_cfg_default(boss_cfg_t *c)
     c->takeoff_level = 0.5f; c->takeoff_mm_s = 480.0f; c->air_ticks = 10; c->air_rest_ticks = 20;
     c->takeoff_scale = 0.055f;
     c->guard_ticks = 10; c->guard_cooldown = 50; c->guard_stun = 24;
-    c->jump_ticks = 10; c->jump_rest = 0; c->jump_buffer = 3; c->jump_height = 1.0f; c->jump_clear = 0.35f;
+    c->jump_ticks = 10; c->jump_rest = 0; c->jump_buffer = 3; c->jump_carry = 4; c->jump_height = 1.0f; c->jump_clear = 0.35f;
     c->bait_count = 3; c->bait_ticks = 60; c->bait_wary = 100;
     c->bait_throw = 3.0f; c->bait_smell = 8.0f; c->bait_speed = 0.12f; c->bait_sugar = 1.0f; c->bait_heal = 5.0f;
     c->feed_level = 0.5f;
@@ -75,7 +75,7 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     F(body_mm); F(walk_mm_s); F(run_mm_s); F(back_mm_s); F(turn_deg_s); I(accel_ticks); F(speed_scale); F(turn_scale);
     F(takeoff_level); F(takeoff_mm_s); I(air_ticks); I(air_rest_ticks); F(takeoff_scale);
     I(guard_ticks); I(guard_cooldown); I(guard_stun);
-    I(jump_ticks); I(jump_rest); I(jump_buffer); F(jump_height); F(jump_clear);
+    I(jump_ticks); I(jump_rest); I(jump_buffer); I(jump_carry); F(jump_height); F(jump_clear);
     I(bait_count); I(bait_ticks); I(bait_wary); F(bait_throw); F(bait_smell); F(bait_speed); F(bait_sugar); F(bait_heal);
     F(feed_level);
     F(swat_range); F(swat_damage); I(swat_cooldown);
@@ -208,8 +208,12 @@ void boss_input(boss_state_t *s, int player, int key)
     }
     if (key == BOSS_JUMP) {      /* 뛰어오르기: 땅에 서 있으면 바로 뛴다. 아직 떠 있으면 눌렀다는 것을 잠깐 기억해 둔다 */
         if (s->cfg.jump_ticks <= 0) return;
-        if (p->jump == 0 && p->jump_rest == 0) p->jump = s->cfg.jump_ticks;
-        else p->jump_buf = s->cfg.jump_buffer;
+        if (p->jump == 0 && p->jump_rest == 0) {
+            p->jump = s->cfg.jump_ticks;
+            p->carry = p->step_left > 0 || p->moved_ago <= s->cfg.jump_carry;       /* 걷고 있었으면 그 기세로 */
+        } else {
+            p->jump_buf = s->cfg.jump_buffer;
+        }
         return;
     }
     int slow = (key & BOSS_SLOW) != 0, strafe = (key & BOSS_STRAFE) != 0;
@@ -398,19 +402,24 @@ static void players_act(boss_state_t *s)
         if (p->jump > 0) {                               /* 떠 있다 */
             p->jump--;
             p->z = p->jump > 0 ? c->jump_height * boss_jump_curve(1.0f - (float)p->jump / (float)c->jump_ticks) : 0.0f;
-            if (p->jump == 0) p->jump_rest = c->jump_rest;
+            if (p->jump == 0) { p->jump_rest = c->jump_rest; p->carry = 0; }
         } else if (p->jump_rest > 0) {
             p->jump_rest--;
         }
         if (p->jump_buf > 0) {                           /* 기억해 둔 키: 뛸 수 있게 되면(내려서자마자) 뛴다 */
             p->jump_buf--;
-            if (p->jump == 0 && p->jump_rest == 0 && p->alive) { p->jump = c->jump_ticks; p->jump_buf = 0; }
+            if (p->jump == 0 && p->jump_rest == 0 && p->alive) {
+                p->jump = c->jump_ticks;
+                p->jump_buf = 0;
+                p->carry = p->moved_ago <= c->jump_carry;        /* 날아와서 바로 다시 뛰면 계속 나아간다 */
+            }
         }
         p->closing = 0.0f;
         if (!p->alive) { p->move = p->strafe = p->turn = p->use = p->pick = p->has_look = p->step_left = 0; continue; }
         if (p->has_look) p->ang = p->look;               /* 마우스로 정한 방향 */
         if (p->turn) p->ang = wrap_angle(p->ang + (float)p->turn * (2.0f * PI_F / BOSS_DIRS));
-        if ((p->move || p->strafe) && p->step_left == 0) {   /* 걷는 중에 온 키는 버린다(누르고 있으면 또 온다) */
+        /* 걷는 중에 온 키는 버린다(누르고 있으면 또 온다). 떠 있을 때 온 키는 바로 받아서 날아가는 쪽을 바꾼다 */
+        if ((p->move || p->strafe) && (p->step_left == 0 || p->jump > 0)) {
             /* 새 걸음. 앞은 (cos, sin), 오른쪽은 거기서 90도 돈 (-sin, cos)이다. 앞과 옆이 같이 왔으면 비스듬히 간다.
              * 방향은 걸음을 뗄 때 정하고, 한 걸음의 거리를 step_ticks에 고르게 나눠 간다 */
             float fx = cosf(p->ang), fy = sinf(p->ang);
@@ -420,8 +429,15 @@ static void players_act(boss_state_t *s)
             p->step_left = ticks;
             p->step_dx = mx / n * len / (float)ticks;
             p->step_dy = my / n * len / (float)ticks;
+            if (p->jump > 0) p->carry = 1;
         }
+        /* 걷다가 뛰어올랐으면 걷던 빠르기와 방향 그대로 날아간다: 내려설 때까지 틱마다 같은 만큼 간다.
+         * 터미널은 키를 누르고 있는지를 알려 주지 않고, 다른 키(스페이스)를 누르면 걷는 키의 되풀이가 끊긴다.
+         * 그래서 이렇게 하지 않으면 걷다가 뛰는 순간 제자리에 멈춰서 위아래로만 뛴다 */
+        if (p->jump > 0 && p->carry && p->step_left == 0) p->step_left = 1;
+        if (p->step_left == 0 && p->moved_ago < 1000) p->moved_ago++;
         if (p->step_left > 0) {
+            p->moved_ago = 0;
             float nx = p->x, ny = p->y, ox = p->x, oy = p->y;
             p->step_left--;
             slide(s, &nx, &ny, p->step_dx, p->step_dy, c->player_radius);

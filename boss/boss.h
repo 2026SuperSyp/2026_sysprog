@@ -23,7 +23,8 @@
  *                        한 번 쓰면 guard_cooldown 동안 다시 못 쓴다
  *   BOSS_JUMP            뛰어오른다(jump_ticks 동안, 높이는 boss_jump_curve). 돌진이 닿는 순간에 jump_clear보다 높이
  *                        떠 있으면 돌진이 발밑으로 지나가서 맞지 않는다. 막기와 달리 초파리는 멈추지 않는다.
- *                        아직 떠 있을 때 누르면 jump_buffer 동안 기억해 두었다가 내려서자마자 다시 뛴다
+ *                        아직 떠 있을 때 누르면 jump_buffer 동안 기억해 두었다가 내려서자마자 다시 뛴다.
+ *                        걷다가 뛰면 걷던 빠르기와 방향 그대로 날아간다. 떠 있을 때 누른 이동 키는 날아가는 쪽을 바꾼다
  *   SK_LEFT / SK_RIGHT   한 칸(22.5도) 왼쪽 / 오른쪽으로 돈다(마우스가 없을 때와 봇이 쓴다)
  *   SK_1, SK_2, SK_3, SK_4   파리채 / 스프레이 / 끈끈이 / 먹이를 고른다
  *   SK_SUB               다음 무기로 바꾼다
@@ -92,6 +93,7 @@ typedef struct {
     int   guard_ticks, guard_cooldown, guard_stun;   /* 막는 자세의 길이, 다시 쓸 때까지, 막힌 초파리가 멈추는 시간 */
     int   jump_ticks, jump_rest;                 /* 뛰어올라 떠 있는 시간, 내려선 뒤 다시 뛰지 못하는 시간 */
     int   jump_buffer;                           /* 뛸 수 없을 때 누른 키를 기억해 두는 시간. 그 안에 뛸 수 있게 되면 뛴다 */
+    int   jump_carry;                            /* 뛰기 전 이만큼 안에 걷고 있었으면 그 빠르기와 방향으로 날아간다 */
     float jump_height, jump_clear;               /* 꼭대기의 높이(칸), 이 높이 이상이면 돌진이 발밑으로 지나간다 */
     /* 먹이. 초파리는 냄새가 닿는 거리(bait_smell) 안에 보이는 먹이로 걸어가고(bait_speed), 닿으면 단맛 자극
      * (bait_sugar)이 뇌로 들어간다. 뇌의 먹기 반응이 feed_level 이상이면 먹는다. 다 먹는 데 bait_ticks가 걸리고
@@ -123,6 +125,8 @@ typedef struct {
     int   guard, guard_cool;     /* 막는 자세가 남은 틱, 막기를 다시 쓸 때까지 남은 틱 */
     int   jump, jump_rest;       /* 뛰어올라 떠 있는 남은 틱, 내려선 뒤 다시 뛸 때까지 남은 틱 */
     int   jump_buf;              /* 뛸 수 없을 때 누른 키를 기억하는 남은 틱 */
+    int   carry;                 /* 이번 뜀은 걷던 기세로 날아간다(내려설 때까지 틱마다 step_dx, step_dy만큼 간다) */
+    int   moved_ago;             /* 마지막으로 움직인 뒤 지난 틱 */
     float z;                     /* 발이 바닥에서 떠 있는 높이(칸) */
     int   baits;                 /* 남은 먹이 */
     int   has_look;              /* boss_look이 왔다. 다음 틱에 look을 보는 방향으로 삼는다 */

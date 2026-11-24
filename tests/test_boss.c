@@ -521,6 +521,28 @@ static void test_jump(void)
     boss_snapshot(&S, &snap);
     T_CHECK(snap.p[0].z > 80);                                    /* 꼭대기 근처. 높이는 칸의 1/100로 보낸다 */
 
+    /* 걷다가 뛰면 걷던 빠르기와 방향 그대로 날아간다(키가 더 오지 않아도). 서서 뛰면 제자리다 */
+    put_player(0, 8.5f, 15.0f, NORTH);
+    ticks(c.jump_ticks + 10, still);
+    press(0, SK_UP);
+    boss_input(&S, 0, BOSS_JUMP);
+    float from = S.p[0].y, per_tick = c.step / (float)c.step_ticks;
+    ticks(c.jump_ticks, still);
+    T_CHECK(S.p[0].y < from - per_tick * (float)(c.jump_ticks - 1) + 1e-3f);
+    T_CHECK(fabsf(S.p[0].x - 8.5f) < 1e-3f);
+    from = S.p[0].y;
+    ticks(6, still);                                              /* 내려서면 멈춘다 */
+    T_CHECK(fabsf(S.p[0].y - from) < per_tick + 1e-3f);
+    from = S.p[0].y;
+    boss_input(&S, 0, BOSS_JUMP);                                 /* 서서 뛴다 */
+    ticks(c.jump_ticks, still);
+    T_CHECK(S.p[0].y == from);
+    boss_input(&S, 0, BOSS_JUMP);                                 /* 떠 있을 때 누른 이동 키는 날아가는 쪽을 바꾼다 */
+    boss_tick(&S, still);
+    boss_input(&S, 0, SK_RIGHT | BOSS_STRAFE);
+    ticks(c.jump_ticks - 1, still);
+    T_CHECK(S.p[0].x > 8.5f + per_tick * (float)(c.jump_ticks - 3));
+
     boss_cfg_default(&c);                                         /* 돌진을 뛰어넘는다 */
     c.wave_period = 1000000;
     setup(&c, 1);
