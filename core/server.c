@@ -690,6 +690,9 @@ static void start_round(void)
     send_phase();
 }
 
+static int skip_to_boss;                     /* 이번 판은 미니게임 없이 바로 보스전으로 간다(방장의 B) */
+static void start_boss(void);
+
 static void start_game(void)
 {
     game_seed = opt.seed ? opt.seed : (uint32_t)now_ms();
@@ -707,6 +710,12 @@ static void start_game(void)
         memcpy(tmp, opt.order[i], 32);
         memcpy(opt.order[i], opt.order[j], 32);
         memcpy(opt.order[j], tmp, 32);
+    }
+    if (skip_to_boss) {
+        skip_to_boss = 0;
+        round_no = opt.n_rounds;
+        start_boss();
+        return;
     }
     start_round();
 }
@@ -962,6 +971,13 @@ static void on_input(const event_t *e)
     int s = members[e->slot].seat;
     if (s < 0) return;                               /* 관전자의 입력은 쓰지 않는다 */
     in_event_t ie = { .kind = e->in.kind, .flags = e->in.flags, .code = e->in.code, .x = e->in.x, .y = e->in.y };
+
+    /* 시험과 시연용: 방장이 B를 누르면 미니게임을 건너뛰고 바로 보스전으로 간다. 로비에서도(준비를 기다리지 않는다),
+     * 미니게임 도중에도 된다. 건너뛴 라운드의 점수는 없다 */
+    if (ie.kind == IN_KEY && (ie.code == 'b' || ie.code == 'B') && s == host_seat() && opt.boss_sec != 0) {
+        if (phase == PH_LOBBY) { skip_to_boss = 1; start_game(); return; }
+        if (phase == PH_CARD || phase == PH_READY || phase == PH_PLAY) { round_no = opt.n_rounds; start_boss(); return; }
+    }
 
     if (phase == PH_LOBBY && ie.kind == IN_KEY) {
         int key = input_stage_key(&ie);

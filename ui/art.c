@@ -324,6 +324,11 @@ void art_lobby(image_t *im, const art_seat_t *seat, int n_seats, const char *con
     text(im, u, x + 80.0f, y, me_host ? "시작" : "시작(방장)", ink, 0.8f, 1.0f);
     text(im, u, x + 150.0f, y, "Q", key, 0.8f, 1.0f);
     text(im, u, x + 160.0f, y, "나가기", ink, 0.8f, 1.0f);
+    if (me_host) {                                   /* 방장에게만: 미니게임을 건너뛰는 키 */
+        text(im, u, x, y + 16.0f, "B", key, 0.75f, 0.8f);
+        text(im, u, x + 10.0f, y + 16.0f, "미니게임 건너뛰고 보스전으로", dim, 0.75f, 1.0f);
+        y += 16.0f;
+    }
     if (n_top > 0) art_top(im, u, y + 36.0f, top, n_top, 6);
 }
 
