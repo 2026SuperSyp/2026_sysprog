@@ -10,7 +10,7 @@ void scene_bubble(canvas_t *c, int x, int y, const char *text, color_t ink, int 
 int  scene_bubble_w(const char *text);
 int  scene_bubble_h(const char *text);
 
-/* 규칙 설명: 위에 제목, 시프봇이 말풍선으로 규칙(두 줄까지, '\n'에서 나눈다)을 말하고, 아래에 조작법.
+/* 규칙 설명: 위에 제목, 시프봇이 말풍선으로 규칙(두 줄까지, '\n'에서 나눈다)을 말하고 마지막 줄에 조작법을 알려 준다.
  * tick은 이 장면이 뜬 뒤 지난 틱 수다(입 모양이 움직인다). */
 void scene_card(canvas_t *full, const char *title, const char *rule, const char *controls, int tick);
 /* 카운트다운: tick 0~9는 3, 10~19는 2, 20~29는 1, 그 뒤는 GO! 시프봇 그림이 크게 나온다 */

@@ -14,6 +14,8 @@ typedef struct {
     int watch;                           /* 내 눈으로 볼 수 없을 때(관전자, 쓰러짐) 누구의 눈으로 볼지. 쓰러진 사람이면 그다음 사람 */
     const char *name[BOSS_PLAYERS];      /* 참가자 이름. 없으면 NULL */
     int hit_ms, hurt_ms, wave_ms;        /* 내 공격이 맞은 뒤, 내가 맞은 뒤, 날갯짓 뒤로 지난 시간(ms). 없었으면 음수 */
+    int help;                            /* 1이면 시프봇의 키 안내를 띄운다(H로 켜고 끈다). 시작하기 전에는 이것과 무관하게 띄운다 */
+    int age_ms;                          /* 보스전 단계에 들어온 뒤 지난 시간(ms). 시프봇이 움직이는 데 쓴다 */
 } boss_view_t;
 
 void boss_view_draw(canvas_t *full, const boss_snap_t *b, const boss_view_t *v);

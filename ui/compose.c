@@ -185,6 +185,7 @@ void compose_stage_frame(canvas_t *full, const canvas_t *fly, canvas_t *const pa
         snprintf(buf, sizeof buf, "P%d", hud->watch + 1);
         ui_text(full, OTHER_X + 2, TOP_H + 2, buf, C_WHITE);
     }
+    ui_text(full, OTHER_X + OTHER_W - 20, TOP_H + OTHER_H - 10, "TAB", C_GRAY3);    /* 이 칸에 볼 사람을 바꾸는 키 */
 
     /* 오른쪽 아래: 초파리 뇌 표시 */
     if (hud->brain_map)

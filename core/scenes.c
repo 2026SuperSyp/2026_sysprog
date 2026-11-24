@@ -49,7 +49,8 @@ static void bubble_size(const char *text, int *w, int *h)
 int scene_bubble_w(const char *text) { int w, h; bubble_size(text, &w, &h); return w; }
 int scene_bubble_h(const char *text) { int w, h; bubble_size(text, &w, &h); return h; }
 
-void scene_bubble(canvas_t *c, int x, int y, const char *text, color_t ink, int tail_x)
+/* 말풍선을 그린다. hi_line 번째 줄(0부터)만 hi_ink 색으로 쓴다. 강조할 줄이 없으면 hi_line에 -1을 준다 */
+static void bubble(canvas_t *c, int x, int y, const char *text, color_t ink, int tail_x, int hi_line, color_t hi_ink)
 {
     char lines[MAX_LINES][96];
     int n = split_lines(text, lines), w, h;
@@ -77,14 +78,25 @@ void scene_bubble(canvas_t *c, int x, int y, const char *text, color_t ink, int 
     }
 
     for (int i = 0; i < n; i++)
-        ui_text(c, x + (w - ui_text_w(lines[i])) / 2, y + 1 + BUBBLE_PAD + i * LINE_PITCH, lines[i], ink);
+        ui_text(c, x + (w - ui_text_w(lines[i])) / 2, y + 1 + BUBBLE_PAD + i * LINE_PITCH, lines[i],
+                i == hi_line ? hi_ink : ink);
+}
+
+void scene_bubble(canvas_t *c, int x, int y, const char *text, color_t ink, int tail_x)
+{
+    bubble(c, x, y, text, ink, tail_x, -1, ink);
 }
 
 void scene_card(canvas_t *full, const char *title, const char *rule, const char *controls, int tick)
 {
     static sprite_id_t talk = SPR_MISSING;
     static const int talk_frames[] = { 0, 1, 2, 1 };        /* 말하는 입 모양: 1 > 2 > 3 > 2 */
-    const char *say = (rule && rule[0]) ? rule : "...";
+    /* 시프봇이 규칙을 말하고 마지막 줄에 조작을 알려 준다. 조작 줄은 눈에 띄게 다른 색으로 쓴다 */
+    char say[200];
+    int n_rule = 1, has_keys = controls && controls[0];
+    for (const char *p = (rule && rule[0]) ? rule : "..."; *p; p++) n_rule += *p == '\n';
+    if (n_rule > MAX_LINES - 1) n_rule = MAX_LINES - 1;
+    snprintf(say, sizeof say, "%s%s%s", (rule && rule[0]) ? rule : "...", has_keys ? "\n조작: " : "", has_keys ? controls : "");
     int bw = scene_bubble_w(say), bh = scene_bubble_h(say);
     int bx = (SCREEN_W - bw) / 2, by = 30;
 
@@ -93,10 +105,8 @@ void scene_card(canvas_t *full, const char *title, const char *rule, const char 
     ui_line(full, 40, 24, SCREEN_W - 41, 24, C_GRAY1);
 
     /* 시프봇이 왼쪽 아래에서 말하고, 말풍선의 꼬리가 그쪽으로 내려온다 */
-    scene_bubble(full, bx, by, say, C_TEXT, bx + 14 < 60 ? 60 : bx + 14);
+    bubble(full, bx, by, say, C_TEXT, bx + 14 < 60 ? 60 : bx + 14, has_keys ? n_rule : -1, C_CYAN);
     ui_sprite(full, sipbot("sipbot_talk", &talk), 36, by + bh + 6, talk_frames[(tick / 4) % 4]);
-
-    center_text(full, 119, controls ? controls : "", C_CYAN);
 }
 
 void scene_count(canvas_t *full, int tick)

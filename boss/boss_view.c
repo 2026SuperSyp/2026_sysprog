@@ -253,6 +253,88 @@ static void draw_minimap(canvas_t *c, const boss_snap_t *b, int me)
     }
 }
 
+/* ---- 키 안내 ---------------------------------------------------------------------- */
+/* 글자열 하나를 한글 줄의 높이에 맞춰 놓는다. 영문만 있는 조각은 한글이 섞인 조각 안의 영문과 같은 높이로
+ * 내려서 놓는다. 그린 폭을 돌려준다 */
+static int put_text(canvas_t *c, int x, int y, const char *s, color_t col)
+{
+    ui_text(c, x, ui_text_h(s) > UI_FONT_H ? y : y + UI_KFONT_LATIN_DY, s, col);
+    return ui_text_w(s);
+}
+
+typedef struct { const char *key, *what; } key_hint_t;
+
+/* 키는 노랗게, 설명은 흰색으로 한 줄에 이어 놓는다. key가 NULL인 항목에서 끝난다 */
+static void put_hints(canvas_t *c, int x, int y, const key_hint_t *h)
+{
+    for (; h->key; h++) {
+        x += put_text(c, x, y, h->key, C_YELLOW) + 4;
+        x += put_text(c, x, y, h->what, C_TEXT) + 10;
+    }
+}
+
+/* 말풍선 상자. core/scenes.c의 말풍선과 같은 모양이다(모서리를 한 픽셀 깎은 검은 상자에 흰 테두리,
+ * 아래로 내려오는 꼬리). boss/는 core/를 쓰지 않으므로 여기서 따로 그린다 */
+static void speech_box(canvas_t *c, int x, int y, int w, int h, int tail_x)
+{
+    ui_rect(c, x + 1, y, w - 2, h, C_BLACK);
+    ui_rect(c, x, y + 1, w, h - 2, C_BLACK);
+    ui_line(c, x + 2, y, x + w - 3, y, C_WHITE);
+    ui_line(c, x + 2, y + h - 1, x + w - 3, y + h - 1, C_WHITE);
+    ui_line(c, x, y + 2, x, y + h - 3, C_WHITE);
+    ui_line(c, x + w - 1, y + 2, x + w - 1, y + h - 3, C_WHITE);
+    ui_px(c, x + 1, y + 1, C_WHITE);
+    ui_px(c, x + w - 2, y + 1, C_WHITE);
+    ui_px(c, x + 1, y + h - 2, C_WHITE);
+    ui_px(c, x + w - 2, y + h - 2, C_WHITE);
+    for (int k = 0; k < 5; k++) {
+        ui_line(c, tail_x + k / 2, y + h - 1 + k, tail_x + 4 - (k + 1) / 2, y + h - 1 + k, C_BLACK);
+        ui_px(c, tail_x + k / 2, y + h - 1 + k, C_WHITE);
+        ui_px(c, tail_x + 4 - (k + 1) / 2, y + h - 1 + k, C_WHITE);
+    }
+}
+
+/* 시프봇의 키 안내. 화면 전체를 쓴다. 보스전이 시작하기 전(서버가 잠깐 기다려 준다)과 H를 눌렀을 때 띄운다.
+ * 진행자 시프봇이 말풍선으로 키를 전부 알려 주고, 옆에 한마디(살금살금 다가가라)를 덧붙인다.
+ * 조작이 바뀌면 여기와 draw_legend, 상태 줄의 숫자, docs/guide.md의 "보스전 조작"을 같이 고친다 */
+static void draw_guide(canvas_t *c, int intro, int age_ms)
+{
+    static sprite_id_t cat = SPR_MISSING;
+    static const key_hint_t rows[][4] = {
+        { { "W S", "앞뒤" }, { "A D", "돌기" }, { "SHIFT+W", "살금살금" }, { NULL, NULL } },
+        { { "1", "파리채" }, { "2", "스프레이" }, { "3", "끈끈이" }, { NULL, NULL } },
+        { { "F", "다음 무기" }, { "SPACE", "무기 쓰기" }, { NULL, NULL } },
+        { { "TAB", "쓰러진 뒤 다른 사람 보기" }, { NULL, NULL } },
+        { { "Q", "나가기" }, { "H", "이 안내 다시 보기" }, { NULL, NULL } },
+    };
+    const int n = (int)(sizeof rows / sizeof rows[0]), bx = 6, by = 18, bw = 228, bh = 10 + n * 13;
+    const char *right = intro ? "곧 시작해요" : "H 닫기";
+    if (cat == SPR_MISSING) cat = ui_sprite_load("sipbot_guide");
+
+    ui_rect(c, 0, 0, SCREEN_W, SCREEN_H, C_BG);
+    put_text(c, 8, 3, "보스전 조작", C_YELLOW);
+    put_text(c, SCREEN_W - 8 - ui_text_w(right), 3, right, C_CYAN);
+
+    speech_box(c, bx, by, bw, bh, 34);
+    for (int i = 0; i < n; i++) put_hints(c, bx + 8, by + 5 + i * 13, rows[i]);
+
+    /* 시프봇은 말풍선 아래 왼쪽에 서고, 그 옆에 가장 중요한 한마디를 둔다 */
+    int cy = SCREEN_H - ui_sprite_h(cat), frames = ui_sprite_frames(cat);
+    ui_sprite(c, cat, 10, cy, frames > 0 ? (age_ms < 0 ? 0 : age_ms / 300) % frames : 0);
+    put_text(c, 72, by + bh + 8, "초파리는 다가가면 달아나요", C_TEXT);
+    put_text(c, 72, by + bh + 22, "SHIFT로 살금살금 다가가요", C_CYAN);
+}
+
+/* 싸우는 동안 3D 화면의 왼쪽 아래에 늘 보이는 짧은 안내. 무기를 고르는 숫자 키는 아래 상태 줄에 적혀 있다 */
+static void draw_legend(canvas_t *c)
+{
+    static const key_hint_t a[] = { { "WASD", "이동" }, { "SPACE", "쓰기" }, { NULL, NULL } };
+    static const key_hint_t b[] = { { "SHIFT", "살금살금" }, { "H", "키 안내" }, { NULL, NULL } };
+    ui_rect(c, 0, VY + VH - 29, 150, 29, C_BLACK);
+    put_hints(c, 3, VY + VH - 27, a);
+    put_hints(c, 3, VY + VH - 14, b);
+}
+
 static void draw_bars(canvas_t *c, const boss_snap_t *b, const boss_view_t *v, int eye)
 {
     static const char *item_name[BOSS_ITEMS] = { "파리채", "스프레이", "끈끈이" };
@@ -274,15 +356,18 @@ static void draw_bars(canvas_t *c, const boss_snap_t *b, const boss_view_t *v, i
         ui_text(c, 2, y, line, pcol[eye]);
         return;
     }
-    ui_text(c, 2, y, "체력", C_TEXT);
-    for (int k = 0; k < b->p[eye].hp && k < 5; k++) ui_rect(c, 30 + k * 8, y + 3, 6, 6, C_BAD);
-    int x = 72;
+    /* 체력(빨간 칸), 그리고 무기 셋. 이름 앞의 숫자가 그 무기를 고르는 키다 */
+    int hp = b->p[eye].hp < 5 ? b->p[eye].hp : 5;
+    for (int k = 0; k < hp; k++) ui_rect(c, 2 + k * 8, y + 3, 6, 6, C_BAD);
+    int x = 2 + (hp > 3 ? hp : 3) * 8 + 4;
     for (int k = 0; k < BOSS_ITEMS; k++) {
+        const char key[2] = { (char)('1' + k), '\0' };               /* 무기 k를 고르는 키는 SK_1 + k다 */
+        int on = k == b->p[eye].item;
         if (k == BOSS_SPRAY) snprintf(line, sizeof line, "%s %d", item_name[k], b->p[eye].ammo);
         else if (k == BOSS_TRAP) snprintf(line, sizeof line, "%s %d", item_name[k], b->p[eye].traps);
         else snprintf(line, sizeof line, "%s", item_name[k]);
-        ui_text(c, x, y, line, k == b->p[eye].item ? C_YELLOW : C_GRAY2);
-        x += ui_text_w(line) + 6;
+        x += put_text(c, x, y, key, on ? C_WHITE : C_GRAY3) + 4;
+        x += put_text(c, x, y, line, on ? C_YELLOW : C_GRAY2) + 6;
     }
 }
 
@@ -304,9 +389,14 @@ static void draw_outcome(canvas_t *c, const boss_snap_t *b)
     ui_text(c, (VW - sw) / 2, by + 26, sub, C_TEXT);
 }
 
-/* 3D 화면 위에 얹는 것: 손에 든 무기, 가운데 표시, 작은 지도, 알림, 상태 줄, 결과. 배율 1의 좌표로 그린다 */
+/* 3D 화면 위에 얹는 것: 손에 든 무기, 가운데 표시, 작은 지도, 짧은 키 안내, 알림, 상태 줄, 결과.
+ * 시프봇의 키 안내를 띄울 때는 그것만 그린다. 배율 1의 좌표로 그린다 */
 static void draw_overlay(canvas_t *c, const boss_snap_t *b, const boss_view_t *v, int eye)
 {
+    if (b->outcome == BOSS_GOING && (v->help || b->tick == 0)) {     /* tick 0: 아직 시작하지 않았다 */
+        draw_guide(c, b->tick == 0, v->age_ms);
+        return;
+    }
     if (eye < 0) {                                   /* 볼 사람이 없다: 지도만 크게 */
         ui_rect(c, 0, VY, VW, VH, C_BG);
         draw_minimap(c, b, -1);
@@ -320,6 +410,7 @@ static void draw_overlay(canvas_t *c, const boss_snap_t *b, const boss_view_t *v
         ui_rect(c, VW / 2, VY + VH / 2 - 3, 1, 7, v->hit_ms >= 0 && v->hit_ms < 250 ? C_RED : C_WHITE);
     }
     draw_minimap(c, b, eye);
+    if (eye == v->me && b->outcome == BOSS_GOING) draw_legend(c);
 
     /* 알림: 내가 맞았다(테두리), 돌진이 나를 겨눈다, 날갯짓, 끈끈이에 붙었다 */
     if (v->hurt_ms >= 0 && v->hurt_ms < 300) {
@@ -331,8 +422,12 @@ static void draw_overlay(canvas_t *c, const boss_snap_t *b, const boss_view_t *v
     if (b->fly.windup && b->fly.target == eye) { note = "돌진이 온다!"; note_col = C_RED; }
     else if (v->wave_ms >= 0 && v->wave_ms < 500) note = "날갯짓!";
     else if (b->fly.stun) note = "붙었다! 지금이다";
-    else if (b->fly.air) note = "뛰어올랐다";
-    if (note && b->outcome == BOSS_GOING) ui_text(c, (VW - ui_text_w(note)) / 2, VY + 4, note, note_col);
+    else if (b->fly.air) note = "달아났다! SHIFT로 살금살금";
+    if (note && b->outcome == BOSS_GOING) {          /* 가운데에 놓되, 긴 글은 오른쪽 위의 작은 지도(x 189부터)를 피한다 */
+        int w = ui_text_w(note), x = (VW - w) / 2;
+        if (x + w > 186) x = 186 - w;
+        ui_text(c, x, VY + 4, note, note_col);
+    }
     draw_bars(c, b, v, eye);
     draw_outcome(c, b);
 }

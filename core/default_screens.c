@@ -59,7 +59,7 @@ WEAK void screen_lobby(canvas_t *full, const lobby_state_t *s)
         row_text(full, 138, y, buf, col);
     }
     if ((int)(s->t * 2) % 2 == 0)
-        center(full, 120, "SPACE: READY   F: START", C_CYAN);
+        center(full, 120, "SPACE: READY   F: START   Q: QUIT", C_CYAN);
 }
 
 WEAK void screen_result(canvas_t *full, const round_result_t *r)

@@ -70,8 +70,9 @@
 #define EVQ_KEEP      64         /* 사건 큐에서 입력이 쓰지 못하게 남겨 두는 칸 */
 #define SCORE_MAX     1000000    /* 한 라운드 점수로 받아 주는 한도 */
 #define BOSS_WIN_BONUS 100       /* 보스전에서 이기고 살아남은 사람에게 더하는 점수 */
-#define BOSS_START_HP  3         /* 보스전에 들어간 사람의 체력. 미니게임에서 남은 기회와 무관하게 모두 같다 */
 #define BOSS_END_MS    3000      /* 보스전이 끝난 뒤 결과(이겼다, 졌다)를 보여 주는 시간. 그 뒤에 랭킹으로 간다 */
+#define BOSS_INTRO_MS  5000      /* 보스전을 시작하기 전에 키 안내를 보여 주는 시간. 그동안 초파리는 움직이지 않는다 */
+#define BOSS_START_HP  3         /* 보스전에 들어간 사람의 체력. 미니게임에서 남은 기회와 무관하게 모두 같다 */
 
 /* ---- 옵션 ------------------------------------------------------------------ */
 static struct {
@@ -758,6 +759,15 @@ static void finish_boss(void)
     finish_game();
 }
 
+/* 지금의 보스전 상태를 접속한 모두에게 보낸다 */
+static void boss_send(void)
+{
+    boss_snap_t snap;
+    boss_snapshot(&boss, &snap);
+    for (int i = 0; i < MAX_CONN; i++)
+        if (members[i].in) conn_post(i, members[i].gen, MSG_BOSS, 0, &snap, sizeof snap, 1);
+}
+
 static void start_boss(void)
 {
     boss_cfg_t c;
@@ -784,23 +794,22 @@ static void start_boss(void)
     fly_score = boss.fly.hp;
     fprintf(stderr, "서버: 보스전 시작 (참가자 %d명, %d틱, 초파리 체력 %d)\n", n, c.ticks, boss.fly.hp);
     phase = PH_BOSS;
-    deadline = now_ms();
+    /* 첫 틱을 BOSS_INTRO_MS 뒤로 미룬다. 그 전에 처음 상태(tick 0)를 보내 두면 클라이언트가 키 안내를 띄운다 */
+    deadline = now_ms() + (opt.fast ? 100 : BOSS_INTRO_MS);
     send_phase();
+    boss_send();
 }
 
 static void boss_step(void)
 {
     float stim[BRAIN_GROUP_COUNT], rate[BRAIN_GROUP_COUNT];
-    boss_snap_t snap;
     brain_host_begin_tick();
     boss_stimulus(&boss, stim);
     for (int g = 0; g < BRAIN_GROUP_COUNT; g++) if (stim[g] > 0.0f) brain_stimulate((brain_group_t)g, stim[g]);
     for (int g = 0; g < BRAIN_GROUP_COUNT; g++) rate[g] = brain_rate((brain_group_t)g);
     brain_host_end_tick();
     boss_tick(&boss, rate);
-    boss_snapshot(&boss, &snap);
-    for (int i = 0; i < MAX_CONN; i++)
-        if (members[i].in) conn_post(i, members[i].gen, MSG_BOSS, 0, &snap, sizeof snap, 1);
+    boss_send();
     /* 승패가 났으면 여기서 멈춘다. 방금 보낸 상태에 결과가 들어 있어서 클라이언트가 그것을 그린다.
      * 점수를 매기고 랭킹으로 넘어가는 일(finish_boss)은 BOSS_END_MS 뒤에 한다 */
     if (boss.outcome != BOSS_GOING) boss_over = 1;

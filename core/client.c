@@ -60,6 +60,7 @@ static struct {
     top_msg_t top;                   /* 서버가 마지막으로 보낸 역대 순위 */
     boss_snap_t boss;                /* 보스전의 마지막 상태 */
     int have_boss, boss_watch;       /* boss_watch: 관전할 때 누구의 눈으로 볼지 */
+    int boss_help;                   /* 보스전에서 H로 켠 키 안내 */
     int64_t boss_hit_at, boss_hurt_at, boss_wave_at;     /* 내 공격이 맞은 때, 내가 맞은 때, 날갯짓이 있던 때(ms) */
     int watch;                       /* 오른쪽 위에 볼 칸. WATCH_FLY이면 키보드 치는 초파리 */
     int dirty, quit;
@@ -129,6 +130,7 @@ static void *recv_main(void *arg)
                 S.phase_at = now_ms();
                 if (S.ph.phase != PH_PLAY) S.have_frame = 0;
                 if (S.ph.phase != PH_BOSS) { S.have_boss = 0; S.boss_hit_at = S.boss_hurt_at = S.boss_wave_at = 0; }
+                S.boss_help = 0;
                 if (S.ph.phase == PH_CARD) S.watch = -1;         /* 새 라운드: 볼 칸을 다시 고른다 */
             }
             S.dirty = 1;
@@ -169,6 +171,21 @@ static void *recv_main(void *arg)
 }
 
 /* ---- 입력 스레드 ------------------------------------------------------------- */
+/* 보스전에서 H: 키 안내를 켜고 끈다. 보스전이 아니면 0을 돌려주고 아무것도 하지 않는다 */
+static int toggle_boss_help(void)
+{
+    int boss;
+    pthread_mutex_lock(&S.mu);
+    boss = S.have_phase && S.ph.phase == PH_BOSS;
+    if (boss) {
+        S.boss_help = !S.boss_help;
+        S.dirty = 1;
+        pthread_cond_broadcast(&S.cv);
+    }
+    pthread_mutex_unlock(&S.mu);
+    return boss;
+}
+
 static void next_watch(void)
 {
     pthread_mutex_lock(&S.mu);
@@ -218,6 +235,7 @@ static void *input_main(void *arg)
             len -= used;
             if (ev.kind == IN_KEY && (ev.code == 'q' || ev.code == 'Q' || ev.code == 3)) { quit_with(""); return NULL; }
             if (ev.kind == IN_KEY && ev.code == '\t') { next_watch(); continue; }
+            if (ev.kind == IN_KEY && (ev.code == 'h' || ev.code == 'H') && toggle_boss_help()) continue;
             input_msg_t m = { .kind = ev.kind, .flags = ev.flags, .code = ev.code };
             if (ev.kind == IN_POINTER) {
                 /* 터미널 글자 칸을 전체 화면의 픽셀로 바꿔서 올린다 */
@@ -243,7 +261,8 @@ static void draw_boss(canvas_t *full, const phase_msg_t *ph)
 {
     boss_view_t v = { .me = (ph->me >= 0 && ph->me < PROTO_SEATS) ? ph->pane_of[ph->me] : -1,
                       .hit_ms = ms_since(S.boss_hit_at), .hurt_ms = ms_since(S.boss_hurt_at),
-                      .wave_ms = ms_since(S.boss_wave_at), .watch = S.boss_watch };
+                      .wave_ms = ms_since(S.boss_wave_at), .watch = S.boss_watch, .help = S.boss_help,
+                      .age_ms = (int)(now_ms() - S.phase_at) };
     if (!S.have_boss) { scene_message(full, "BOSS", C_YELLOW); return; }
     for (int s = 0; s < PROTO_SEATS; s++)
         if (ph->pane_of[s] >= 0 && ph->pane_of[s] < BOSS_PLAYERS) v.name[ph->pane_of[s]] = ph->name[s];
