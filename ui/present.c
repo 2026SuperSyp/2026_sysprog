@@ -1,7 +1,7 @@
 /* 표시: 전체 화면을 터미널 글자열로 바꾼다.
  *
  * 글자 한 칸이 위아래 픽셀 2개다. 위 픽셀은 글자색, 아래 픽셀은 바탕색으로 하고
- * 반칸 블록 문자(▀)를 찍는다. 지난번과 달라진 칸만 내보낸다.
+ * 반칸 블록 문자(▀)를 찍는다. 위아래가 같은 색이면 바탕색만 두고 빈칸을 찍는다. 지난번과 달라진 칸만 내보낸다.
  *
  * 화면은 보통 240x134이고 터미널 240칸 67줄에 그린다. 배율 N(1~PRESENT_MAX_SCALE)으로 키운
  * 화면(240N x 134N)도 받는다. 그때는 터미널이 240N칸 67N줄 이상이어야 한다. */
@@ -85,15 +85,10 @@ size_t present_encode(present_state_t *st, const canvas_t *full, int cols, int r
             old_b[c] = b;
 
             if (!(r == last_r && c == last_c + 1)) {
-                n = snprintf(tmp, sizeof tmp, "\033[%d;%dH", offy + r + 1, offx + c + 1);
+                /* 같은 줄에서 몇 칸 건너뛰는 것이면 "오른쪽으로 n칸"이 줄과 칸을 다 적는 것보다 짧다 */
+                if (r == last_r && c > last_c) n = snprintf(tmp, sizeof tmp, "\033[%dC", c - last_c - 1);
+                else n = snprintf(tmp, sizeof tmp, "\033[%d;%dH", offy + r + 1, offx + c + 1);
                 if (!put(out, cap, &len, tmp, (size_t)n)) return len;
-            }
-            if (t != fg) {
-                uint8_t rgb[3];
-                ui_palette_rgb(t, rgb);
-                n = snprintf(tmp, sizeof tmp, "\033[38;2;%d;%d;%dm", rgb[0], rgb[1], rgb[2]);
-                if (!put(out, cap, &len, tmp, (size_t)n)) return len;
-                fg = t;
             }
             if (b != bg) {
                 uint8_t rgb[3];
@@ -102,7 +97,20 @@ size_t present_encode(present_state_t *st, const canvas_t *full, int cols, int r
                 if (!put(out, cap, &len, tmp, (size_t)n)) return len;
                 bg = b;
             }
-            if (!put(out, cap, &len, "\xE2\x96\x80", 3)) return len;
+            if (t == b) {
+                /* 위아래가 같은 색이면 바탕색만 맞추고 빈칸을 찍는다. 글자색을 바꾸지 않아도 되고 글자도 1바이트다.
+                 * 큰 화면에서 한 색으로 칠한 넓은 곳(벽, 바닥)이 바뀔 때 내보내는 양이 크게 준다 */
+                if (!put(out, cap, &len, " ", 1)) return len;
+            } else {
+                if (t != fg) {
+                    uint8_t rgb[3];
+                    ui_palette_rgb(t, rgb);
+                    n = snprintf(tmp, sizeof tmp, "\033[38;2;%d;%d;%dm", rgb[0], rgb[1], rgb[2]);
+                    if (!put(out, cap, &len, tmp, (size_t)n)) return len;
+                    fg = t;
+                }
+                if (!put(out, cap, &len, "\xE2\x96\x80", 3)) return len;
+            }
             last_r = r;
             last_c = c;
         }
