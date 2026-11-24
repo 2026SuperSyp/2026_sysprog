@@ -9,6 +9,10 @@
 #include "boss/boss.h"
 #include "ui.h"
 
+/* 방의 높이. 계산부는 평면에서만 계산하고(뛰어오른 높이만 따로 가진다), 벽이 얼마나 높은가는 그리는 쪽의 일이다 */
+#define BOSS_VIEW_WALL_H   6.0f          /* 벽의 높이(칸). 천장이 이 높이에 있다. 방의 너비가 22칸이라 이보다 낮으면 납작해 보인다 */
+#define BOSS_VIEW_EYE_H    0.5f          /* 서 있을 때의 눈높이(칸). 뛰어오르면 그만큼 높아진다 */
+
 struct brain_map;                        /* brain/brain_host.h */
 struct image;                            /* ui/hd.h */
 
@@ -18,6 +22,7 @@ typedef struct {
     const char *name[BOSS_PLAYERS];      /* 참가자 이름. 없으면 NULL */
     int hit_ms, hurt_ms, wave_ms;        /* 내 공격이 맞은 뒤, 내가 맞은 뒤, 날갯짓 뒤로 지난 시간(ms). 없었으면 음수 */
     int block_ms;                        /* 내가 돌진을 막은 뒤로 지난 시간(ms). 없었으면 음수 */
+    int dodge_ms;                        /* 내가 돌진을 뛰어넘은 뒤로 지난 시간(ms). 없었으면 음수 */
     int help;                            /* 1이면 시프봇의 키 안내를 띄운다(H로 켜고 끈다). 시작하기 전에는 이것과 무관하게 띄운다 */
     int age_ms;                          /* 보스전 단계에 들어온 뒤 지난 시간(ms). 시프봇이 움직이는 데 쓴다 */
     /* 내 눈의 방향. look_on이 1이면 상태에 든 내 방향 대신 look_ang(0..65535가 한 바퀴)으로 그린다.

@@ -103,6 +103,7 @@ static void test_swatter(void)
 static void test_spray(void)
 {
     boss_cfg_t c = calm();
+    c.fly_hp[0] = 200.0f;                                         /* 스프레이를 다 써도 쓰러지지 않게 */
     setup(&c, 1);
     put_fly(8.5f, 9.0f);
     int hp = S.fly.hp;
@@ -249,7 +250,7 @@ static void test_players(void)
     for (int n = 1; n <= 3; n++) {
         setup(&c, n);
         T_EQ_INT(S.n_players, n);
-        T_EQ_INT(S.fly.hp_max, (int)c.fly_hp_per_player * n);
+        T_EQ_INT(S.fly.hp_max, (int)c.fly_hp[n - 1]);              /* 참가자 수마다 따로 정한 체력 */
         boss_input(&S, n, SK_UP);                                 /* 없는 참가자 */
         if (n < 3) T_EQ_INT(S.p[n].move, 0);
         boss_snap_t snap;
@@ -485,6 +486,63 @@ static void test_guard(void)
     T_EQ_INT(snap.p[0].guard, c.guard_ticks);
 }
 
+/* 뛰어오르기: 포물선으로 올라갔다 내려오고, 높이 떠 있을 때 닿은 돌진은 발밑으로 지나간다 */
+static void test_jump(void)
+{
+    boss_cfg_t c;
+    boss_cfg_default(&c);
+    c.wave_period = 1000000;
+    c.charge_range = 0.0f;                                        /* 먼저 뛰는 것만 본다 */
+    setup(&c, 1);
+    put_fly(8.5f, 3.0f);
+    put_player(0, 8.5f, 12.0f, NORTH);
+    boss_input(&S, 0, BOSS_JUMP);
+    T_EQ_INT(S.p[0].jump, c.jump_ticks);
+    float top = 0.0f;
+    for (int k = 0; k < c.jump_ticks; k++) {
+        boss_tick(&S, still);
+        if (S.p[0].z > top) top = S.p[0].z;
+        if (k == c.jump_ticks / 2) boss_input(&S, 0, BOSS_JUMP);  /* 떠 있는 동안에는 또 뛰지 못한다 */
+    }
+    T_CHECK(top > c.jump_height * 0.9f && top <= c.jump_height + 1e-4f);
+    T_CHECK(S.p[0].z == 0.0f && S.p[0].jump == 0);
+    boss_input(&S, 0, BOSS_JUMP);                                 /* 내려선 직후에도 못 뛴다 */
+    T_EQ_INT(S.p[0].jump, 0);
+    ticks(c.jump_rest, still);
+    boss_input(&S, 0, BOSS_JUMP);
+    T_EQ_INT(S.p[0].jump, c.jump_ticks);
+    boss_snap_t snap;
+    ticks(c.jump_ticks / 2, still);
+    boss_snapshot(&S, &snap);
+    T_CHECK(snap.p[0].z > 80);                                    /* 꼭대기 근처. 높이는 칸의 1/100로 보낸다 */
+
+    boss_cfg_default(&c);                                         /* 돌진을 뛰어넘는다 */
+    c.wave_period = 1000000;
+    setup(&c, 1);
+    put_fly(8.5f, 9.0f);
+    put_player(0, 8.5f, 12.0f, NORTH);
+    boss_tick(&S, still);
+    T_EQ_INT(count_ev(BOSS_EV_CHARGE), 1);
+    ticks(c.charge_windup, still);                                /* 겨누기가 끝나고 달려오기 시작한다 */
+    boss_input(&S, 0, BOSS_JUMP);
+    int dodged = 0, hurt = 0;
+    for (int k = 0; k < c.charge_ticks + 2; k++) {
+        boss_tick(&S, still);
+        dodged += count_ev(BOSS_EV_DODGE);
+        hurt += count_ev(BOSS_EV_HIT_PLAYER);
+    }
+    T_EQ_INT(dodged, 1);                                          /* 한 번만 알린다 */
+    T_EQ_INT(hurt, 0);
+    T_EQ_INT(S.p[0].hp, 3);
+    T_EQ_INT(S.fly.stun, 0);                                      /* 막기와 달리 초파리는 멈추지 않는다 */
+
+    setup(&c, 1);                                                 /* 뛰지 않으면 맞는다 */
+    put_fly(8.5f, 9.0f);
+    put_player(0, 8.5f, 12.0f, NORTH);
+    ticks(c.charge_windup + c.charge_ticks + 2, still);
+    T_EQ_INT(S.p[0].hp, 2);
+}
+
 /* 옆걸음, 마우스로 정하는 시선, 살금살금 켜고 끄기 */
 static void test_look_strafe(void)
 {
@@ -550,6 +608,7 @@ int main(void)
     test_sneak();
     test_look_strafe();
     test_guard();
+    test_jump();
     printf("  스냅숏 %zu바이트\n", sizeof(boss_snap_t));
     T_DONE();
 }

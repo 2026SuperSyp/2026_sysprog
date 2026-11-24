@@ -93,7 +93,7 @@ static struct {
     float boss_stim[BRAIN_GROUP_COUNT], boss_rate[BRAIN_GROUP_COUNT], boss_takeoff;
     frame_map_t boss_fm;
     int64_t boss_hit_at, boss_hurt_at, boss_wave_at;     /* 내 공격이 맞은 때, 내가 맞은 때, 날갯짓이 있던 때(ms) */
-    int64_t boss_block_at;           /* 내가 돌진을 막은 때 */
+    int64_t boss_block_at, boss_dodge_at;        /* 내가 돌진을 막은 때, 뛰어넘은 때 */
     int watch;                       /* 오른쪽 위에 볼 칸. WATCH_FLY이면 키보드 치는 초파리 */
     int dirty, quit;
     char why[96];                    /* 끝난 이유 */
@@ -163,7 +163,7 @@ static void *recv_main(void *arg)
                 if (S.ph.phase != PH_PLAY) S.have_frame = 0;
                 if (S.ph.phase != PH_BOSS) {
                     S.have_boss = S.have_look = S.have_boss_brain = S.look_shown_ok = 0;
-                    S.boss_hit_at = S.boss_hurt_at = S.boss_wave_at = S.boss_block_at = 0;
+                    S.boss_hit_at = S.boss_hurt_at = S.boss_wave_at = S.boss_block_at = S.boss_dodge_at = 0;
                 }
                 S.boss_help = 0;
                 if (S.ph.phase == PH_CARD) S.watch = -1;         /* 새 라운드: 볼 칸을 다시 고른다 */
@@ -208,6 +208,7 @@ static void *recv_main(void *arg)
                 if ((kind == BOSS_EV_SWAT_HIT || kind == BOSS_EV_SPRAY_HIT) && who == me) S.boss_hit_at = now_ms();
                 if (kind == BOSS_EV_HIT_PLAYER && who == me) S.boss_hurt_at = now_ms();
                 if (kind == BOSS_EV_BLOCK && who == me) S.boss_block_at = now_ms();
+                if (kind == BOSS_EV_DODGE && who == me) S.boss_dodge_at = now_ms();
                 if (kind == BOSS_EV_WAVE) S.boss_wave_at = now_ms();
             }
             S.dirty = 1;
@@ -384,7 +385,7 @@ static void *input_main(void *arg)
             if (ev.kind == IN_KEY && (ev.code == 'h' || ev.code == 'H') && toggle_boss_help()) continue;
             if (boss && ev.kind == IN_POINTER) {
                 /* 보스전의 마우스는 서버로 올리지 않고 여기서 쓴다. 가로로 움직인 칸 수가 시선이 도는 양이고,
-                 * 왼쪽 버튼은 무기 쓰기(스페이스), 오른쪽 버튼은 막기(E), 휠은 다음 무기(F)다 */
+                 * 왼쪽 버튼은 무기 쓰기(E), 오른쪽 버튼은 막기(R), 휠은 다음 무기(F)다 */
                 int cols = 0, rows = 0;
                 term_size(&cols, &rows);
                 int cw = picture_cols(), x = ev.x - (cols - cw) / 2, zone = (int)((double)cw * LOOK_EDGE);
@@ -395,8 +396,8 @@ static void *input_main(void *arg)
                 int edge = x < zone ? -1 : (x >= cw - zone ? 1 : 0);
                 if (edge != look.edge) { look.edge = edge; look.edge_at = now_ms(); }
                 int bad = 0;
-                if (ev.flags & IN_F_CLICK) bad = send_boss_key(' ');
-                else if (ev.flags & IN_F_RCLICK) bad = send_boss_key('e');
+                if (ev.flags & IN_F_CLICK) bad = send_boss_key('e');
+                else if (ev.flags & IN_F_RCLICK) bad = send_boss_key('r');
                 else if (ev.flags & (IN_F_WHEEL_UP | IN_F_WHEEL_DOWN)) bad = send_boss_key('f');
                 if (bad != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
                 continue;
@@ -457,6 +458,7 @@ static boss_view_t boss_view(const phase_msg_t *ph)
     boss_view_t v = { .me = (ph->me >= 0 && ph->me < PROTO_SEATS) ? ph->pane_of[ph->me] : -1,
                       .hit_ms = ms_since(S.boss_hit_at), .hurt_ms = ms_since(S.boss_hurt_at),
                       .wave_ms = ms_since(S.boss_wave_at), .block_ms = ms_since(S.boss_block_at),
+                      .dodge_ms = ms_since(S.boss_dodge_at),
                       .watch = S.boss_watch, .help = S.boss_help,
                       .age_ms = (int)(now_ms() - S.phase_at),
                       .look_on = S.have_look, .look_ang = S.have_look ? shown_look() : 0 };
@@ -900,7 +902,7 @@ static int run_bot(int wait_players)
 {
     static uint8_t body[PROTO_MAX_LEN];
     msg_hdr_t h;
-    static const uint16_t boss_keys[] = { 'w', IN_K_LEFT, ' ', 'w', '2', ' ', IN_K_RIGHT, 'W', '3', ' ', '1', 's' };
+    static const uint16_t boss_keys[] = { 'w', IN_K_LEFT, 'e', 'w', '2', 'e', IN_K_RIGHT, 'W', '3', 'e', '1', ' ', 's', 'r' };
     int frames = 0, sent_ready = 0, sent_start = 0, rounds = 0, last_phase = -1, top_n = -1, boss_seen = 0, boss_n = 0;
     alarm(120);                                      /* 멈춰 버리면 검사가 끝나지 않으므로 */
     for (;;) {

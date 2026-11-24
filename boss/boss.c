@@ -34,7 +34,7 @@ void boss_cfg_default(boss_cfg_t *c)
 {
     memset(c, 0, sizeof *c);
     c->ticks = 180 * 20;
-    c->fly_hp_per_player = 80.0f;
+    c->fly_hp[0] = 40.0f; c->fly_hp[1] = 70.0f; c->fly_hp[2] = 100.0f;
     c->fly_radius = 0.6f;
     c->player_radius = 0.25f;
     c->step = 0.5f; c->slow_step = 0.1f; c->step_ticks = 3;
@@ -46,6 +46,7 @@ void boss_cfg_default(boss_cfg_t *c)
     c->takeoff_level = 0.5f; c->takeoff_mm_s = 480.0f; c->air_ticks = 10; c->air_rest_ticks = 20;
     c->takeoff_scale = 0.055f;
     c->guard_ticks = 10; c->guard_cooldown = 50; c->guard_stun = 24;
+    c->jump_ticks = 12; c->jump_rest = 4; c->jump_height = 1.0f; c->jump_clear = 0.5f;
     c->swat_range = 1.2f;  c->swat_damage = 10.0f; c->swat_cooldown = 8;
     c->spray_range = 5.0f; c->spray_damage = 3.0f; c->spray_ammo = 20; c->spray_cooldown = 8;
     c->trap_speed = 0.6f;  c->trap_range = 8.0f;  c->trap_count = 2; c->stun_ticks = 60;
@@ -63,10 +64,14 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     cfg_load(path);
 #define F(k) c->k = cfg_get(#k, c->k)
 #define I(k) c->k = (int)cfg_get(#k, (float)c->k)
-    I(ticks); F(fly_hp_per_player); F(fly_radius); F(player_radius); F(step); F(slow_step); I(step_ticks);
+    c->fly_hp[0] = cfg_get("fly_hp_1", c->fly_hp[0]);      /* 참가자 수마다 따로 정한다 */
+    c->fly_hp[1] = cfg_get("fly_hp_2", c->fly_hp[1]);
+    c->fly_hp[2] = cfg_get("fly_hp_3", c->fly_hp[2]);
+    I(ticks); F(fly_radius); F(player_radius); F(step); F(slow_step); I(step_ticks);
     F(body_mm); F(walk_mm_s); F(run_mm_s); F(back_mm_s); F(turn_deg_s); I(accel_ticks); F(speed_scale); F(turn_scale);
     F(takeoff_level); F(takeoff_mm_s); I(air_ticks); I(air_rest_ticks); F(takeoff_scale);
     I(guard_ticks); I(guard_cooldown); I(guard_stun);
+    I(jump_ticks); I(jump_rest); F(jump_height); F(jump_clear);
     F(swat_range); F(swat_damage); I(swat_cooldown);
     F(spray_range); F(spray_damage); I(spray_ammo); I(spray_cooldown);
     F(trap_speed); F(trap_range); I(trap_count); I(stun_ticks);
@@ -168,7 +173,8 @@ void boss_init(boss_state_t *s, const boss_cfg_t *c, uint32_t seed, int n_player
     s->fly.x = 12.0f;
     s->fly.y = 5.5f;
     s->fly.ang = PI_F / 2.0f;                        /* 아래쪽(참가자 쪽)을 본다 */
-    s->fly.hp = s->fly.hp_max = (int)(c->fly_hp_per_player * (float)n_players + 0.5f);
+    s->fly.hp = s->fly.hp_max = (int)(c->fly_hp[n_players - 1] + 0.5f);
+    if (s->fly.hp_max < 1) s->fly.hp = s->fly.hp_max = 1;
     s->fly.wave_in = c->wave_period;
     s->fly.target = -1;
 }
@@ -181,6 +187,10 @@ void boss_input(boss_state_t *s, int player, int key)
     if (key == BOSS_SNEAK) { p->sneak = !p->sneak; return; }
     if (key == BOSS_GUARD) {                         /* 막기: 쉬는 중이 아니면 막는 자세를 시작한다 */
         if (p->guard_cool == 0) { p->guard = s->cfg.guard_ticks; p->guard_cool = s->cfg.guard_cooldown; }
+        return;
+    }
+    if (key == BOSS_JUMP) {                          /* 뛰어오르기: 땅에 서 있고 방금 내려선 것이 아니면 뛴다 */
+        if (p->jump == 0 && p->jump_rest == 0 && s->cfg.jump_ticks > 0) p->jump = s->cfg.jump_ticks;
         return;
     }
     int slow = (key & BOSS_SLOW) != 0, strafe = (key & BOSS_STRAFE) != 0;
@@ -340,6 +350,14 @@ static void players_act(boss_state_t *s)
         if (p->cool > 0) p->cool--;
         if (p->guard > 0) p->guard--;
         if (p->guard_cool > 0) p->guard_cool--;
+        if (p->jump > 0) {                               /* 떠 있다: 포물선으로 올라갔다 내려온다 */
+            p->jump--;
+            float t = 1.0f - (float)p->jump / (float)c->jump_ticks;
+            p->z = p->jump > 0 ? c->jump_height * 4.0f * t * (1.0f - t) : 0.0f;
+            if (p->jump == 0) p->jump_rest = c->jump_rest;
+        } else if (p->jump_rest > 0) {
+            p->jump_rest--;
+        }
         p->closing = 0.0f;
         if (!p->alive) { p->move = p->strafe = p->turn = p->use = p->pick = p->has_look = p->step_left = 0; continue; }
         if (p->has_look) p->ang = p->look;               /* 마우스로 정한 방향 */
@@ -497,7 +515,13 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
         slide(s, &f->x, &f->y, cosf(f->ang) * c->charge_speed, sinf(f->ang) * c->charge_speed, c->fly_radius);
         f->charging--;
         for (int i = 0; i < s->n_players; i++) {
+            if (f->dodged & (1 << i)) continue;      /* 이 돌진을 이미 뛰어넘었다 */
             if (s->p[i].alive && dist(s->p[i].x, s->p[i].y, f->x, f->y) <= c->fly_radius + c->player_radius + 0.05f) {
+                if (s->p[i].z >= c->jump_clear) {    /* 높이 떠 있다: 돌진이 발밑으로 지나간다. 초파리는 계속 달린다 */
+                    f->dodged |= 1 << i;
+                    event(s, BOSS_EV_DODGE, i, s->p[i].x, s->p[i].y);
+                    continue;
+                }
                 if (s->p[i].guard > 0) {             /* 막았다: 다치지 않고, 초파리가 튕겨 나가 잠깐 멈춘다 */
                     s->p[i].guard = 0;
                     event(s, BOSS_EV_BLOCK, i, s->p[i].x, s->p[i].y);
@@ -524,6 +548,7 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
         if (t >= 0) {
             f->target = t;
             f->windup = c->charge_windup;
+            f->dodged = 0;
             event(s, BOSS_EV_CHARGE, t, f->x, f->y);
             return;
         }
@@ -598,6 +623,7 @@ void boss_snapshot(const boss_state_t *s, boss_snap_t *o)
         o->p[i].sneak = (uint8_t)p->sneak;
         o->p[i].guard = (uint8_t)p->guard;
         o->p[i].guard_cool = (uint8_t)(p->guard_cool > 255 ? 255 : p->guard_cool);
+        o->p[i].z = (uint8_t)(p->z >= 2.55f ? 255 : (int)(p->z * 100.0f + 0.5f));
         o->p[i].hp = (uint8_t)p->hp;
         o->p[i].alive = (uint8_t)p->alive;
         o->p[i].item = (uint8_t)p->item;

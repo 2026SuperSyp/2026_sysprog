@@ -994,17 +994,20 @@ static void on_input(const event_t *e)
         (void)msg_send_once(st.to, MSG_INPUT, 0, 0, &out, sizeof out);
     } else if (phase == PH_BOSS && seats[s].pane >= 0 && ie.kind == IN_KEY) {
         /* 보스전의 키. A와 D는 옆걸음이고 방향키 좌우는 도는 키다(마우스가 없을 때와 봇이 쓴다).
-         * C는 살금살금을 켜고 끈다. E는 막기다. Shift와 함께 누른 이동은 그 걸음만 살금살금이다 */
+         * C는 살금살금을 켜고 끈다. R은 막기, 스페이스는 뛰어오르기, E는 무기 쓰기다(마우스 왼쪽 버튼도 E로 온다).
+         * Shift와 함께 누른 이동은 그 걸음만 살금살금이다 */
         int key;
         switch (ie.code) {
         case 'a': case 'A': key = SK_LEFT | BOSS_STRAFE; break;
         case 'd': case 'D': key = SK_RIGHT | BOSS_STRAFE; break;
         case 'c': case 'C': key = BOSS_SNEAK; break;
-        case 'e': case 'E': key = BOSS_GUARD; break;
+        case 'r': case 'R': key = BOSS_GUARD; break;
+        case ' ':           key = BOSS_JUMP; break;
+        case 'e': case 'E': key = SK_ACT; break;
         default:            key = input_stage_key(&ie); break;
         }
         if (key == SK_NONE) return;
-        if ((ie.flags & IN_F_SHIFT) && key != BOSS_SNEAK && key != BOSS_GUARD) key |= BOSS_SLOW;
+        if ((ie.flags & IN_F_SHIFT) && key != BOSS_SNEAK && key != BOSS_GUARD && key != BOSS_JUMP) key |= BOSS_SLOW;
         boss_input(&boss, seats[s].pane, key);
     } else if (phase == PH_BOSS && seats[s].pane >= 0 && ie.kind == INPUT_LOOK) {
         /* 보스전의 시선. 클라이언트가 마우스로 정한 방향을 통째로 알려 온다 */

@@ -34,6 +34,7 @@ static float   zbuf[SCREEN_W * PRESENT_MAX_SCALE];
  * 그림을 몇 배로 그리는가(BIG). set_view로 바꾼다 */
 static int     CW = SCREEN_W, CH = SCREEN_H, VY = BAR_TOP, VW = SCREEN_W, VH = SCREEN_H - BAR_TOP - BAR_BOT, BIG = 1;
 static float   UNIT = SCREEN_W * UNIT_PER_W;
+static float   EZ = BOSS_VIEW_EYE_H;             /* 눈의 높이(칸). 뛰어오르면 높아진다 */
 
 /* w x h인 면에 그린다. bar는 상태 줄을 그 면의 픽셀로 몇 배로 치는가(3D를 그릴 때는 hud, 얹는 면에서는 1) */
 static void set_view(int w, int h, int bar)
@@ -91,10 +92,10 @@ static void draw_walls(canvas_t *c, float px, float py, float dx, float dy)
 {
     float plx = -dy * PLANE, ply = dx * PLANE;
     /* 천장과 바닥은 화면의 줄마다 색이 정해진다(돌거나 걸어도 바뀌지 않는다). 지평선에 가까운 줄일수록 먼 곳이라
-     * 어둡다. 지평선에서 r픽셀 떨어진 줄은 UNIT / 2 / r 만큼 먼 곳이다(눈높이가 벽 높이의 절반이다) */
+     * 어둡다. 지평선에서 r픽셀 아래의 줄은 눈높이 x UNIT / r, r픽셀 위의 줄은 (벽 높이 - 눈높이) x UNIT / r 만큼 먼 곳이다 */
     int mid = VY + VH / 2;
     for (int y = VY; y < VY + VH; y++) {
-        float d = UNIT * 0.5f / (float)(y < mid ? mid - y : y - mid + 1);
+        float d = UNIT * (y < mid ? (BOSS_VIEW_WALL_H - EZ) / (float)(mid - y) : EZ / (float)(y - mid + 1));
         if (y < mid) ui_rect(c, 0, y, VW, 1, (color_t)(CX_CEIL0 + shade_of(d * 1.3f, CX_CEILS)));
         else         ui_rect(c, 0, y, VW, 1, (color_t)(CX_FLOOR0 + shade_of(d, CX_FLOORS)));
     }
@@ -116,7 +117,7 @@ static void draw_walls(canvas_t *c, float px, float py, float dx, float dy)
         zbuf[x] = d;
         float at = side == 0 ? py + d * ry : px + d * rx;        /* 벽의 어디에 닿았는가(이음매를 긋는 데 쓴다) */
         at -= floorf(at);
-        int h = (int)(UNIT / d), y0 = mid - h / 2, y1 = y0 + h;
+        int y0 = mid - (int)((BOSS_VIEW_WALL_H - EZ) * UNIT / d), y1 = mid + (int)(EZ * UNIT / d);     /* 벽의 위 끝과 아래 끝 */
         if (y0 < VY) y0 = VY;
         if (y1 > VY + VH) y1 = VY + VH;
         int pillar = mx > 0 && my > 0 && mx < BOSS_MAP - 1 && my < BOSS_MAP - 1;
@@ -168,7 +169,7 @@ static void draw_fly(canvas_t *c, const boss_snap_t *b, const thing_t *t, float 
 {
     float scale = UNIT / t->depth;                                /* 한 칸이 화면에서 몇 픽셀인가 */
     int half = (int)(0.6f * scale), cx = (int)((float)VW / 2.0f * (1.0f + t->side / t->depth));
-    int floor_y = VY + VH / 2 + (int)(0.5f * scale), cy = floor_y - (int)(0.55f * scale);
+    int floor_y = VY + VH / 2 + (int)(EZ * scale), cy = floor_y - (int)(0.55f * scale);
     if (half < 2) half = 2;
     if (b->fly.air) {                                             /* 떠 있다: 바닥에 그림자를 남기고 위로 올린다 */
         int thick = (int)(UNIT / 52.0f) > 1 ? (int)(UNIT / 52.0f) : 1;
@@ -195,8 +196,9 @@ static void draw_fly(canvas_t *c, const boss_snap_t *b, const thing_t *t, float 
 static void draw_player(canvas_t *c, const boss_snap_t *b, const thing_t *t)
 {
     float scale = UNIT / t->depth;
-    int cx = (int)((float)VW / 2.0f * (1.0f + t->side / t->depth)), floor_y = VY + VH / 2 + (int)(0.5f * scale);
+    int cx = (int)((float)VW / 2.0f * (1.0f + t->side / t->depth)), floor_y = VY + VH / 2 + (int)(EZ * scale);
     int w = (int)(0.4f * scale), h = (int)(0.8f * scale), head = (int)(0.13f * scale);
+    if (b->p[t->idx].alive) floor_y -= (int)((float)b->p[t->idx].z / 100.0f * scale);     /* 뛰어올랐으면 그만큼 위에 */
     color_t col = pcol[t->idx % BOSS_PLAYERS];
     if (w < 2) w = 2;
     if (!b->p[t->idx].alive) { h = (int)(0.1f * scale) + 1; col = C_GRAY2; head = 0; }   /* 쓰러졌다 */
@@ -211,7 +213,7 @@ static void draw_player(canvas_t *c, const boss_snap_t *b, const thing_t *t)
 static void draw_trap(canvas_t *c, const thing_t *t)
 {
     float scale = UNIT / t->depth;
-    int cx = (int)((float)VW / 2.0f * (1.0f + t->side / t->depth)), cy = VY + VH / 2 + (int)(0.1f * scale);
+    int cx = (int)((float)VW / 2.0f * (1.0f + t->side / t->depth)), cy = VY + VH / 2 + (int)((EZ - 0.4f) * scale);
     int r = (int)(0.12f * scale) + 1;
     for (int x = cx - r; x <= cx + r; x++) {
         if (x < 0 || x >= VW || t->depth >= zbuf[x]) continue;
@@ -385,9 +387,9 @@ static void draw_guide(canvas_t *c, int intro, int age_ms)
     static sprite_id_t cat = SPR_MISSING;
     static const key_hint_t rows[][4] = {
         { { "W S", "앞뒤" }, { "A D", "옆걸음" }, { "마우스", "시선" }, { NULL, NULL } },
-        { { "클릭/SPACE", "쓰기" }, { "E", "막기" }, { "C", "살금살금" }, { NULL, NULL } },
-        { { "1", "파리채" }, { "2", "스프레이" }, { "3", "끈끈이" }, { NULL, NULL } },
-        { { "F/휠", "다음 무기" }, { "H", "이 안내" }, { "Q", "나가기" }, { NULL, NULL } },
+        { { "클릭/E", "쓰기" }, { "SPACE", "점프" }, { "R/오른쪽 클릭", "막기" }, { NULL, NULL } },
+        { { "1", "파리채" }, { "2", "스프레이" }, { "3", "끈끈이" }, { "F/휠", "다음" } },
+        { { "C", "살금살금" }, { "H", "이 안내" }, { "Q", "나가기" }, { NULL, NULL } },
         { { "TAB", "쓰러진 뒤 다른 사람 보기" }, { NULL, NULL } },
     };
     const int n = (int)(sizeof rows / sizeof rows[0]), bx = 6, by = 18, bw = 228, bh = 10 + n * 13;
@@ -404,19 +406,19 @@ static void draw_guide(canvas_t *c, int intro, int age_ms)
     /* 시프봇은 말풍선 아래 왼쪽에 서고, 그 옆에 가장 중요한 한마디를 둔다 */
     int cy = SCREEN_H - ui_sprite_h(cat), frames = ui_sprite_frames(cat);
     ui_sprite(c, cat, 10, cy, frames > 0 ? (age_ms < 0 ? 0 : age_ms / 300) % frames : 0);
-    put_text(c, 72, by + bh + 8, "초파리는 다가가면 달아나요", C_TEXT);
-    put_text(c, 72, by + bh + 22, "C를 누르고 살금살금 다가가요", C_CYAN);
+    put_text(c, 72, by + bh + 8, "다가가면 달아나요. C로 살금살금", C_TEXT);
+    put_text(c, 72, by + bh + 22, "돌진은 R로 막거나 뛰어넘어요", C_CYAN);
 }
 
 /* 싸우는 동안 3D 화면의 왼쪽 아래에 늘 보이는 짧은 안내. 무기를 고르는 숫자 키는 아래 상태 줄에 적혀 있다.
  * 살금살금이 켜져 있으면 그 글자가 하늘색이 된다. 오른쪽 끝(166)은 손에 든 무기의 왼쪽 끝보다 안쪽이어야 한다 */
 static void draw_legend(canvas_t *c, int sneak)
 {
-    static const key_hint_t a[] = { { "WASD", "이동" }, { "클릭", "쓰기" }, { NULL, NULL } };
-    static const key_hint_t b[] = { { "E", "막기" }, { "C", "살금살금" }, { "H", "안내" }, { NULL, NULL } };
+    static const key_hint_t a[] = { { "클릭", "쓰기" }, { "SPACE", "점프" }, { "R", "막기" }, { NULL, NULL } };
+    static const key_hint_t b[] = { { "WASD", "이동" }, { "C", "살금살금" }, { "H", "안내" }, { NULL, NULL } };
     ui_rect(c, 0, VY + VH - 29, 166, 29, C_BLACK);
     put_hints(c, 3, VY + VH - 27, a, 8, -1);
-    put_hints(c, 3, VY + VH - 14, b, 8, sneak ? 1 : -1);
+    put_hints(c, 3, VY + VH - 14, b, 8, sneak ? 1 : -1);     /* 살금살금이 둘째다 */
 }
 
 /* ---- 상태 줄, 결과 ------------------------------------------------------------------- */
@@ -507,8 +509,9 @@ static void draw_overlay(canvas_t *c, const boss_snap_t *b, const boss_view_t *v
     }
     const char *note = NULL;
     color_t note_col = C_WARN;
-    if (b->fly.windup && b->fly.target == eye) { note = "돌진이 온다! E 막기"; note_col = C_RED; }
+    if (b->fly.windup && b->fly.target == eye) { note = "돌진! R 막기 SPACE 점프"; note_col = C_RED; }
     else if (v->block_ms >= 0 && v->block_ms < 700) { note = "막았다!"; note_col = C_GOOD; }
+    else if (v->dodge_ms >= 0 && v->dodge_ms < 700) { note = "뛰어넘었다!"; note_col = C_GOOD; }
     else if (v->wave_ms >= 0 && v->wave_ms < 500) note = "날갯짓!";
     else if (b->fly.stun) note = "붙었다! 지금이다";
     else if (b->fly.air) note = "달아났다! C 살금살금";
@@ -556,6 +559,7 @@ void boss_view_draw(canvas_t *full, const boss_snap_t *b, const boss_view_t *v)
         float px = (float)b->p[eye].x / BOSS_FIX, py = (float)b->p[eye].y / BOSS_FIX;
         /* 내 눈이면 마우스로 돌린 방향을 쓴다. 서버가 알려 준 방향은 한두 틱 늦다 */
         eye_ang = (float)(eye == v->me && v->look_on ? v->look_ang : b->p[eye].ang) * TWO_PI / 65536.0f;
+        EZ = BOSS_VIEW_EYE_H + (float)b->p[eye].z / 100.0f;          /* 뛰어오른 만큼 눈이 올라간다 */
         set_view(W, H, hud);
         draw_walls(full, px, py, cosf(eye_ang), sinf(eye_ang));
         draw_things(full, b, eye, px, py, cosf(eye_ang), sinf(eye_ang));

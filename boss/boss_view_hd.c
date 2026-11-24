@@ -8,7 +8,9 @@
  *     화면 가운데가 조금 더 밝다(손전등처럼).
  *   - 바닥과 천장은 줄마다 "그 줄이 눈에서 얼마나 먼가"를 구해 픽셀이 가리키는 바닥의 자리를 찾는다(바닥 캐스팅).
  *   - 가장자리는 픽셀이 덮인 만큼만 칠한다. 벽의 위아래 끝, 초파리와 참가자의 윤곽, 상태 표시의 도형이 모두 그렇다.
- *   - 초파리는 타원과 선분 몇 개로 된 모양에 빛을 입힌다. 식으로 그리므로 가까이 가도 계단이 생기지 않는다.
+ *   - 초파리는 상자 몇 개로 된 모형이다(처음 구상한 네모난 초파리). 화면의 점마다 선을 그어 닿는 상자를 찾아
+ *     그리므로 어느 쪽에서 보든 이어진 모습이 나오고 가까이 가도 계단이 생기지 않는다.
+ *   - 벽이 높다(6칸). 눈높이는 0.5칸이고 뛰어오르면 그만큼 올라가서 바닥이 멀어지고 벽이 내려간다.
  *   - 글자는 큰 글꼴로 그린다(ui/hd.c).
  * 상태 표시의 자리는 화면을 960x536으로 본 단위(U)로 적는다. 배율 10(2400x1340)에서 한 단위가 2.5픽셀이다.
  * 바닥의 줄들, 벽의 세로줄들, 초파리의 줄들은 서로 무관해서 여러 스레드에 나눠 그린다(par_for). */
@@ -25,6 +27,8 @@
 #define UNIT_PER_W  (104.0f / 240.0f)    /* 거리 1에 있는 벽의 높이 = 화면 너비 x 이 값(boss_view.c와 같다) */
 #define CELL        12.0f            /* 글자 한 칸의 크기(U) */
 #define FOG_K       0.075f           /* 멀수록 어둠에 묻히는 빠르기 */
+#define WALL_H      BOSS_VIEW_WALL_H /* 벽의 높이(칸) */
+#define COURSES     18               /* 바깥 벽의 돌이 쌓인 줄 수. 한 줄의 높이가 1/3칸이다(WALL_H x 3) */
 
 typedef struct { float r, g, b; } col_t;
 typedef struct { float r, g, b, a; } acc_t;          /* 겹쳐 칠한 결과. 색에는 덮는 정도가 곱해져 있다 */
@@ -40,7 +44,7 @@ static float   zbuf[SCREEN_W * HD_MAX_SCALE];
  * 지평선의 높이, 거리 1에 있는 벽의 높이 */
 static float   U, G;
 static int     VY, VH, VW;
-static float   MID, UNIT;
+static float   MID, UNIT, EZ;       /* EZ: 눈의 높이(칸). 서 있으면 BOSS_VIEW_EYE_H이고 뛰어오르면 높아진다 */
 
 static void load_map(void)
 {
@@ -86,10 +90,17 @@ static float noise(float x, float y, int seed)
     return (a + (b - a) * fx) * (1.0f - fy) + (c + (d - c) * fx) * fy;
 }
 
-/* 결: 같은 무늬를 크기를 줄여 가며 겹친다(0~1). 큰 얼룩 위에 잔 알갱이가 얹힌다 */
-static float grain(float x, float y, int seed)
+/* 결: 같은 무늬를 크기를 줄여 가며 세 층 겹친다(0~1). 큰 얼룩 위에 잔 알갱이가 얹힌다.
+ * px는 무늬의 좌표 1이 화면에서 몇 픽셀인가다. 픽셀만큼 잘아진 층은 뺀다. 그런 층은 멀리서 어른거리기만 하고
+ * 그림을 보내는 양만 늘린다 */
+static float grain(float x, float y, int seed, float px)
 {
-    return (noise(x, y, seed) * 0.5f + noise(x * 2.3f, y * 2.3f, seed + 1) * 0.3f + noise(x * 5.1f, y * 5.1f, seed + 2) * 0.2f);
+    float w1 = clamp01((px - 2.0f) / 4.0f), w2 = clamp01((px / 2.3f - 2.0f) / 4.0f), w3 = clamp01((px / 5.1f - 2.0f) / 4.0f);
+    float v = 0.5f;
+    if (w1 > 0.0f) v += (noise(x, y, seed) - 0.5f) * 0.5f * w1;
+    if (w2 > 0.0f) v += (noise(x * 2.3f, y * 2.3f, seed + 1) - 0.5f) * 0.3f * w2;
+    if (w3 > 0.0f) v += (noise(x * 5.1f, y * 5.1f, seed + 2) - 0.5f) * 0.2f * w3;
+    return v;
 }
 
 /* 화면 가운데가 더 밝다(손전등). x는 화면의 가로 자리 */
@@ -130,8 +141,9 @@ static inline void over(acc_t *o, col_t c, float cov)
 }
 
 /* ---- 바닥과 천장 -------------------------------------------------------------------- */
-/* 화면의 줄 하나는 바닥(또는 천장)에서 눈으로부터 같은 거리에 있는 곳들이다. 지평선에서 p픽셀 떨어진 줄은
- * UNIT / 2 / p 만큼 멀다(눈높이가 벽 높이의 절반). 그 줄의 왼쪽 끝과 오른쪽 끝이 가리키는 자리를 구해 고르게 나누면
+/* 화면의 줄 하나는 바닥(또는 천장)에서 눈으로부터 같은 거리에 있는 곳들이다. 지평선에서 p픽셀 아래의 줄은
+ * 눈높이 x UNIT / p 만큼 멀고, p픽셀 위의 줄은 (벽 높이 - 눈높이) x UNIT / p 만큼 멀다. 그래서 뛰어오르면 바닥이
+ * 멀어지고 천장이 가까워진다. 그 줄의 왼쪽 끝과 오른쪽 끝이 가리키는 자리를 구해 고르게 나누면
  * 픽셀마다 바닥의 자리가 나온다. 바닥은 한 칸짜리 돌판이고 천장은 두 칸짜리 판에 들보가 지나간다.
  * 돌판마다 빛깔이 조금 다르고 결과 금이 있다. 가장자리는 위와 왼쪽이 밝고 아래와 오른쪽이 어두워 도드라져 보인다.
  * 멀리서는 무늬가 픽셀보다 잘아져서 어른거리므로 무늬를 흐리게 한다. */
@@ -147,21 +159,22 @@ static void ground_rows(int from, int to, void *arg)
     float lx = j->dx - plx, ly = j->dy - ply, rx = j->dx + plx, ry = j->dy + ply;
     for (int y = VY + from; y < VY + to; y++) {
         float p = (float)y + 0.5f - MID, ap = fabsf(p) < 0.5f ? 0.5f : fabsf(p);
-        float dist = 0.5f * UNIT / ap, ppu = UNIT / dist;
+        int floor_row = p > 0.0f;
+        float dist = (floor_row ? EZ : WALL_H - EZ) * UNIT / ap, ppu = UNIT / dist;
         float sx = dist * (rx - lx) / (float)VW, sy = dist * (ry - ly) / (float)VW;
         float wx = px + dist * lx + sx * 0.5f, wy = py + dist * ly + sy * 0.5f;
         float vis = expf(-dist * FOG_K), detail = clamp01((ppu - 4.0f) / 22.0f);
-        int floor_row = p > 0.0f;
+        float gpx = minf(ppu, 4.0f * ap / dist);     /* 바닥은 비스듬히 보여서 먼 쪽으로는 픽셀 하나가 더 넓은 자리를 덮는다 */
         uint8_t *o = im->px + (size_t)y * (size_t)im->w * 3;
         for (int x = 0; x < VW; x++, wx += sx, wy += sy, o += 3) {
             col_t c;
             if (floor_row) {
-                /* 돌판의 줄은 칸의 경계가 아니라 칸의 가운데를 지난다. 참가자는 칸의 경계에 서서 시작하는데, 줄이 바로
-                 * 발밑으로 지나가면 화면 가운데에 굵은 쐐기로 보인다 */
-                float tx = wx + 0.5f, ty = wy + 0.5f, gx = floorf(tx), gy = floorf(ty), fx = tx - gx, fy = ty - gy;
+                /* 돌판의 줄은 칸의 경계에서 1/4칸 비켜 있다. 참가자는 칸의 경계나 가운데에 서서 시작하고 반 칸씩
+                 * 걷는데, 줄이 바로 발밑으로 지나가면 화면 가운데에 굵은 쐐기로 보인다 */
+                float tx = wx + 0.25f, ty = wy + 0.25f, gx = floorf(tx), gy = floorf(ty), fx = tx - gx, fy = ty - gy;
                 int ix = (int)gx, iy = (int)gy;
                 float tone = 0.84f + 0.3f * hash2(ix * 7 + 3, iy * 13 + 1);
-                float g = grain(wx * 7.0f, wy * 7.0f, 3);
+                float g = grain(wx * 7.0f, wy * 7.0f, 3, gpx / 7.0f);
                 c = cmul(((ix + iy) & 1) ? slab : slab2, tone * (1.0f + (g - 0.5f) * 0.55f * detail));
                 /* 금: 돌판 넷에 하나꼴로, 구불구불한 선 */
                 if (hash2(ix + 91, iy + 17) > 0.74f) {
@@ -176,7 +189,7 @@ static void ground_rows(int from, int to, void *arg)
                 c = cmix(c, grout, clamp01(0.5f + (0.014f - e) * ppu) * (0.4f + 0.6f * detail));
             } else {
                 float hx = (wx + 1.0f) * 0.5f, hy = (wy + 1.0f) * 0.5f, fx = hx - floorf(hx), fy = hy - floorf(hy);
-                float g = grain(wx * 5.0f, wy * 5.0f, 21);
+                float g = grain(wx * 5.0f, wy * 5.0f, 21, gpx / 5.0f);
                 c = cmul(panel, 1.0f + (g - 0.5f) * 0.4f * detail);
                 float e = minf(minf(fx, 1.0f - fx), minf(fy, 1.0f - fy)) * 2.0f;
                 c = cmix(c, gap, clamp01(0.5f + (0.02f - e) * ppu) * (0.4f + 0.6f * detail));
@@ -184,7 +197,7 @@ static void ground_rows(int from, int to, void *arg)
                 float bx = (wy + 1.0f) * 0.25f, fb = bx - floorf(bx), be = fabsf(fb - 0.5f) * 4.0f;
                 float on = clamp01(0.5f + (0.16f - be) * ppu);
                 if (on > 0.0f) {
-                    float wood = grain(wx * 2.0f, wy * 26.0f, 33);
+                    float wood = grain(wx * 2.0f, wy * 26.0f, 33, gpx / 26.0f);
                     c = cmix(c, cmul(beam, (0.8f + 0.5f * wood) * (1.0f - 0.35f * clamp01(be / 0.16f))), on);
                 }
             }
@@ -198,58 +211,66 @@ static void ground_rows(int from, int to, void *arg)
 /* 벽의 한 점을 정하는 데 필요한 것: 칸 안에서의 가로 자리 at(0~1), 벽이 놓인 칸과 면, 한 칸이 화면에서 몇 픽셀인가(ppu) */
 typedef struct { float at, ppu, px, py; int mx, my, side, face; } hit_t;     /* face: 벽면의 고정된 좌표(x 또는 y) */
 
-/* 바깥 벽: 세 줄로 쌓은 돌이고 줄마다 반 칸씩 어긋난다. v는 위에서 아래로(0~1), u는 벽을 따라 잰 자리(칸).
- * 돌마다 빛깔이 다르고, 결과 얼룩과 금이 있고, 가장자리가 깎여 도드라져 보인다. 아래쪽은 습기로 어둡다 */
+/* 바깥 벽: 돌을 열여덟 줄로 쌓았고 줄마다 반 칸씩 어긋난다. v는 위에서 아래로(0~1), u는 벽을 따라 잰 자리(칸).
+ * 돌마다 빛깔이 다르고, 결과 얼룩과 금이 있고, 가장자리가 깎여 도드라져 보인다. 아래쪽은 습기로 어둡고 이끼가 낀다.
+ * 바닥에서 두 칸과 네 칸 남짓한 높이에 밝은 돌로 띠를 둘렀고(그 밑에 그늘이 진다), 위로 갈수록 빛이 덜 닿아 어둡다 */
 static col_t stone(const hit_t *h, float v, float u)
 {
     static const col_t base = { 158, 164, 182 }, warm = { 172, 160, 150 }, mortar = { 58, 62, 78 }, moss = { 70, 92, 74 };
-    float vr = v * 3.0f, ppu = h->ppu;
-    int row = vr >= 3.0f ? 2 : (int)vr;
-    float uu = u * 2.0f + ((row & 1) ? 0.5f : 0.0f), block = floorf(uu), fu = uu - block, fv = vr - (float)row;
-    int id = (int)block * 3 + row + h->face * 131 + h->side * 17;
-    float t = hash2(id, 5), g = grain(u * 9.0f, v * 9.0f + (float)h->face, 7);
-    col_t c = cmul(cmix(base, warm, hash2(id, 9) * 0.6f), (0.8f + 0.34f * t) * (1.0f + (g - 0.5f) * 0.6f));
-    if (hash2(id, 23) > 0.7f) {                      /* 금 */
+    static const col_t ledge = { 196, 198, 210 };
+    float vr = v * (float)COURSES, ppu = h->ppu, up = (1.0f - v) * WALL_H, down = v * WALL_H;    /* 바닥에서, 천장에서(칸) */
+    int row = vr >= (float)COURSES ? COURSES - 1 : (int)vr, lvl = COURSES - 1 - row;             /* lvl: 바닥에서 몇째 줄인가 */
+    int band = lvl == 6 || lvl == 13;                                                            /* 띠를 두른 줄 */
+    float uu = u * (band ? 1.0f : 2.0f) + ((row & 1) ? 0.5f : 0.0f), block = floorf(uu), fu = uu - block, fv = vr - (float)row;
+    int id = (int)block * COURSES + row + h->face * 131 + h->side * 17;
+    float t = hash2(id, 5), g = grain(u * 9.0f, down * 9.0f + (float)h->face, 7, ppu / 9.0f);
+    col_t c = cmul(cmix(base, warm, hash2(id, 9) * 0.6f), (0.8f + 0.34f * t) * (1.0f + (g - 0.5f) * 0.5f));
+    if (band) c = cmix(c, ledge, 0.42f);
+    else if (hash2(id, 23) > 0.7f) {                 /* 금 */
         float bend = fu + (noise(fv * 4.0f, (float)id, 11) - 0.5f) * 0.35f - 0.3f - 0.4f * hash2(id, 31);
         c = cmul(c, 1.0f - 0.55f * clamp01(0.5f + (0.008f - fabsf(bend) * 0.5f) * ppu));
     }
     /* 가장자리: 위와 왼쪽은 빛을 받고 아래와 오른쪽은 그늘진다. 칸 단위의 거리로 잰다 */
-    float el = fu * 0.5f, er = (1.0f - fu) * 0.5f, et = fv / 3.0f, eb = (1.0f - fv) / 3.0f;
+    float wide = band ? 1.0f : 0.5f, el = fu * wide, er = (1.0f - fu) * wide, et = fv / 3.0f, eb = (1.0f - fv) / 3.0f;
     c = cmul(c, 1.0f + 0.24f * clamp01(0.5f + (0.03f - minf(el, et)) * ppu * 0.6f)
                      - 0.3f * clamp01(0.5f + (0.03f - minf(er, eb)) * ppu * 0.6f));
-    c = cmix(c, moss, smooth(0.62f, 1.0f, v + (g - 0.5f) * 0.5f) * 0.38f);
-    c = cmul(c, 1.0f - 0.3f * smooth(0.8f, 1.0f, v) - 0.14f * smooth(0.15f, 0.0f, v));          /* 바닥과 천장에 닿는 곳의 그늘 */
+    if (lvl == 5 || lvl == 12) c = cmul(c, 1.0f - 0.3f * smooth(0.5f, 0.0f, fv));                /* 띠 밑의 그늘 */
+    c = cmix(c, moss, smooth(0.38f, 0.0f, up - (g - 0.5f) * 0.5f) * 0.38f);
+    c = cmul(c, 1.0f - 0.3f * smooth(0.2f, 0.0f, up) - 0.14f * smooth(0.15f, 0.0f, down));       /* 바닥과 천장에 닿는 곳의 그늘 */
+    c = cmul(c, 1.0f - 0.5f * smooth(1.0f, WALL_H, up));                                         /* 위로 갈수록 어둡다 */
     return cmix(c, mortar, clamp01(0.5f + (0.016f - minf(minf(el, er), minf(et, eb))) * ppu));
 }
 
-/* 기둥: 세로 널빤지 넷. 나무결이 세로로 흐르고 옹이가 있다. 위아래에 쇠띠를 두르고 못을 박았다 */
+/* 기둥: 세로 널빤지 넷이 천장까지 닿는다. 나무결이 세로로 흐르고 옹이가 있다. 위와 아래, 그리고 1.5칸마다 쇠띠를
+ * 두르고 못을 박았다 */
 static col_t plank(const hit_t *h, float v, float u)
 {
     static const col_t wood = { 196, 136, 84 }, dark = { 96, 60, 36 }, iron = { 96, 102, 116 }, rivet = { 196, 200, 210 };
-    float uu = h->at * 4.0f, board = floorf(uu), fu = uu - board, ppu = h->ppu;
+    float uu = h->at * 4.0f, board = floorf(uu), fu = uu - board, ppu = h->ppu, up = (1.0f - v) * WALL_H, down = v * WALL_H;
     if (board > 3.0f) board = 3.0f;
     int id = (int)board + h->mx * 31 + h->my * 17 + h->side * 7;
-    float g = grain(u * 30.0f + (float)id, v * 2.2f, 41), ring = noise(u * 9.0f + (float)id * 3.0f, v * 1.2f, 43);
+    float g = grain(u * 30.0f + (float)id, down * 2.2f, 41, ppu / 30.0f), ring = noise(u * 9.0f + (float)id * 3.0f, down * 1.2f, 43);
     col_t c = cmul(cmix(wood, dark, ring * 0.45f), (0.84f + 0.3f * hash2(id, 3)) * (0.78f + 0.5f * g));
-    /* 옹이: 널빤지 셋에 하나꼴 */
-    if (hash2(id, 13) > 0.62f) {
-        float ku = fu - 0.3f - 0.4f * hash2(id, 14), kv = (v - 0.25f - 0.5f * hash2(id, 15)) * 3.0f, r = sqrtf(ku * ku + kv * kv);
+    /* 옹이: 널빤지마다 하나꼴 */
+    if (hash2(id, 13) > 0.3f) {
+        float ku = fu - 0.3f - 0.4f * hash2(id, 14), kv = (down - 0.35f - (WALL_H - 0.8f) * hash2(id, 15)) * 3.0f, r = sqrtf(ku * ku + kv * kv);
         c = cmix(c, dark, clamp01(1.0f - r * 7.0f) * 0.8f);
     }
     float e = minf(fu, 1.0f - fu) * 0.25f;
     c = cmul(c, 1.0f + 0.16f * clamp01(0.5f + (0.012f - fu * 0.25f) * ppu) - 0.2f * clamp01(0.5f + (0.012f - (1.0f - fu) * 0.25f) * ppu));
     c = cmix(c, cmul(dark, 0.5f), clamp01(0.5f + (0.007f - e) * ppu));
     /* 쇠띠와 못 */
-    float bt = fabsf(v - 0.09f), bb = fabsf(v - 0.91f), band = minf(bt, bb);
+    float bt = fabsf(down - 0.09f), bb = fabsf(up - 0.09f);
+    float bm = up > 0.75f && down > 0.75f ? fabsf(up - 1.5f * roundf(up / 1.5f)) : 9.0f, band = minf(bt, minf(bb, bm));
     float on = clamp01(0.5f + (0.045f - band) * ppu);
     if (on > 0.0f) {
-        float sheen = 0.8f + 0.5f * clamp01(1.0f - band / 0.045f) * (bt < bb ? 1.0f : 0.7f);
-        col_t m = cmul(iron, sheen * (0.86f + 0.3f * noise(u * 40.0f, v * 40.0f, 51)));
-        float ru = fu - 0.5f, rv = (bt < bb ? v - 0.09f : v - 0.91f), rr = sqrtf(ru * ru * 0.0625f + rv * rv);
+        float sheen = 0.8f + 0.5f * clamp01(1.0f - band / 0.045f) * (bb <= band ? 0.7f : 1.0f);
+        col_t m = cmul(iron, sheen * (0.86f + 0.3f * noise(u * 40.0f, down * 40.0f, 51)));
+        float ru = fu - 0.5f, rr = sqrtf(ru * ru * 0.0625f + band * band);
         m = cmix(m, rivet, clamp01(0.5f + (0.014f - rr) * ppu));
         c = cmix(c, m, on);
     }
-    return cmul(c, 1.0f - 0.26f * smooth(0.84f, 1.0f, v));
+    return cmul(c, (1.0f - 0.26f * smooth(0.16f, 0.0f, up)) * (1.0f - 0.5f * smooth(1.0f, WALL_H, up)));
 }
 
 static void wall_columns(int from, int to, void *arg)
@@ -275,7 +296,7 @@ static void wall_columns(int from, int to, void *arg)
         zbuf[x] = d;
         float at = side == 0 ? py + d * ry : px + d * rx;
         at -= floorf(at);
-        float half = 0.5f * UNIT / d, yt = MID - half, yb = MID + half;
+        float yt = MID - (WALL_H - EZ) * UNIT / d, yb = MID + EZ * UNIT / d;     /* 벽의 위 끝과 아래 끝 */
         int y0 = (int)floorf(yt), y1 = (int)ceilf(yb);
         if (y0 < VY) y0 = VY;
         if (y1 > VY + VH) y1 = VY + VH;
@@ -323,136 +344,12 @@ static inline float lit(float nx, float ny, float *spec)
     return 0.40f + 0.74f * (diff > 0.0f ? diff : 0.0f);
 }
 
-/* ---- 초파리 -------------------------------------------------------------------------- */
-typedef struct {
-    int stun, air, tick;
-    float charge;                /* 돌진하려 할 때 0~1로 깜빡인다 */
-    float flash;                 /* 방금 맞았으면 0~1 */
-} fly_look_t;
-
-/* 날개 하나. (du, dv)는 날개 뿌리에서 잰 자리, (c, s)는 날개가 뻗는 방향이다. 길이의 반이 rx, 폭의 반이 ry다 */
-static void wing(acc_t *o, float du, float dv, float c, float s, float rx, float ry, float alpha, float pp)
-{
-    static const col_t glass = { 204, 228, 242 }, vein = { 120, 150, 172 };
-    float lu = du * c + dv * s - rx * 0.85f, lv = -du * s + dv * c, cov = in_ell(lu, lv, 0.0f, 0.0f, rx, ry, pp);
-    if (cov <= 0.0f) return;
-    float f = sqrtf(lu * lu / (rx * rx) + lv * lv / (ry * ry));
-    float line = maxf(clamp01(0.5f + (0.012f - fabsf(lv)) * pp), clamp01(0.5f + (0.01f - fabsf(fabsf(lv) - ry * 0.5f - lu * 0.1f)) * pp));
-    over(o, cmix(glass, vein, maxf(line * 0.8f, smooth(0.8f, 1.0f, f) * 0.7f)), cov * (alpha + 0.25f * smooth(0.75f, 1.0f, f)));
-}
-
-/* 초파리의 한 점. u, v는 -1~1(가운데가 0, v는 아래가 +), pp는 u가 1 변할 때의 픽셀 수다.
- * face: 0 정면(눈 둘), 1 뒤(날개가 등을 덮음), 2 옆(turn이 -1이면 왼쪽을 본다) */
-static acc_t fly_point(float u, float v, float pp, int face, int turn, const fly_look_t *L)
-{
-    static const col_t leg = { 30, 26, 26 }, amber = { 164, 120, 76 }, dark = { 44, 34, 30 }, thorax = { 116, 84, 58 };
-    static const col_t head = { 132, 94, 58 }, eye = { 200, 34, 38 }, hot = { 255, 70, 50 }, goo = { 240, 140, 40 };
-    static const col_t grey = { 122, 122, 128 }, white = { 255, 255, 255 };
-    acc_t o = { 0, 0, 0, 0 };
-    float au = fabsf(u), spec, wig = 0.03f * sinf((float)L->tick * 0.9f);
-    float air = L->air ? 1.0f : 0.0f, flap = L->air ? ((L->tick & 1) ? 0.25f : -0.2f) : 0.0f;
-
-    if (L->charge > 0.0f) {                              /* 돌진하려 한다: 붉은 기운 */
-        float r = sqrtf(u * u + v * v);
-        if (r < 1.0f) over(&o, hot, (1.0f - r) * 0.45f * L->charge);
-    }
-    #define TONE(c) cmix(cmix((c), grey, L->stun ? 0.6f : 0.0f), hot, L->charge * 0.4f)
-
-    if (face == 2) {                                     /* 옆모습: 머리가 turn 쪽에 있다 */
-        float uu = u * (float)turn;
-        if (v > 0.2f)                                    /* 다리 셋 */
-            for (int i = 0; i < 3; i++) {
-                float ax = 0.22f - 0.24f * (float)i, w = (i & 1) ? -wig : wig;
-                over(&o, leg, maxf(in_seg(uu, v, ax, 0.3f, ax + 0.08f, 0.55f, 0.03f, pp),
-                                   in_seg(uu, v, ax + 0.08f, 0.55f, ax + 0.2f + w, 0.86f, 0.026f, pp)));
-            }
-        float cov = in_ell(uu, v, -0.12f, 0.12f, 0.58f, 0.3f, pp);
-        if (cov > 0.0f) {                                /* 몸: 앞쪽이 가슴, 뒤쪽이 줄무늬 배 */
-            float nx = (uu + 0.12f) / 0.58f, ny = (v - 0.12f) / 0.3f, light = lit(nx, ny, &spec);
-            float bandv = smooth(0.55f, 0.85f, 0.5f - 0.5f * cosf((uu + 0.7f) * 24.0f));
-            col_t c = cmix(cmix(amber, dark, bandv), thorax, smooth(-0.05f, 0.1f, uu));
-            c = cmul(TONE(c), light);
-            c.r += spec * 70.0f; c.g += spec * 70.0f; c.b += spec * 70.0f;
-            over(&o, c, cov);
-        }
-        float tilt = 0.2f + 0.5f * air + flap, c = cosf(tilt), s = sinf(tilt);
-        wing(&o, uu - 0.08f, v + 0.1f + 0.05f * air, -c, -s, 0.42f + 0.06f * air, 0.15f, 0.5f - 0.15f * air, pp);
-        cov = in_ell(uu, v, 0.56f, -0.08f, 0.25f, 0.25f, pp);
-        if (cov > 0.0f) {
-            float light = lit((uu - 0.56f) / 0.25f, (v + 0.08f) / 0.25f, NULL);
-            over(&o, cmul(TONE(head), light), cov);
-        }
-        cov = in_ell(uu, v, 0.62f, -0.13f, 0.15f, 0.19f, pp);
-        if (cov > 0.0f) {
-            float light = lit((uu - 0.62f) / 0.15f, (v + 0.13f) / 0.19f, &spec);
-            col_t c = cmul(cmix(eye, hot, L->charge), light * (pp > 70.0f ? 0.92f + 0.08f * cosf(u * 80.0f) * cosf(v * 80.0f) : 1.0f));
-            c.r += spec * 150.0f; c.g += spec * 150.0f; c.b += spec * 150.0f;
-            over(&o, c, cov);
-        }
-        over(&o, dark, in_seg(uu, v, 0.66f, 0.1f, 0.7f, 0.27f, 0.03f, pp));          /* 입 */
-        over(&o, dark, in_seg(uu, v, 0.74f, -0.2f, 0.87f, -0.31f, 0.012f, pp));      /* 더듬이 */
-    } else {                                             /* 정면과 뒤: 좌우가 같아서 한쪽(au)만 본다 */
-        if (v > -0.08f && au > 0.14f)                    /* 다리 셋씩 */
-            for (int i = 0; i < 3; i++) {
-                float fi = (float)i, w = (i & 1) ? -wig : wig;
-                over(&o, leg, maxf(in_seg(au, v, 0.2f, 0.12f + 0.13f * fi, 0.52f + 0.08f * fi, 0.02f + 0.2f * fi, 0.03f, pp),
-                                   in_seg(au, v, 0.52f + 0.08f * fi, 0.02f + 0.2f * fi, 0.66f + 0.08f * fi, 0.54f + 0.15f * fi + w, 0.026f, pp)));
-            }
-        if (face == 0 || L->air) {                       /* 펼친 날개 */
-            float tilt = 0.38f + 0.3f * air + flap, c = cosf(tilt), s = sinf(tilt);
-            wing(&o, au - 0.2f, v + 0.12f, c, -s, 0.4f + 0.08f * air, 0.17f + 0.04f * air, 0.5f - 0.15f * air, pp);
-        }
-        float cov = in_ell(u, v, 0.0f, 0.17f, 0.37f, 0.5f, pp);
-        if (cov > 0.0f) {                                /* 몸: 위쪽이 가슴, 아래쪽이 줄무늬 배 */
-            float nx = u / 0.37f, ny = (v - 0.17f) / 0.5f, light = lit(nx, ny, &spec);
-            float bandv = smooth(0.55f, 0.85f, 0.5f - 0.5f * cosf((v - 0.12f) * 26.0f));
-            col_t c = cmix(thorax, cmix(amber, dark, bandv), smooth(0.06f, 0.18f, v));
-            c = cmul(TONE(c), light);
-            c.r += spec * 70.0f; c.g += spec * 70.0f; c.b += spec * 70.0f;
-            over(&o, c, cov);
-        }
-        if (face == 1 && !L->air) {                      /* 등을 덮은 날개 둘 */
-            float c = cosf(0.14f), s = sinf(0.14f);
-            wing(&o, au - 0.1f, v + 0.15f, s, c, 0.36f, 0.17f, 0.5f, pp);
-        }
-        float hr = face == 0 ? 0.27f : 0.23f;
-        cov = in_ell(u, v, 0.0f, -0.43f, hr, hr, pp);
-        if (cov > 0.0f) over(&o, cmul(TONE(head), lit(u / hr, (v + 0.43f) / hr, NULL) * (face == 0 ? 1.0f : 0.8f)), cov);
-        if (face == 0) {
-            cov = in_ell(au, v, 0.185f, -0.47f, 0.15f, 0.2f, pp);
-            if (cov > 0.0f) {                            /* 겹눈: 가까이서는 낱눈의 결이 보인다 */
-                float sgn = u < 0.0f ? -1.0f : 1.0f, light = lit(sgn * (au - 0.185f) / 0.15f, (v + 0.47f) / 0.2f, &spec);
-                col_t c = cmul(cmix(eye, hot, L->charge), light * (pp > 70.0f ? 0.92f + 0.08f * cosf(u * 80.0f) * cosf(v * 80.0f) : 1.0f));
-                c.r += spec * 150.0f; c.g += spec * 150.0f; c.b += spec * 150.0f;
-                over(&o, c, cov);
-            }
-            over(&o, dark, in_ell(u, v, 0.0f, -0.2f, 0.055f, 0.1f, pp));                         /* 입 */
-            over(&o, dark, in_seg(au, v, 0.05f, -0.63f, 0.13f, -0.78f, 0.012f, pp));             /* 더듬이 */
-        }
-    }
-    #undef TONE
-    if (L->stun) {                                       /* 끈끈이에 붙었다 */
-        float cov = in_ell(u, v, 0.0f, 0.82f, 0.72f, 0.17f, pp);
-        if (cov > 0.0f) {
-            float light = lit(u / 0.72f, (v - 0.82f) / 0.17f, &spec);
-            col_t c = cmul(goo, light);
-            c.r += spec * 90.0f; c.g += spec * 90.0f; c.b += spec * 90.0f;
-            over(&o, c, cov * 0.95f);
-        }
-    }
-    if (L->flash > 0.0f) {                               /* 방금 맞았다: 하얗게 번쩍인다 */
-        o.r += (white.r * o.a - o.r) * L->flash; o.g += (white.g * o.a - o.g) * L->flash; o.b += (white.b * o.a - o.b) * L->flash;
-    }
-    return o;
-}
-
 /* ---- 세워 그리는 것들 ---------------------------------------------------------------- */
 typedef struct { float x, y, depth, side; int kind, idx; } thing_t;   /* kind 0: 초파리, 1: 참가자, 2: 끈끈이 */
 
-/* 바닥에 깔리는 그림자. (cx, fy)는 발밑, rx는 가로 반지름(픽셀) */
-static void shadow(image_t *im, const thing_t *t, float cx, float fy, float rx, float strength)
+/* 바닥에 깔리는 둥근 얼룩(그림자, 끈끈이 웅덩이). (cx, fy)는 발밑, rx는 가로 반지름(픽셀) */
+static void blot(image_t *im, const thing_t *t, float cx, float fy, float rx, col_t col, float strength)
 {
-    static const col_t black = { 0, 0, 0 };
     float ry = rx * 0.22f;
     int x0 = (int)floorf(cx - rx), x1 = (int)ceilf(cx + rx), y0 = (int)floorf(fy - ry), y1 = (int)ceilf(fy + ry);
     if (x0 < 0) x0 = 0;
@@ -464,21 +361,257 @@ static void shadow(image_t *im, const thing_t *t, float cx, float fy, float rx, 
         float nx = ((float)x + 0.5f - cx) / rx;
         for (int y = y0; y < y1; y++) {
             float ny = ((float)y + 0.5f - fy) / ry, f = nx * nx + ny * ny;
-            if (f < 1.0f) px_mix(im, x, y, black, strength * (1.0f - f));
+            if (f < 1.0f) px_mix(im, x, y, col, strength * (1.0f - f));
         }
     }
 }
 
-typedef struct { image_t *im; float depth, cx, cy, half; int face, turn; const fly_look_t *look; int x0, x1, y0; } fly_job_t;
+static void shadow(image_t *im, const thing_t *t, float cx, float fy, float rx, float strength)
+{
+    blot(im, t, cx, fy, rx, (col_t){ 0, 0, 0 }, strength);
+}
+
+/* ---- 초파리 -------------------------------------------------------------------------- */
+/* 초파리는 상자 몇 개로 된 모형이다: 몸통, 눈 둘, 입, 더듬이 둘, 다리 여섯, 날개 둘. 처음 구상한 그림
+ * (ui/assets/fly_idle.spr: 네모난 몸, 양옆의 붉은 눈, 위로 뻗은 날개, 배의 줄무늬)을 그대로 입체로 옮긴 것이다.
+ *
+ * 그리는 법: 화면의 점마다 보는 방향으로 곧은 선을 긋고 가장 먼저 닿는 상자를 찾는다. 선들은 서로 나란하다(모형이
+ * 작아서 원근을 넣지 않아도 어색하지 않다). 초파리가 향한 쪽과 내가 보는 쪽의 차이만큼 모형이 돌아가 있으므로 어느
+ * 쪽에서 보든 이어진 모습이 나온다. 등과 날개가 보이도록 조금 위에서 내려다본다(FLY_TILT).
+ * 좌표: 초파리의 앞이 +x, 오른쪽이 +y, 위가 +z이고 원점은 발밑이다. 단위는 칸.
+ * 가장자리: 픽셀마다 두 점을 떠 보고, 둘이 다른 것에 닿았을 때만 네 점을 떠서 섞는다. */
+#define FLY_TILT   0.20f             /* 같은 높이에서 볼 때 내려다보는 각도(라디안) */
+#define FLY_BOXES  14
+
+enum { FK_BODY = 0, FK_EYE, FK_MOUTH, FK_FEELER, FK_LEG, FK_WING };
+
+typedef struct {
+    int   kind, side;            /* side: 왼쪽 -1, 오른쪽 1(눈과 날개에서 쓴다) */
+    float h[3];                  /* 반 크기 */
+    /* 상자의 좌표로 옮겨 둔 것: 화면 가운데(발밑)를 지나는 선의 한 점, 화면의 오른쪽과 위, 선의 방향과 그 역수 */
+    float o[3], ra[3], ub[3], d[3], inv[3];
+    int   x0, x1, y0, y1;        /* 화면에서 차지하는 네모 */
+} fbox_t;
+
+typedef struct {
+    image_t *im;
+    float depth, cx, fy, S;      /* 거리, 발밑의 화면 자리, 한 칸의 픽셀 수 */
+    int   n, x0, x1, y0, y1, stun, tick;
+    float charge, flash, vis, lamp;
+    fbox_t box[FLY_BOXES];
+} fly_job_t;
+
+/* 한 점에서 닿은 것. solid는 닿은 상자(없으면 -1), wing[k]는 날개 k에 닿았는가(날개는 비쳐 보여서 따로 둔다) */
+typedef struct {
+    int   solid, face, wing[2], wface[2];
+    float t, q[3], wt[2], wq[2][3];
+} fsample_t;
+
+/* 상자 하나를 놓는다. c는 가운데, h는 반 크기, roll은 x축을 따라 돌린 각도다(날개가 들리는 각도).
+ * rv, up, dir은 모형의 좌표로 본 화면의 오른쪽, 위, 보는 방향이다 */
+static void fly_box(fly_job_t *j, int kind, int side, const float c[3], const float h[3], float roll,
+                    const float rv[3], const float up[3], const float dir[3])
+{
+    fbox_t *B = &j->box[j->n++];
+    float cr = cosf(roll), sr = sinf(roll);
+    B->kind = kind;
+    B->side = side;
+    #define TO_BOX(dst, v) do { (dst)[0] = (v)[0]; (dst)[1] = cr * (v)[1] + sr * (v)[2]; (dst)[2] = -sr * (v)[1] + cr * (v)[2]; } while (0)
+    float neg[3] = { -c[0], -c[1], -c[2] };
+    TO_BOX(B->o, neg);
+    TO_BOX(B->ra, rv);
+    TO_BOX(B->ub, up);
+    TO_BOX(B->d, dir);
+    #undef TO_BOX
+    float lo_x = 1e9f, hi_x = -1e9f, lo_y = 1e9f, hi_y = -1e9f;
+    for (int i = 0; i < 3; i++) {
+        B->h[i] = h[i];
+        B->inv[i] = fabsf(B->d[i]) < 1e-6f ? 0.0f : 1.0f / B->d[i];
+    }
+    for (int k = 0; k < 8; k++) {                    /* 여덟 꼭짓점이 화면의 어디에 오는가 */
+        float bx = (k & 1) ? h[0] : -h[0], by = (k & 2) ? h[1] : -h[1], bz = (k & 4) ? h[2] : -h[2];
+        float p[3] = { c[0] + bx, c[1] + cr * by - sr * bz, c[2] + sr * by + cr * bz };
+        float a = p[0] * rv[0] + p[1] * rv[1] + p[2] * rv[2], b = p[0] * up[0] + p[1] * up[1] + p[2] * up[2];
+        float sx = j->cx + a * j->S, sy = j->fy - b * j->S;
+        if (sx < lo_x) lo_x = sx;
+        if (sx > hi_x) hi_x = sx;
+        if (sy < lo_y) lo_y = sy;
+        if (sy > hi_y) hi_y = sy;
+    }
+    B->x0 = (int)floorf(lo_x) - 1; B->x1 = (int)ceilf(hi_x) + 1;
+    B->y0 = (int)floorf(lo_y) - 1; B->y1 = (int)ceilf(hi_y) + 1;
+    if (B->x0 < j->x0) j->x0 = B->x0;
+    if (B->x1 > j->x1) j->x1 = B->x1;
+    if (B->y0 < j->y0) j->y0 = B->y0;
+    if (B->y1 > j->y1) j->y1 = B->y1;
+}
+
+/* 화면의 점 (sx, sy)에서 그은 선이 닿는 것을 찾는다. (px, py)는 그 점이 든 픽셀이다.
+ * 무엇에 닿았는지를 한 수로 돌려준다(아무것도 없으면 0). 두 점의 수가 같으면 같은 면을 보고 있는 것이다 */
+static int fly_cast(const fly_job_t *j, int px, int py, float sx, float sy, fsample_t *s)
+{
+    float a = (sx - j->cx) / j->S, b = (j->fy - sy) / j->S;
+    s->solid = -1;
+    s->face = 0;
+    s->t = 1e9f;
+    s->wing[0] = s->wing[1] = 0;
+    for (int k = 0; k < j->n; k++) {
+        const fbox_t *B = &j->box[k];
+        if (px < B->x0 || px >= B->x1 || py < B->y0 || py >= B->y1) continue;
+        float o[3], tn = -1e9f, tf = 1e9f;
+        int ax = 0, miss = 0;
+        for (int i = 0; i < 3 && !miss; i++) {
+            o[i] = a * B->ra[i] + b * B->ub[i] + B->o[i];
+            if (B->inv[i] == 0.0f) { miss = fabsf(o[i]) > B->h[i]; continue; }
+            float t1 = (-B->h[i] - o[i]) * B->inv[i], t2 = (B->h[i] - o[i]) * B->inv[i];
+            if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+            if (t1 > tn) { tn = t1; ax = i; }
+            if (t2 < tf) tf = t2;
+            miss = tn > tf;
+        }
+        if (miss) continue;
+        int face = ax * 2 + (B->d[ax] < 0.0f);       /* 들어간 면: 축과, 그 축의 +쪽 면인가 */
+        if (B->kind == FK_WING) {
+            int w = B->side > 0;
+            s->wing[w] = 1;
+            s->wface[w] = face;
+            s->wt[w] = tn;
+            for (int i = 0; i < 3; i++) s->wq[w][i] = o[i] + tn * B->d[i];
+        } else if (tn < s->t) {
+            s->solid = k;
+            s->face = face;
+            s->t = tn;
+            for (int i = 0; i < 3; i++) s->q[i] = o[i] + tn * B->d[i];
+        }
+    }
+    return (s->solid + 1) * 64 + s->face * 4 + s->wing[0] + s->wing[1] * 2;
+}
+
+/* 닿은 면이 받는 빛. 빛은 화면에서 볼 때 왼쪽 위 앞에서 온다 */
+static inline float fly_light(const fbox_t *B, int face)
+{
+    int ax = face >> 1;
+    float sg = (face & 1) ? 1.0f : -1.0f;
+    float diff = sg * (-0.42f * B->ra[ax] + 0.68f * B->ub[ax] - 0.60f * B->d[ax]);
+    return 0.50f + 0.60f * (diff > 0.0f ? diff : 0.0f);
+}
+
+/* x가 a와 b 사이에 있는 정도(0~1). fw는 픽셀 하나의 크기(칸)다 */
+static inline float within(float x, float a, float b, float fw)
+{
+    return clamp01(0.5f + (x - a) / fw) * clamp01(0.5f + (b - x) / fw);
+}
+
+/* 한 점의 색. 색에는 덮는 정도가 곱해져 있다 */
+static acc_t fly_shade(const fly_job_t *j, const fsample_t *s)
+{
+    static const col_t amber = { 218, 164, 86 }, cream = { 244, 218, 164 }, dark = { 60, 42, 32 }, pink = { 246, 150, 150 };
+    static const col_t red = { 216, 40, 46 }, red_rim = { 118, 16, 26 }, red_in = { 164, 22, 32 }, hot = { 255, 92, 52 };
+    static const col_t limb = { 50, 36, 30 }, lip = { 104, 64, 44 }, grey = { 128, 128, 136 }, white = { 255, 255, 255 };
+    static const col_t glass = { 212, 234, 248 }, vein = { 146, 180, 208 };
+    acc_t o = { 0, 0, 0, 0 };
+    float fw = 1.0f / j->S;
+    if (s->solid >= 0) {
+        const fbox_t *B = &j->box[s->solid];
+        int ax = s->face >> 1, pos = s->face & 1, ua = (ax + 1) % 3, va = (ax + 2) % 3;
+        float e = minf(B->h[ua] - fabsf(s->q[ua]), B->h[va] - fabsf(s->q[va]));      /* 면의 가장자리까지 */
+        float light = fly_light(B, s->face), x = s->q[0], y = s->q[1], z = s->q[2];
+        col_t c;
+        if (B->kind == FK_BODY) {
+            c = ax == 2 ? (pos ? amber : cream) : cmix(amber, cream, smooth(-0.08f, -0.26f, z));     /* 배 쪽은 밝다 */
+            if (ax != 0)                                 /* 뒤쪽 절반에 짙은 줄 둘. 등, 옆, 배를 한 바퀴 돈다 */
+                c = cmix(c, dark, maxf(within(x, -0.41f, -0.28f, fw), within(x, -0.16f, -0.03f, fw)) * 0.94f);
+            else if (!pos)
+                c = cmix(c, dark, 0.86f);                /* 꽁무니 */
+            else {                                       /* 얼굴: 눈 아래의 볼 */
+                float dy = fabsf(fabsf(y) - 0.21f) - 0.065f, dz = fabsf(z + 0.14f) - 0.032f;
+                c = cmix(c, pink, clamp01(0.5f - maxf(dy, dz) / fw) * 0.8f);
+            }
+            if (j->stun) c = cmix(c, grey, 0.5f);
+            c = cmul(c, 1.0f - 0.5f * clamp01(0.5f + (0.02f - e) / fw));              /* 모서리의 짙은 선 */
+        } else if (B->kind == FK_EYE) {
+            c = red;
+            if (ax != 2) {                               /* 가운데가 짙고, 바깥 위쪽에 반짝이는 점 */
+                float in_u = ax == 0 ? y : x, sgn = ax == 0 ? (float)B->side : 1.0f;
+                float di = maxf(fabsf(in_u) - B->h[ua < va ? ua : va] * 0.55f, fabsf(z + 0.01f) - B->h[2] * 0.55f);
+                c = cmix(c, red_in, clamp01(0.5f - di / fw));
+                if (j->stun) {                           /* 붙었거나 막혔다: 눈이 X가 된다 */
+                    float k = B->h[2] / B->h[ua < va ? ua : va], cross = minf(fabsf(in_u * k - z), fabsf(in_u * k + z));
+                    c = cmix(grey, dark, clamp01(0.5f + (0.022f - cross * 0.7f) / fw));
+                } else {
+                    float dh = maxf(fabsf(in_u - sgn * 0.045f) - 0.032f, fabsf(z - 0.065f) - 0.036f);
+                    c = cmix(c, white, clamp01(0.5f - dh / fw) * 0.92f);
+                }
+            }
+            if (!j->stun) c = cmix(c, hot, j->charge);
+            c = cmix(c, j->stun ? dark : red_rim, clamp01(0.5f + (0.024f - e) / fw));
+            if (j->charge > 0.0f) light = light + (1.15f - light) * j->charge;       /* 돌진하려 할 때는 눈이 빛난다 */
+        } else if (B->kind == FK_MOUTH) {
+            c = lip;
+        } else {
+            c = limb;
+        }
+        if (B->kind != FK_EYE) c = cmix(c, hot, j->charge * 0.38f);
+        c = cmul(c, light * j->lamp);
+        c = cmix(c, white, j->flash);
+        c = cmix(FOG, c, j->vis);
+        o = (acc_t){ c.r, c.g, c.b, 1.0f };
+    }
+    /* 날개는 비쳐 보인다. 몸보다 앞에 있는 것만, 먼 것부터 얹는다 */
+    int first = s->wing[0] && s->wing[1] && s->wt[0] < s->wt[1] ? 1 : 0;
+    for (int n = 0; n < 2; n++) {
+        int w = n == 0 ? first : 1 - first;
+        if (!s->wing[w] || (s->solid >= 0 && s->wt[w] >= s->t)) continue;
+        const fbox_t *B = &j->box[j->n - 2 + w];             /* 날개 둘은 맨 끝에 놓는다(왼쪽, 오른쪽) */
+        int ax = s->wface[w] >> 1;
+        float x = s->wq[w][0], y = s->wq[w][1], alpha = 0.46f;
+        col_t c = glass;
+        if (ax == 2) {
+            float e = minf(B->h[0] - fabsf(x), B->h[1] - fabsf(y));
+            float rim = clamp01(0.5f + (0.022f - e) / fw);
+            float line = maxf(clamp01(0.5f + (0.008f - fabsf(x - 0.09f - y * (float)B->side * 0.25f)) / fw),
+                              clamp01(0.5f + (0.008f - fabsf(x + 0.10f + y * (float)B->side * 0.25f)) / fw));
+            c = cmix(c, vein, maxf(rim, line * 0.8f));
+            alpha += 0.40f * rim + 0.22f * line;
+        } else {
+            c = vein;
+            alpha = 0.85f;
+        }
+        c = cmul(c, (0.74f + 0.34f * fly_light(B, s->wface[w])) * j->lamp);
+        c = cmix(c, white, j->flash);
+        over(&o, cmix(FOG, c, j->vis), alpha);
+    }
+    return o;
+}
 
 static void fly_rows(int from, int to, void *arg)
 {
+    static const col_t hot = { 255, 80, 50 };
     const fly_job_t *j = arg;
+    float mid_y = j->fy - 0.62f * j->S, glow_r = 1.05f * j->S;
     for (int y = j->y0 + from; y < j->y0 + to; y++) {
-        float v = ((float)y + 0.5f - j->cy) / j->half;
         for (int x = j->x0; x < j->x1; x++) {
             if (j->depth >= zbuf[x]) continue;
-            acc_t o = fly_point(((float)x + 0.5f - j->cx) / j->half, v, j->half, j->face, j->turn, j->look);
+            fsample_t a, b;
+            acc_t o = { 0, 0, 0, 0 };
+            int ia = fly_cast(j, x, y, (float)x + 0.25f, (float)y + 0.25f, &a);
+            int ib = fly_cast(j, x, y, (float)x + 0.75f, (float)y + 0.75f, &b);
+            if (ia == ib) {
+                if (ia) o = fly_shade(j, &a);
+            } else {                                 /* 가장자리: 네 점을 섞는다 */
+                fsample_t c, d;
+                fly_cast(j, x, y, (float)x + 0.75f, (float)y + 0.25f, &c);
+                fly_cast(j, x, y, (float)x + 0.25f, (float)y + 0.75f, &d);
+                acc_t p[4] = { fly_shade(j, &a), fly_shade(j, &b), fly_shade(j, &c), fly_shade(j, &d) };
+                for (int k = 0; k < 4; k++) { o.r += p[k].r * 0.25f; o.g += p[k].g * 0.25f; o.b += p[k].b * 0.25f; o.a += p[k].a * 0.25f; }
+            }
+            if (j->charge > 0.0f && o.a < 1.0f) {     /* 돌진하려 한다: 몸 둘레에 붉은 기운 */
+                float gx = ((float)x + 0.5f - j->cx) / glow_r, gy = ((float)y + 0.5f - mid_y) / glow_r, r = sqrtf(gx * gx + gy * gy);
+                if (r < 1.0f) {
+                    float g = (1.0f - r) * 0.5f * j->charge * (1.0f - o.a);
+                    o.r += hot.r * g; o.g += hot.g * g; o.b += hot.b * g; o.a += g;
+                }
+            }
             px_over(j->im, x, y, &o);
         }
     }
@@ -486,39 +619,98 @@ static void fly_rows(int from, int to, void *arg)
 
 static void draw_fly(image_t *im, const boss_snap_t *b, const boss_view_t *v, const thing_t *t, float eye_x, float eye_y)
 {
-    float scale = UNIT / t->depth, half = maxf(0.6f * scale, 2.0f);
-    float cx = (float)VW * 0.5f * (1.0f + t->side / t->depth), fy = MID + 0.5f * scale, cy = fy - 0.55f * scale;
-    shadow(im, t, cx, fy, half * (b->fly.air ? 0.6f : 0.85f), b->fly.air ? 0.3f : 0.5f);
-    if (b->fly.air) cy -= 0.55f * scale;                             /* 떠 있다 */
-    /* 초파리가 나를 보고 있는가, 등을 돌렸는가, 옆을 보는가 */
+    static int air_full, stun_full;                  /* 이번 도약과 이번 멈춤의 처음 길이(남은 틱에서 알아낸다) */
+    float scale = UNIT / t->depth, cx = (float)VW * 0.5f * (1.0f + t->side / t->depth), fy = MID + EZ * scale;
+    int air = b->fly.air, stun = b->fly.stun, tick = b->tick;
+    air_full = air > air_full ? air : (air == 0 ? 0 : air_full);
+    stun_full = stun > stun_full ? stun : (stun == 0 ? 0 : stun_full);
+    /* 도약: 포물선으로 떠올랐다 내려앉는다 */
+    float lift = 0.0f;
+    if (air > 0 && air_full > 0) {
+        float at = 1.0f - (float)air / (float)air_full;
+        lift = 0.12f + 1.25f * 4.0f * at * (1.0f - at);
+    }
+    shadow(im, t, cx, fy, scale * (0.62f - 0.12f * clamp01(lift)), 0.5f - 0.2f * clamp01(lift));
+    if (stun > 0 && stun_full > 30)                  /* 끈끈이에 붙었다(막혀서 멈춘 것은 짧다) */
+        blot(im, t, cx, fy, scale * 0.8f, (col_t){ 240, 140, 40 }, 0.9f);
+
+    /* 모형의 좌표로 본 화면의 오른쪽, 위, 보는 방향. 초파리의 앞은 (hx, hy), 오른쪽은 (-hy, hx)다 */
     float fa = (float)b->fly.ang * TWO_PI / 65536.0f, hx = cosf(fa), hy = sinf(fa);
-    float tx = eye_x - t->x, ty = eye_y - t->y, len = sqrtf(tx * tx + ty * ty);
-    float front = len > 1e-4f ? (hx * tx + hy * ty) / len : 1.0f, cross = len > 1e-4f ? (hx * ty - hy * tx) / len : 0.0f;
-    int face = front > 0.5f ? 0 : (front < -0.5f ? 1 : 2), turn = cross > 0.0f ? -1 : 1;
-    fly_look_t look = { .stun = b->fly.stun > 0, .air = b->fly.air > 0, .tick = b->tick,
-                        .charge = (b->fly.windup || b->fly.charging) ? 0.55f + 0.45f * sinf((float)b->tick * 1.6f) : 0.0f,
-                        .flash = v->hit_ms >= 0 && v->hit_ms < 160 ? 0.7f * (1.0f - (float)v->hit_ms / 160.0f) : 0.0f };
-    fly_job_t job = { im, t->depth, cx, cy, half, face, turn, &look,
-                      (int)floorf(cx - half * 1.05f), (int)ceilf(cx + half * 1.05f), (int)floorf(cy - half * 1.05f) };
-    int y1 = (int)ceilf(cy + half * 1.05f);
+    float vx = t->x - eye_x, vy = t->y - eye_y, len = sqrtf(vx * vx + vy * vy);
+    if (len < 1e-4f) { vx = 1.0f; vy = 0.0f; len = 1.0f; }
+    vx /= len; vy /= len;
+    /* 내려다보는 각도: 기본 기울기에, 내 눈이 초파리보다 높은 만큼을 더한다(내가 뛰어오르면 등이 더 보이고,
+     * 초파리가 떠오르면 배가 보인다) */
+    float tilt = FLY_TILT + atan2f(EZ - BOSS_VIEW_EYE_H - lift, t->depth);
+    tilt = tilt < -0.7f ? -0.7f : (tilt > 0.9f ? 0.9f : tilt);
+    float dvx = vx * hx + vy * hy, dvy = -vx * hy + vy * hx, cp = cosf(tilt), sp = sinf(tilt);
+    const float dir[3] = { dvx * cp, dvy * cp, -sp }, rv[3] = { -dvy, dvx, 0.0f }, up[3] = { dvx * sp, dvy * sp, cp };
+
+    static fly_job_t job;
+    int charging = b->fly.windup || b->fly.charging;
+    job.im = im;
+    job.depth = t->depth;
+    job.cx = cx;
+    job.fy = fy - lift * scale;
+    job.S = scale;
+    job.n = 0;
+    job.x0 = job.y0 = 1 << 30;
+    job.x1 = job.y1 = -(1 << 30);
+    job.stun = stun > 0;
+    job.tick = tick;
+    job.charge = charging ? 0.55f + 0.45f * sinf((float)tick * 1.6f) : 0.0f;
+    job.flash = v->hit_ms >= 0 && v->hit_ms < 160 ? 0.7f * (1.0f - (float)v->hit_ms / 160.0f) : 0.0f;
+    job.vis = 0.35f + 0.65f * expf(-t->depth * FOG_K);
+    job.lamp = lamp((int)cx < 0 ? 0 : ((int)cx >= VW ? VW - 1 : (int)cx));
+
+    /* 상자들. 몸통의 가운데는 높이 0.64에 있다(다리가 0.30) */
+    const float bz = 0.64f, wig = stun ? 0.0f : 0.035f * sinf((float)tick * 0.9f);
+    float leg = air > 0 ? 0.14f : 0.30f;             /* 떠 있을 때는 다리를 접는다 */
+    fly_box(&job, FK_BODY, 0, (float[3]){ 0.0f, 0.0f, bz }, (float[3]){ 0.50f, 0.40f, 0.34f }, 0.0f, rv, up, dir);
+    for (int s = -1; s <= 1; s += 2)
+        fly_box(&job, FK_EYE, s, (float[3]){ 0.47f, (float)s * 0.27f, bz + 0.09f }, (float[3]){ 0.07f, 0.15f, 0.16f }, 0.0f, rv, up, dir);
+    fly_box(&job, FK_MOUTH, 0, (float[3]){ 0.52f, 0.0f, bz - 0.18f }, (float[3]){ 0.03f, 0.07f, 0.055f }, 0.0f, rv, up, dir);
+    for (int s = -1; s <= 1; s += 2)
+        fly_box(&job, FK_FEELER, s, (float[3]){ 0.44f, (float)s * 0.11f, bz + 0.34f + 0.07f }, (float[3]){ 0.016f, 0.016f, 0.07f }, 0.0f, rv, up, dir);
+    for (int k = 0; k < 6; k++) {
+        float lx = 0.30f - 0.30f * (float)(k / 2) + ((k / 2 + k) & 1 ? wig : -wig), ly = (k & 1) ? 0.31f : -0.31f;
+        fly_box(&job, FK_LEG, 0, (float[3]){ lx, ly, bz - 0.34f - leg * 0.5f }, (float[3]){ 0.045f, 0.045f, leg * 0.5f }, 0.0f, rv, up, dir);
+    }
+    /* 날개: 등의 양옆에 붙어 바깥으로 뻗는다. 평소에는 조금 들려 있고, 떠 있을 때와 돌진하려 할 때는 빠르게 친다 */
+    float rise = air > 0 ? ((tick & 1) ? 0.85f : 0.10f) : (charging ? ((tick & 1) ? 0.70f : 0.40f) : (stun ? 0.05f : 0.24f + 0.07f * sinf((float)tick * 0.5f)));
+    for (int s = -1; s <= 1; s += 2) {
+        float roll = (float)s * rise, cr = cosf(roll), sr = sinf(roll), oy = (float)s * 0.22f;
+        const float hinge[3] = { -0.07f, (float)s * 0.17f, bz + 0.34f + 0.014f };
+        fly_box(&job, FK_WING, s, (float[3]){ hinge[0], hinge[1] + cr * oy, hinge[2] + sr * oy }, (float[3]){ 0.28f, 0.22f, 0.012f }, roll, rv, up, dir);
+    }
+
     if (job.x0 < 0) job.x0 = 0;
     if (job.x1 > VW) job.x1 = VW;
     if (job.y0 < VY) job.y0 = VY;
-    if (y1 > VY + VH) y1 = VY + VH;
-    par_for(y1 - job.y0, 8, fly_rows, &job);
+    if (job.y1 > VY + VH) job.y1 = VY + VH;
+    if (job.charge > 0.0f) {                         /* 붉은 기운이 모형보다 넓게 번진다 */
+        int gx0 = (int)(cx - 1.05f * scale), gx1 = (int)(cx + 1.05f * scale) + 1;
+        int gy0 = (int)(job.fy - 1.67f * scale), gy1 = (int)(job.fy + 0.43f * scale) + 1;
+        if (gx0 < job.x0) job.x0 = gx0 < 0 ? 0 : gx0;
+        if (gx1 > job.x1) job.x1 = gx1 > VW ? VW : gx1;
+        if (gy0 < job.y0) job.y0 = gy0 < VY ? VY : gy0;
+        if (gy1 > job.y1) job.y1 = gy1 > VY + VH ? VY + VH : gy1;
+    }
+    if (job.x1 > job.x0 && job.y1 > job.y0) par_for(job.y1 - job.y0, 8, fly_rows, &job);
 }
 
 /* 다른 참가자: 색 옷을 입은 둥근 기둥에 머리. 쓰러졌으면 바닥에 납작하게 */
 static void draw_player(image_t *im, const boss_snap_t *b, const thing_t *t)
 {
     static const col_t skin = { 235, 188, 140 }, down = { 110, 115, 130 };
-    float scale = UNIT / t->depth, cx = (float)VW * 0.5f * (1.0f + t->side / t->depth), fy = MID + 0.5f * scale;
+    float scale = UNIT / t->depth, cx = (float)VW * 0.5f * (1.0f + t->side / t->depth), fy = MID + EZ * scale;
     int alive = b->p[t->idx].alive;
+    float by = fy - (alive ? (float)b->p[t->idx].z / 100.0f : 0.0f) * scale;        /* 뛰어올랐으면 그만큼 위에 그린다 */
     rgb_t pc = PCOL[t->idx % BOSS_PLAYERS];
     col_t cloth = { (float)pc.r, (float)pc.g, (float)pc.b };
     shadow(im, t, cx, fy, 0.3f * scale, 0.45f);
     int x0 = (int)floorf(cx - 0.45f * scale), x1 = (int)ceilf(cx + 0.45f * scale);
-    int y0 = (int)floorf(fy - 1.1f * scale), y1 = (int)ceilf(fy + 1.0f);
+    int y0 = (int)floorf(by - 1.1f * scale), y1 = (int)ceilf(fy + 1.0f);
     if (x0 < 0) x0 = 0;
     if (x1 > VW) x1 = VW;
     if (y0 < VY) y0 = VY;
@@ -527,7 +719,7 @@ static void draw_player(image_t *im, const boss_snap_t *b, const thing_t *t)
         if (t->depth >= zbuf[x]) continue;
         float u = ((float)x + 0.5f - cx) / scale;                    /* 칸 단위. 발밑이 (0, 0)이고 위가 음수다 */
         for (int y = y0; y < y1; y++) {
-            float w = ((float)y + 0.5f - fy) / scale, spec;
+            float w = ((float)y + 0.5f - by) / scale, spec;
             acc_t o = { 0, 0, 0, 0 };
             if (!alive) {
                 float cov = in_ell(u, w, 0.0f, -0.07f, 0.4f, 0.07f, scale);
@@ -556,9 +748,9 @@ static void draw_player(image_t *im, const boss_snap_t *b, const thing_t *t)
 static void draw_trap(image_t *im, const thing_t *t)
 {
     static const col_t goo = { 240, 140, 40 };
-    float scale = UNIT / t->depth, cx = (float)VW * 0.5f * (1.0f + t->side / t->depth), cy = MID + 0.1f * scale;
+    float scale = UNIT / t->depth, cx = (float)VW * 0.5f * (1.0f + t->side / t->depth), cy = MID + (EZ - 0.4f) * scale;
     float r = maxf(0.12f * scale, 1.5f);
-    shadow(im, t, cx, MID + 0.5f * scale, r * 0.9f, 0.4f);
+    shadow(im, t, cx, MID + EZ * scale, r * 0.9f, 0.4f);
     int x0 = (int)floorf(cx - r - 1.0f), x1 = (int)ceilf(cx + r + 1.0f), y0 = (int)floorf(cy - r - 1.0f), y1 = (int)ceilf(cy + r + 1.0f);
     if (x0 < 0) x0 = 0;
     if (x1 > VW) x1 = VW;
@@ -794,7 +986,7 @@ static void draw_status(image_t *im, const boss_snap_t *b, const boss_view_t *v,
     plate(im, 12.0f, y, 132.0f, 34.0f, 0.65f);
     for (int k = 0; k < 3 || k < hp; k++)
         heart(im, (26.0f + (float)k * 17.0f) * U, (y + 11.0f) * U, 6.6f * U, k < hp ? hd_rgb(236, 72, 80) : hd_rgb(56, 58, 74));
-    float lw = text(im, 20.0f, y + 21.0f, "E", KEY, 0.75f, 1.0f) + 3.0f;
+    float lw = text(im, 20.0f, y + 21.0f, "R", KEY, 0.75f, 1.0f) + 3.0f;
     lw += text(im, 20.0f + lw, y + 21.0f, "막기", cool ? DIM : INK, 0.75f, 1.0f) + 6.0f;
     bar(im, 20.0f + lw, y + 24.5f, 112.0f - lw, 3.6f, 1.0f - (float)cool / 50.0f, 0.0f, cool ? hd_rgb(110, 115, 130) : SKY);
     if (b->p[eye].sneak) {
@@ -823,8 +1015,8 @@ static void draw_status(image_t *im, const boss_snap_t *b, const boss_view_t *v,
 /* 아래 가운데에 작게 한 줄: 키 안내. 조작이 바뀌면 boss_view.c의 draw_guide, draw_legend와 docs/guide.md를 같이 고친다 */
 static void draw_hint(image_t *im)
 {
-    static const char *const part[][2] = { { "WASD", "이동" }, { "마우스", "시선" }, { "클릭", "쓰기" }, { "E", "막기" },
-                                           { "C", "살금살금" }, { "H", "안내" } };
+    static const char *const part[][2] = { { "WASD", "이동" }, { "마우스", "시선" }, { "클릭", "쓰기" }, { "SPACE", "점프" },
+                                           { "R", "막기" }, { "C", "살금살금" }, { "H", "안내" } };
     const int n = (int)(sizeof part / sizeof part[0]);
     float w = 0.0f, k = 0.7f;
     for (int i = 0; i < n; i++) w += (float)(ui_text_w(part[i][0]) + ui_text_w(part[i][1])) * k + 3.0f + (i + 1 < n ? 10.0f : 0.0f);
@@ -893,8 +1085,9 @@ static void draw_hud(image_t *im, const boss_snap_t *b, const boss_view_t *v, in
     }
     const char *note = NULL;
     rgb_t note_col = hd_rgb(245, 190, 60);
-    if (eye >= 0 && b->fly.windup && b->fly.target == eye) { note = "돌진이 온다!  E 막기"; note_col = hd_rgb(255, 90, 80); }
+    if (eye >= 0 && b->fly.windup && b->fly.target == eye) { note = "돌진이 온다!  R 막기  SPACE 점프"; note_col = hd_rgb(255, 90, 80); }
     else if (v->block_ms >= 0 && v->block_ms < 700) { note = "막았다!"; note_col = hd_rgb(85, 200, 120); }
+    else if (v->dodge_ms >= 0 && v->dodge_ms < 700) { note = "뛰어넘었다!"; note_col = hd_rgb(85, 200, 120); }
     else if (v->wave_ms >= 0 && v->wave_ms < 500) note = "날갯짓!";
     else if (b->fly.stun) note = "멈췄다! 지금이다";
     else if (b->fly.air) note = "달아난다!  C 살금살금";
@@ -930,10 +1123,12 @@ void boss_view_draw_hd(image_t *im, const boss_snap_t *b, const boss_view_t *v)
     }
 
     float eye_ang = 0.0f;
+    EZ = BOSS_VIEW_EYE_H;
     if (eye >= 0) {
         float px = (float)b->p[eye].x / BOSS_FIX, py = (float)b->p[eye].y / BOSS_FIX;
         /* 내 눈이면 마우스로 돌린 방향을 쓴다. 서버가 알려 준 방향은 한두 틱 늦다 */
         eye_ang = (float)(eye == v->me && v->look_on ? v->look_ang : b->p[eye].ang) * TWO_PI / 65536.0f;
+        EZ += (float)b->p[eye].z / 100.0f;           /* 뛰어오른 만큼 눈이 올라간다 */
         float dx = cosf(eye_ang), dy = sinf(eye_ang);
         view_job_t job = { im, px, py, dx, dy };
         par_for(VH, 8, ground_rows, &job);
