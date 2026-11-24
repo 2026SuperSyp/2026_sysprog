@@ -1,12 +1,12 @@
-ui/assets/hangul12.fnt, ui/assets/font48.fnt 의 글꼴 라이선스
+ui/assets/hangul12.fnt, ui/assets/font_outline.fnt 의 글꼴 라이선스
 
 hangul12.fnt 는 Freesentation(프리젠테이션체) 2.001의 "Freesentation 4 Regular"를
 12x12 픽셀의 한 가지 색 그림으로 바꾼 것이다(라이선스가 말하는 Modified Version).
 바꾸는 도구는 tools/font_convert.py 이고, 원본 글꼴 파일은 이 저장소에 넣지 않았다.
 
-font48.fnt 는 같은 글꼴의 "Freesentation 5 Medium"(한글)과 "Freesentation 7 Bold"(영문, 숫자, 기호)를
-48픽셀 크기의 회색 그림으로 바꾼 것이다(역시 Modified Version). 바꾸는 도구는 tools/font_hd.py 이다.
-아래에서 hangul12.fnt 에 대해 적은 것은 font48.fnt 에도 똑같이 해당한다.
+font_outline.fnt 는 같은 글꼴의 "Freesentation 5 Medium"(한글)과 "Freesentation 7 Bold"(영문, 숫자, 기호)에서
+글자의 윤곽선을 꺼내 담은 것이다(역시 Modified Version). 꺼내는 도구는 tools/font_hd.py 이다.
+아래에서 hangul12.fnt 에 대해 적은 것은 font_outline.fnt 에도 똑같이 해당한다.
 
   원본을 받은 곳  https://freesentation.blog/freesentation
                   (https://github.com/Freesentation/freesentation 의 Freesentation-2.001.zip)
