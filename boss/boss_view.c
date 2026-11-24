@@ -11,15 +11,23 @@
 #include <stdio.h>
 #include <string.h>
 
-#define VY      14                   /* 3D 화면의 위쪽 끝 */
-#define VW      SCREEN_W
-#define VH      104
+#define VY1     14                   /* 3D 화면의 위쪽 끝(배율 1일 때) */
+#define VH1     104                  /* 3D 화면의 높이(배율 1일 때) */
 #define PLANE   0.66f                /* 시야의 넓이(약 66도) */
 #define TWO_PI  6.2831853f
 
 static uint8_t wall[BOSS_MAP][BOSS_MAP];
 static int     have_map;
-static float   zbuf[VW];
+static float   zbuf[SCREEN_W * PRESENT_MAX_SCALE];
+/* 지금 그리는 3D 화면의 위쪽 끝, 너비, 높이(픽셀). 배율 1이면 14, 240, 104이고 set_view로 바꾼다 */
+static int     VY = VY1, VW = SCREEN_W, VH = VH1;
+
+static void set_view(int scale)
+{
+    VY = VY1 * scale;
+    VW = SCREEN_W * scale;
+    VH = VH1 * scale;
+}
 static const color_t pcol[BOSS_PLAYERS] = { C_CYAN, C_GREEN, C_PINK };
 
 /* 벽의 배치는 계산부가 정한다. 한 번만 받아 온다 */
@@ -133,7 +141,7 @@ static void draw_fly(canvas_t *c, const boss_snap_t *b, const thing_t *t, float 
     if (half < 2) half = 2;
     if (b->fly.air) {                                             /* 떠 있다: 바닥에 그림자를 남기고 위로 올린다 */
         for (int x = cx - half * 2 / 3; x <= cx + half * 2 / 3; x++)
-            if (x >= 0 && x < VW && t->depth < zbuf[x]) ui_rect(c, x, floor_y - 1 > VY ? floor_y - 1 : VY, 1, 2, C_BLACK);
+            if (x >= 0 && x < VW && t->depth < zbuf[x]) ui_rect(c, x, floor_y - 1 > VY ? floor_y - 1 : VY, 1, VH / 52, C_BLACK);
         cy -= (int)(0.55f * scale);
     }
     /* 초파리가 나를 보고 있는가, 등을 돌렸는가, 옆을 보는가 */
@@ -278,9 +286,45 @@ static void draw_bars(canvas_t *c, const boss_snap_t *b, const boss_view_t *v, i
     }
 }
 
+/* 3D 화면 위에 얹는 것: 손에 든 무기, 가운데 표시, 작은 지도, 알림, 상태 줄. 배율 1의 좌표로 그린다 */
+static void draw_overlay(canvas_t *c, const boss_snap_t *b, const boss_view_t *v, int eye)
+{
+    if (eye < 0) {                                   /* 볼 사람이 없다: 지도만 크게 */
+        ui_rect(c, 0, VY, VW, VH, C_BG);
+        draw_minimap(c, b, -1);
+        draw_bars(c, b, v, eye);
+        return;
+    }
+    if (eye == v->me) {
+        draw_weapon(c, b, eye);
+        ui_rect(c, VW / 2 - 3, VY + VH / 2, 7, 1, v->hit_ms >= 0 && v->hit_ms < 250 ? C_RED : C_WHITE);   /* 가운데 표시 */
+        ui_rect(c, VW / 2, VY + VH / 2 - 3, 1, 7, v->hit_ms >= 0 && v->hit_ms < 250 ? C_RED : C_WHITE);
+    }
+    draw_minimap(c, b, eye);
+
+    /* 알림: 내가 맞았다(테두리), 돌진이 나를 겨눈다, 날갯짓, 끈끈이에 붙었다 */
+    if (v->hurt_ms >= 0 && v->hurt_ms < 300) {
+        ui_rect(c, 0, VY, VW, 3, C_RED); ui_rect(c, 0, VY + VH - 3, VW, 3, C_RED);
+        ui_rect(c, 0, VY, 3, VH, C_RED); ui_rect(c, VW - 3, VY, 3, VH, C_RED);
+    }
+    const char *note = NULL;
+    color_t note_col = C_WARN;
+    if (b->fly.windup && b->fly.target == eye) { note = "돌진이 온다!"; note_col = C_RED; }
+    else if (v->wave_ms >= 0 && v->wave_ms < 500) note = "날갯짓!";
+    else if (b->fly.stun) note = "붙었다! 지금이다";
+    else if (b->fly.air) note = "뛰어올랐다";
+    if (note) ui_text(c, (VW - ui_text_w(note)) / 2, VY + 4, note, note_col);
+    draw_bars(c, b, v, eye);
+}
+
+/* full이 240x134이면 전처럼 그린다. 배율 N으로 키운 화면(240N x 134N)이면 벽, 초파리, 참가자는 그 크기에
+ * 맞춰 촘촘하게 그리고, 무기와 지도와 글자는 240x134로 그린 것을 N배로 키워 얹는다. */
 void boss_view_draw(canvas_t *full, const boss_snap_t *b, const boss_view_t *v)
 {
-    int eye = -1;
+    static canvas_t *over;                           /* 배율이 2 이상일 때 얹을 것을 그리는 240x134 */
+    int eye = -1, scale = ui_width(full) / SCREEN_W;
+    if (scale < 1) scale = 1;
+    if (scale > PRESENT_MAX_SCALE) scale = PRESENT_MAX_SCALE;
     if (!have_map) load_map();
     if (v->me >= 0 && v->me < b->n_players && b->p[v->me].alive) eye = v->me;
     int n = b->n_players < BOSS_PLAYERS ? b->n_players : BOSS_PLAYERS;
@@ -290,34 +334,18 @@ void boss_view_draw(canvas_t *full, const boss_snap_t *b, const boss_view_t *v)
     }
 
     ui_clear(full, C_BLACK);
-    if (eye < 0) {                                   /* 볼 사람이 없다: 지도만 크게 */
-        ui_rect(full, 0, VY, VW, VH, C_BG);
-        draw_minimap(full, b, -1);
-        draw_bars(full, b, v, eye);
-        return;
+    if (eye >= 0) {
+        float px = (float)b->p[eye].x / BOSS_FIX, py = (float)b->p[eye].y / BOSS_FIX;
+        float a = (float)b->p[eye].dir * TWO_PI / BOSS_DIRS, dx = cosf(a), dy = sinf(a);
+        set_view(scale);
+        draw_walls(full, px, py, dx, dy);
+        draw_things(full, b, eye, px, py, dx, dy);
+        set_view(1);
     }
-    float px = (float)b->p[eye].x / BOSS_FIX, py = (float)b->p[eye].y / BOSS_FIX;
-    float a = (float)b->p[eye].dir * TWO_PI / BOSS_DIRS, dx = cosf(a), dy = sinf(a);
-    draw_walls(full, px, py, dx, dy);
-    draw_things(full, b, eye, px, py, dx, dy);
-    if (eye == v->me) {
-        draw_weapon(full, b, eye);
-        ui_rect(full, VW / 2 - 3, VY + VH / 2, 7, 1, v->hit_ms >= 0 && v->hit_ms < 250 ? C_RED : C_WHITE);   /* 가운데 표시 */
-        ui_rect(full, VW / 2, VY + VH / 2 - 3, 1, 7, v->hit_ms >= 0 && v->hit_ms < 250 ? C_RED : C_WHITE);
-    }
-    draw_minimap(full, b, eye);
-
-    /* 알림: 내가 맞았다(테두리), 돌진이 나를 겨눈다, 날갯짓, 끈끈이에 붙었다 */
-    if (v->hurt_ms >= 0 && v->hurt_ms < 300) {
-        ui_rect(full, 0, VY, VW, 3, C_RED); ui_rect(full, 0, VY + VH - 3, VW, 3, C_RED);
-        ui_rect(full, 0, VY, 3, VH, C_RED); ui_rect(full, VW - 3, VY, 3, VH, C_RED);
-    }
-    const char *note = NULL;
-    color_t note_col = C_WARN;
-    if (b->fly.windup && b->fly.target == eye) { note = "돌진이 온다!"; note_col = C_RED; }
-    else if (v->wave_ms >= 0 && v->wave_ms < 500) note = "날갯짓!";
-    else if (b->fly.stun) note = "붙었다! 지금이다";
-    else if (b->fly.air) note = "뛰어올랐다";
-    if (note) ui_text(full, (VW - ui_text_w(note)) / 2, VY + 4, note, note_col);
-    draw_bars(full, b, v, eye);
+    if (scale == 1) { draw_overlay(full, b, v, eye); return; }
+    if (!over) over = canvas_new(SCREEN_W, SCREEN_H);
+    if (!over) return;
+    ui_clear(over, C_NONE);
+    draw_overlay(over, b, v, eye);
+    canvas_blit_scaled(full, 0, 0, over, scale);
 }

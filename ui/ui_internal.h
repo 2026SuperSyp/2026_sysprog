@@ -17,6 +17,7 @@ canvas_t *canvas_new(int w, int h);
 void canvas_free(canvas_t *c);
 void canvas_blit(canvas_t *dst, int dx, int dy, const canvas_t *src);        /* C_NONE인 픽셀은 건너뛴다 */
 void canvas_blit_half(canvas_t *dst, int dx, int dy, const canvas_t *src);   /* 가로세로 절반으로 줄여서 놓는다 */
+void canvas_blit_scaled(canvas_t *dst, int dx, int dy, const canvas_t *src, int scale);   /* 가로세로 scale배로 키워서 놓는다. C_NONE은 건너뛴다 */
 
 /* ---- 색 (palette.c) ---- */
 /* 코어의 그림에만 쓰는 색. 스테이지가 쓰는 색(ui.h) 뒤에 이어 붙인다. */
@@ -75,13 +76,17 @@ typedef struct present_state present_state_t;
 present_state_t *present_new(void);
 void present_free(present_state_t *st);
 void present_invalidate(present_state_t *st);    /* 다음 번에 전부 다시 그리게 한다 */
+#define PRESENT_MAX_SCALE 4      /* 화면을 키우는 배율의 한도. 배율 N의 화면은 240N x 134N 픽셀, 터미널 240N칸 67N줄이다 */
 /* 전체 화면을 터미널에 보낼 글자열로 바꾼다. 지난번과 달라진 칸만 담는다.
- * 터미널이 240x67칸보다 작으면 0을 돌려준다. 돌려주는 값은 out에 쓴 바이트 수다. */
+ * full은 240x134이거나 그것을 배율 N으로 키운 크기다. 터미널이 그보다 작으면(배율 1이면 240x67칸)
+ * 0을 돌려준다. 돌려주는 값은 out에 쓴 바이트 수다. */
 size_t present_encode(present_state_t *st, const canvas_t *full, int cols, int rows,
                       char *out, size_t cap);
 /* 터미널 글자 칸(0부터)을 전체 화면(240x134) 픽셀로 바꾼다. 화면은 터미널 가운데에 놓인다.
  * 화면 밖이면 0을 돌려준다. 글자 한 칸은 가로 1픽셀, 세로 2픽셀이고 위쪽 픽셀을 준다. */
 int  present_cell_to_screen(int cols, int rows, int cell_x, int cell_y, int *sx, int *sy);
+/* 배율 scale로 키운 화면을 그리고 있을 때 쓴다. 돌려주는 좌표는 키우기 전(240x134)의 픽셀이다. */
+int  present_cell_to_screen_scaled(int cols, int rows, int scale, int cell_x, int cell_y, int *sx, int *sy);
 
 /* ---- 터미널 (term.c) ---- */
 int  term_enter(void);           /* 원시 입력, 대체 화면, 커서 숨김, 마우스 보고를 켠다. 0이면 성공 */

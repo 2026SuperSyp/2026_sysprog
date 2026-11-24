@@ -107,6 +107,15 @@ void canvas_blit_half(canvas_t *dst, int dx, int dy, const canvas_t *src)
     }
 }
 
+/* 픽셀 하나를 scale x scale로 키워서 놓는다. 그림은 그대로이고 크기만 커진다. */
+void canvas_blit_scaled(canvas_t *dst, int dx, int dy, const canvas_t *src, int scale)
+{
+    if (!dst || !src || scale < 1) return;
+    for (int y = 0; y < src->h; y++)
+        for (int x = 0; x < src->w; x++)
+            ui_rect(dst, dx + x * scale, dy + y * scale, scale, scale, src->px[y * src->w + x]);
+}
+
 /* 색 번호를 RGB로 바꾸는 표. include/ui.h의 이름표 순서와 같다. */
 static const uint8_t palette[][3] = {
     [C_NONE]     = {  0,   0,   0},

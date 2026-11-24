@@ -1,7 +1,9 @@
 /* 클라이언트. 서버에 접속해 화면을 그리고 입력을 올린다.
  *
- *   build/dev/client [--host=주소] [--port=N] [--name=이름] [--no-title]
+ *   build/dev/client [--host=주소] [--port=N] [--name=이름] [--no-title] [--scale=N]
  *       입장 화면(입장, 지난 랭킹 보기, 나가기)을 먼저 보여 준다. --no-title이면 바로 접속한다
+ *       --scale=N(1~4)이면 화면을 N배로 키워 그린다. 터미널이 240N칸 67N줄 이상이어야 한다(글자를 더 줄인다).
+ *       보스전의 3D 화면은 그 크기에 맞춰 촘촘하게 그리고, 나머지 화면은 같은 그림을 크게만 보여 준다
  *   build/dev/client --bot [--wait=N] [...]   화면 없이 접속해 준비하고 무작위로 누른다(검사용).
  *                                             방장이면 참가자가 N명 이상일 때 시작한다
  *
@@ -42,6 +44,7 @@
 #define OUT_CAP (1 << 20)
 
 static int sock = -1;
+static int view_scale = 1;           /* --scale. 화면을 몇 배로 키워 터미널에 그리는가 */
 
 /* 스레드들이 같이 보는 상태 */
 static struct {
@@ -220,7 +223,7 @@ static void *input_main(void *arg)
                 /* 터미널 글자 칸을 전체 화면의 픽셀로 바꿔서 올린다 */
                 int cols = 0, rows = 0, sx, sy;
                 term_size(&cols, &rows);
-                if (!present_cell_to_screen(cols, rows, ev.x, ev.y, &sx, &sy)) continue;
+                if (!present_cell_to_screen_scaled(cols, rows, view_scale, ev.x, ev.y, &sx, &sy)) continue;
                 m.x = (int16_t)sx;
                 m.y = (int16_t)sy;
             } else if (ev.kind != IN_KEY) {
@@ -371,24 +374,32 @@ static void write_all(const char *buf, size_t n)
 
 /* 터미널에 그리는 데 쓰는 것들. 입장 화면과 게임 화면이 같이 쓴다 */
 static canvas_t *full_canvas;
+static canvas_t *big_canvas;         /* --scale이 2 이상일 때 터미널에 보내는 화면(240N x 134N). 아니면 NULL */
 static present_state_t *ps;
 static char *out;
+static size_t out_cap;
 static int notice;
 
-/* 전체 화면을 터미널에 보낸다. 터미널이 작으면 안내만 보인다. */
-static void show(canvas_t *full)
+/* 화면을 터미널에 보낸다. 터미널이 작으면 안내만 보인다.
+ * c가 240x134이고 배율이 2 이상이면 그대로 키워서 보낸다. 이미 키운 화면(big_canvas)이면 그대로 보낸다. */
+static void show(canvas_t *c)
 {
     int cols = 0, rows = 0;
+    if (big_canvas && c != big_canvas) {
+        canvas_blit_scaled(big_canvas, 0, 0, c, view_scale);
+        c = big_canvas;
+    }
+    int need_cols = ui_width(c), need_rows = ui_height(c) / 2;
     term_size(&cols, &rows);
-    size_t n = present_encode(ps, full, cols, rows, out, OUT_CAP);
+    size_t n = present_encode(ps, c, cols, rows, out, out_cap);
     if (n > 0) {
         write_all(out, n);
         notice = 0;
-    } else if ((cols < SCREEN_W || rows < SCREEN_H / 2) && !notice) {
+    } else if ((cols < need_cols || rows < need_rows) && !notice) {
         char msg[256];
         int m = snprintf(msg, sizeof msg,
-            "\033[0m\033[2J\033[H지금 %d칸 %d줄입니다. 240칸 67줄 이상이 필요합니다.\r\n"
-            "Ctrl 과 - 를 눌러 글자를 줄이거나 창을 키워 주세요. (q: 나가기)\r\n", cols, rows);
+            "\033[0m\033[2J\033[H지금 %d칸 %d줄입니다. %d칸 %d줄 이상이 필요합니다.\r\n"
+            "Ctrl 과 - 를 눌러 글자를 줄이거나 창을 키워 주세요. (q: 나가기)\r\n", cols, rows, need_cols, need_rows);
         write_all(msg, (size_t)m);
         present_invalidate(ps);
         notice = 1;
@@ -486,10 +497,16 @@ static int run_screen(void)
         if (!S.dirty && !S.quit) pthread_cond_timedwait(&S.cv, &S.mu, &until);
         if (S.quit) { pthread_mutex_unlock(&S.mu); break; }
         S.dirty = 0;
-        draw(full);
+        canvas_t *shown = full;
+        if (big_canvas && S.have_phase && S.ph.phase == PH_BOSS && S.have_boss) {
+            draw_boss(big_canvas, &S.ph);            /* 보스전의 3D 화면은 키운 화면에 바로 그린다 */
+            shown = big_canvas;
+        } else {
+            draw(full);
+        }
         pthread_mutex_unlock(&S.mu);
 
-        show(full);
+        show(shown);
     }
 
     shutdown(sock, SHUT_RDWR);                       /* 수신 스레드를 깨운다 */
@@ -498,6 +515,7 @@ static int run_screen(void)
     term_leave();
     if (S.why[0]) printf("%s\n", S.why);
     canvas_free(full);
+    canvas_free(big_canvas);
     present_free(ps);
     free(out);
     return 0;
@@ -566,7 +584,12 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--wait=", 7) == 0)   wait_players = atoi(a + 7);
         else if (strcmp(a, "--bot") == 0)         bot = 1;
         else if (strcmp(a, "--no-title") == 0)    no_title = 1;
+        else if (strncmp(a, "--scale=", 8) == 0)  view_scale = atoi(a + 8);
         else { printf("모르는 옵션: %s\n", a); return 2; }
+    }
+    if (view_scale < 1 || view_scale > PRESENT_MAX_SCALE) {
+        printf("--scale은 1부터 %d까지입니다\n", PRESENT_MAX_SCALE);
+        return 2;
     }
     signal(SIGPIPE, SIG_IGN);
 
@@ -577,8 +600,15 @@ int main(int argc, char **argv)
             return 2;
         }
         full_canvas = canvas_new(SCREEN_W, SCREEN_H);
+        if (view_scale > 1) big_canvas = canvas_new(SCREEN_W * view_scale, SCREEN_H * view_scale);
         ps = present_new();
-        out = malloc(OUT_CAP);
+        out_cap = (size_t)OUT_CAP * (size_t)view_scale * (size_t)view_scale;     /* 칸 수가 배율의 제곱으로 는다 */
+        out = malloc(out_cap);
+        if (!full_canvas || !ps || !out || (view_scale > 1 && !big_canvas)) {
+            term_leave();
+            printf("메모리가 모자랍니다\n");
+            return 1;
+        }
         if (!no_title && !run_title(host, port)) { term_leave(); return 0; }
     }
 
