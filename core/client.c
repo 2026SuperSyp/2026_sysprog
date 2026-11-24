@@ -6,7 +6,8 @@
  *       --scale=auto이면 시작할 때의 터미널 크기에 들어가는 가장 큰 배율을 고른다.
  *       보스전의 3D 화면은 그 크기에 맞춰 촘촘하게 그리고, 나머지 화면은 같은 그림을 크게만 보여 준다
  *       --gfx=auto|sixel|cell: 화면을 픽셀 그림(Sixel)으로 보낼지 글자 칸으로 보낼지. auto(기본값)는 터미널에 물어서
- *       그림을 받으면 그림으로 보낸다. 그림으로 보낼 때 --scale은 그림 배율의 상한이다(기본 5배 = 1200x670)
+ *       그림을 받으면 그림으로 보낸다. 그림은 창에 들어가는 가장 큰 배율로 그린다(10배 = 2400x1340까지).
+ *       그때 --scale=N은 그 상한을 낮춘다
  *   build/dev/client --bot [--wait=N] [...]   화면 없이 접속해 준비하고 무작위로 누른다(검사용).
  *                                             방장이면 참가자가 N명 이상일 때 시작한다
  *
@@ -59,14 +60,13 @@
 #define LOOK_SEND_MS   16            /* 시선을 서버에 알리는 간격의 하한 */
 #define LOOK_KEY_STEP  (65536 / BOSS_DIRS)           /* 방향키 좌우로 한 번에 도는 각도 */
 #define LOOK_SMOOTH_MS 45.0          /* 화면의 시선이 정한 방향을 따라가는 빠르기. 글자 칸이 크면 마우스가 뚝뚝 끊겨 온다 */
-#define HD_SCALE       5             /* 픽셀 그림으로 보낼 때 그림의 배율(240x134의 몇 배)의 기본 상한: 1200x670 */
 
 static int sock = -1;
 static int view_scale = 1;           /* --scale. 화면을 몇 배로 키워 터미널에 그리는가 */
 /* 화면을 픽셀 그림(Sixel)으로 보내는가(--gfx). 터미널이 받아 주면 그렇게 하고, 아니면 글자 칸으로 보낸다.
  * 그림의 크기는 240x134의 hd_n배이고 창 크기에 맞춰 hd_cap 이하에서 고른다. 입력 스레드도 hd_n을 읽는다 */
 static int gfx_sixel;
-static int hd_cap = HD_SCALE;
+static int hd_cap = HD_MAX_SCALE;
 static atomic_int hd_n = 1;
 
 /* 스레드들이 같이 보는 상태 */
@@ -619,6 +619,63 @@ static void show(canvas_t *c)
 }
 
 /* ---- 픽셀 그림으로 보내기 (Sixel) ------------------------------------------------ */
+/* 그림 한 장은 2MB를 넘기도 해서 터미널이 받는 데 수십 ms가 걸린다. 그동안 다음 장을 그릴 수 있게 쓰는 일은
+ * 쓰기 스레드에 맡긴다. 맡길 자리는 한 장뿐이다. 앞의 장을 아직 쓰고 있으면 다 쓸 때까지 기다린다(장을 버리면
+ * "바뀐 줄만 보내기"가 어긋난다). 그래서 한 장에 걸리는 시간은 그리는 시간과 쓰는 시간 가운데 긴 쪽이 된다. */
+static struct {
+    pthread_mutex_t mu;
+    pthread_cond_t cv;
+    pthread_t th;
+    char *buf;
+    size_t len, cap;
+    int started, busy, stop;
+} W = { .mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER };
+
+static void *writer_main(void *arg)
+{
+    (void)arg;
+    pthread_mutex_lock(&W.mu);
+    for (;;) {
+        while (!W.busy && !W.stop) pthread_cond_wait(&W.cv, &W.mu);
+        if (!W.busy) break;
+        pthread_mutex_unlock(&W.mu);
+        write_all(W.buf, W.len);
+        pthread_mutex_lock(&W.mu);
+        W.busy = 0;
+        pthread_cond_broadcast(&W.cv);
+    }
+    pthread_mutex_unlock(&W.mu);
+    return NULL;
+}
+
+/* 맡긴 것을 다 쓸 때까지 기다린다. 이 스레드가 터미널에 직접 쓰기 전과 끝낼 때 부른다 */
+static void write_wait(void)
+{
+    pthread_mutex_lock(&W.mu);
+    while (W.busy) pthread_cond_wait(&W.cv, &W.mu);
+    pthread_mutex_unlock(&W.mu);
+}
+
+/* 글자열을 쓰기 스레드에 맡긴다. 스레드를 못 만들었으면 여기서 쓴다 */
+static void write_later(const char *p, size_t n)
+{
+    if (!W.started && pthread_create(&W.th, NULL, writer_main, NULL) == 0) W.started = 1;
+    if (!W.started) { write_all(p, n); return; }
+    pthread_mutex_lock(&W.mu);
+    while (W.busy) pthread_cond_wait(&W.cv, &W.mu);
+    if (W.cap < n) {
+        char *nb = realloc(W.buf, n * 2);
+        if (!nb) { pthread_mutex_unlock(&W.mu); write_all(p, n); return; }
+        W.buf = nb;
+        W.cap = n * 2;
+    }
+    memcpy(W.buf, p, n);
+    W.len = n;
+    W.busy = 1;
+    pthread_cond_broadcast(&W.cv);
+    pthread_mutex_unlock(&W.mu);
+}
+
 static image_t *hd_img;              /* 터미널에 보내는 그림(240n x 134n) */
 static sixel_state_t *sx;
 
@@ -641,14 +698,12 @@ static int hd_prepare(void)
     return 1;
 }
 
-/* 240x134 캔버스에 그린 화면을 그림으로 옮긴다. 그림은 계단을 깎아 가며 키우고, 받아 둔 글자는 큰 글꼴로 다시 그린다 */
+/* 240x134 캔버스에 그린 화면을 그림으로 옮긴다. 캔버스는 그대로 키우고, 받아 둔 것(글자, 시프봇, 말풍선)은 실제
+ * 해상도로 다시 그린다 */
 static void hd_from_canvas(const canvas_t *full, const ui_text_item_t *items, int n_items)
 {
-    int n = hd_img->w / SCREEN_W;
     hd_upscale(hd_img, full);
-    for (int i = 0; i < n_items; i++)
-        hd_text(hd_img, (float)(items[i].x * n), (float)(items[i].y * n), items[i].s, hd_color(items[i].col),
-                (float)(UI_KFONT_H * n), 1.0f);
+    hd_items(hd_img, items, n_items, hd_img->w / SCREEN_W);
 }
 
 static void show_hd(void)
@@ -659,10 +714,11 @@ static void show_hd(void)
     term_size(&cols, &rows);
     const char *p = sixel_encode(sx, hd_img, cols, rows, tc->cell_w, tc->cell_h, &len);
     if (p) {
-        if (len > 0) write_all(p, len);
+        if (len > 0) write_later(p, len);
         notice = 0;
     } else if (!notice) {
         static const char msg[] = "\033[0m\033[2J\033[H창이 너무 작습니다. 창을 키워 주세요. (q: 나가기)\r\n";
+        write_wait();
         write_all(msg, sizeof msg - 1);
         notice = 1;
     }
@@ -801,6 +857,7 @@ static int run_screen(void)
         }
     }
 
+    write_wait();                                    /* 쓰기 스레드에 맡긴 마지막 장까지 나간 뒤에 터미널을 되돌린다 */
     shutdown(sock, SHUT_RDWR);                       /* 수신 스레드를 깨운다 */
     pthread_join(t_input, NULL);
     pthread_join(t_recv, NULL);
@@ -897,7 +954,7 @@ int main(int argc, char **argv)
         /* 터미널이 그림을 받아 주면 화면을 픽셀 그림으로 보낸다. 그때 --scale은 그림 배율의 상한이다 */
         gfx_sixel = strcmp(gfx, "sixel") == 0 || (strcmp(gfx, "auto") == 0 && term_caps()->sixel);
         if (gfx_sixel) {
-            if (scale_given) hd_cap = view_scale;
+            if (scale_given && view_scale < hd_cap) hd_cap = view_scale;
             view_scale = 1;
             auto_scale = 0;
             sx = sixel_new();
@@ -921,7 +978,7 @@ int main(int argc, char **argv)
             printf("메모리가 모자랍니다\n");
             return 1;
         }
-        if (!no_title && !run_title(host, port)) { term_leave(); return 0; }
+        if (!no_title && !run_title(host, port)) { write_wait(); term_leave(); return 0; }
     }
 
     sock = connect_to(host, port);

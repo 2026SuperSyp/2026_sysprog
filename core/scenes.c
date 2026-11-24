@@ -56,6 +56,10 @@ static void bubble(canvas_t *c, int x, int y, const char *text, color_t ink, int
     int n = split_lines(text, lines), w, h;
     bubble_size(text, &w, &h);
 
+    /* 화면을 픽셀 그림으로 보낼 때는 상자를 실제 해상도로 다시 그린다(ui/hd_art.c). 글자는 아래에서 그대로 그린다 */
+    int tail = tail_x >= x + 4 && tail_x <= x + w - 8;
+    if (ui_capture_note(c, UI_HD_BUBBLE, x, y, w, h, tail ? tail_x : -1, NULL)) goto text;
+
     /* 모서리를 한 픽셀씩 깎은 상자 */
     ui_rect(c, x + 1, y, w - 2, h, C_BLACK);
     ui_rect(c, x, y + 1, w, h - 2, C_BLACK);
@@ -69,7 +73,7 @@ static void bubble(canvas_t *c, int x, int y, const char *text, color_t ink, int
     ui_px(c, x + w - 2, y + h - 2, C_WHITE);
 
     /* 아래로 내려오는 꼬리. 말하는 쪽을 가리킨다 */
-    if (tail_x >= x + 4 && tail_x <= x + w - 8) {
+    if (tail) {
         for (int k = 0; k < 5; k++) {
             ui_line(c, tail_x + k / 2, y + h - 1 + k, tail_x + 4 - (k + 1) / 2, y + h - 1 + k, C_BLACK);
             ui_px(c, tail_x + k / 2, y + h - 1 + k, C_WHITE);
@@ -77,6 +81,7 @@ static void bubble(canvas_t *c, int x, int y, const char *text, color_t ink, int
         }
     }
 
+text:
     for (int i = 0; i < n; i++)
         ui_text(c, x + (w - ui_text_w(lines[i])) / 2, y + 1 + BUBBLE_PAD + i * LINE_PITCH, lines[i],
                 i == hi_line ? hi_ink : ink);
@@ -118,6 +123,7 @@ void scene_count(canvas_t *full, int tick)
     int w = ui_sprite_w(id), h = ui_sprite_h(id);
 
     ui_clear(full, C_BG);
+    if (ui_capture_note(full, UI_HD_COUNT, 0, 0, SCREEN_W, SCREEN_H, k, NULL)) return;   /* 픽셀 그림으로 보낼 때는 다시 그린다 */
     if (!small || small->w != w || small->h != h) {
         canvas_free(small);
         small = canvas_new(w, h);

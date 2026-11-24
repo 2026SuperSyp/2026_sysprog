@@ -39,12 +39,20 @@ void ui_palette_rgb(color_t c, uint8_t rgb[3]);
 /* ---- 글자 (font.c, utf8.c) ---- */
 #define UI_KFONT_LATIN_DY 3      /* 한글이 섞인 글자열에서 영문과 숫자를 이만큼 내려 그린다(ui_text) */
 int    ui_text_h(const char *s);                             /* 한 줄의 높이. 한글이 섞였으면 12, 아니면 8 */
-/* 글자 받아 두기. 화면을 픽셀 그림으로 보낼 때(ui/hd.h) 글자만은 캔버스에 그린 것을 키우지 않고 큰 글꼴로 다시 그린다.
- * begin과 end 사이에 target 캔버스에 ui_text로 그리는 글자는 캔버스에 그려지지 않고 목록에 쌓인다.
- * end는 쌓인 개수를 돌려주고 목록을 items에 준다(다음 begin까지 유효하다). 목록이 차면 그 뒤의 글자는 그냥 그려진다. */
-typedef struct { int16_t x, y; color_t col; char s[128]; } ui_text_item_t;
+/* 받아 두기. 화면을 픽셀 그림으로 보낼 때(ui/hd.h) 글자와 몇 가지 그림은 캔버스에 그린 것을 키우지 않고 실제
+ * 해상도로 다시 그린다(ui/hd_art.c). begin과 end 사이에 target 캔버스에 ui_text로 그리는 글자는 캔버스에 그려지지
+ * 않고 목록에 쌓인다. 진행자 시프봇의 그림(ui_sprite), 말풍선, 카운트다운도 그린 쪽이 ui_capture_note로 알려 두고
+ * 캔버스에는 그리지 않는다. end는 쌓인 개수를 돌려주고 목록을 items에 준다(다음 begin까지 유효하다).
+ * 목록에는 그린 순서대로 쌓인다. 목록이 차면 그 뒤의 것은 그냥 캔버스에 그려진다. */
+enum { UI_HD_TEXT = 0,           /* 글자: s를 (x, y)에 col로 */
+       UI_HD_SPRITE,             /* 그림: 이름이 s인 그림(w x h)의 a번째 장을 (x, y)에 */
+       UI_HD_BUBBLE,             /* 말풍선 상자: (x, y)에 w x h. 꼬리의 자리가 a(없으면 -1) */
+       UI_HD_COUNT };            /* 카운트다운: a가 0, 1, 2이면 3, 2, 1이고 3이면 GO */
+typedef struct { uint8_t kind; color_t col; int16_t x, y, w, h, a; char s[128]; } ui_text_item_t;
 void   ui_text_capture_begin(const canvas_t *target);
 int    ui_text_capture_end(const ui_text_item_t **items);
+/* c가 받아 두는 캔버스이면 목록에 올리고 1을 돌려준다(그러면 부른 쪽은 캔버스에 그리지 않는다). 아니면 0 */
+int    ui_capture_note(const canvas_t *c, int kind, int x, int y, int w, int h, int a, const char *s);
 int    utf8_next(const char **s);                            /* 글자 하나를 읽고 다음으로 넘어간다. 끝이면 0 */
 size_t utf8_copy(char *dst, size_t cap, const char *src);    /* 넘치면 글자 경계에서 잘라 담는다 */
 

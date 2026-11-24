@@ -184,11 +184,24 @@ int ui_text_capture_end(const ui_text_item_t **items)
     return capture.n;
 }
 
+int ui_capture_note(const canvas_t *c, int kind, int x, int y, int w, int h, int a, const char *s)
+{
+    if (!c || c != capture.target || capture.n >= CAPTURE_MAX) return 0;
+    ui_text_item_t *it = &capture.item[capture.n++];
+    memset(it, 0, sizeof *it);
+    it->kind = (uint8_t)kind;
+    it->x = (int16_t)x; it->y = (int16_t)y; it->w = (int16_t)w; it->h = (int16_t)h; it->a = (int16_t)a;
+    utf8_copy(it->s, sizeof it->s, s ? s : "");
+    return 1;
+}
+
 void ui_text(canvas_t *c, int x, int y, const char *s, color_t col)
 {
     if (!c || !s) return;
     if (c == capture.target && capture.n < CAPTURE_MAX && col != C_NONE) {
         ui_text_item_t *it = &capture.item[capture.n++];
+        memset(it, 0, sizeof *it);
+        it->kind = UI_HD_TEXT;
         it->x = (int16_t)x;
         it->y = (int16_t)y;
         it->col = col;

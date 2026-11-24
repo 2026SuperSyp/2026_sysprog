@@ -5,14 +5,19 @@
  * 색이 자유로운 픽셀 그림(image_t)으로 만들어 통째로 보낸다(sixel.c). 여기에는 그 그림에 그리는 함수들이 있다.
  *
  *   - 도형은 가장자리를 픽셀이 덮이는 만큼만 칠해서 계단이 보이지 않는다(좌표는 소수여도 된다).
- *   - 글자는 48픽셀로 뽑은 글꼴(ui/assets/font48.fnt, tools/font_hd.py)을 원하는 크기로 줄이거나 키워 그린다.
- *     글자가 차지하는 칸의 비율은 12x12 글꼴과 같다. 한 칸의 크기(cell)가 12배율이면 ui_text와 같은 자리에 놓인다.
- *   - hd_upscale은 240x134 캔버스(지금까지의 화면)를 키워 놓는다. 픽셀 그림의 계단을 깎아 내고 가장자리를 섞는다. */
+ *   - 글자는 윤곽선 글꼴(ui/assets/font_outline.fnt, tools/font_hd.py)을 원하는 크기로 채워 그린다. 어떤 크기에서도
+ *     또렷하다. 글자가 차지하는 칸의 비율은 12x12 글꼴과 같다. 한 칸의 크기(cell)가 12배율이면 ui_text와 같은 자리에 놓인다.
+ *   - hd_upscale은 240x134 캔버스(지금까지의 화면)를 그대로 키워 놓는다(섞거나 깎지 않는다).
+ * 그림은 화면의 실제 해상도까지 커진다(240x134의 HD_MAX_SCALE배). 그래서 줄 단위로 나눌 수 있는 일은 여러 스레드에
+ * 나눠 준다(par_for, par.c). */
 #ifndef SSP_HD_H
 #define SSP_HD_H
 
+#include <stddef.h>
 #include <stdint.h>
 #include "ui/ui_internal.h"
+
+#define HD_MAX_SCALE 10          /* 그림의 배율(240x134의 몇 배)의 한도: 2400x1340 */
 
 typedef struct image { int w, h; uint8_t *px; } image_t;    /* px는 w * h * 3바이트(R, G, B). px[(y * w + x) * 3] */
 typedef struct { uint8_t r, g, b; } rgb_t;
@@ -49,10 +54,21 @@ static inline void hd_blend(image_t *im, int x, int y, rgb_t c, float a)
 void  hd_text(image_t *im, float x, float y, const char *s, rgb_t c, float cell, float a);
 float hd_text_w(const char *s, float cell);
 
-/* 캔버스를 n배로 키워 (dx, dy)에 놓는다. 픽셀 그림의 계단을 깎아 내고 가장자리를 섞는다. 그림 밖은 잘라낸다 */
+/* 받아 둔 것들(ui_text_capture_end가 준 목록: 글자, 시프봇, 말풍선, 카운트다운)을 n배로 키운 그림 위에 실제 해상도로
+ * 그린다(hd_art.c). 받아 둔 순서대로 그린다 */
+void hd_items(image_t *im, const ui_text_item_t *items, int n_items, int n);
+
+/* 캔버스를 n배로 키워 (dx, dy)에 놓는다. 픽셀 하나가 n x n이 된다. 그림 밖은 잘라낸다 */
 void hd_canvas(image_t *im, int dx, int dy, const canvas_t *src, int n);
 /* 캔버스를 그림 전체에 키워 놓는다. 그림의 크기는 캔버스의 정수배여야 한다(아니면 아무것도 하지 않는다) */
 void hd_upscale(image_t *im, const canvas_t *src);
+
+/* ---- 일을 여러 스레드에 나눠 주기 (par.c) ---- */
+typedef void (*par_fn)(int from, int to, void *arg);
+/* 0부터 n-1까지를 chunk개씩 잘라 fn(처음, 끝, arg)을 여러 스레드에서 부른다. 전부 끝난 뒤에 돌아온다.
+ * fn은 자기 구간만 건드려야 한다. 한 번에 한 곳에서만 부른다 */
+void par_for(int n, int chunk, par_fn fn, void *arg);
+int  par_threads(void);
 
 /* ---- Sixel로 보내기 (sixel.c) ---- */
 typedef struct sixel_state sixel_state_t;

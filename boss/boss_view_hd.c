@@ -2,12 +2,16 @@
  *
  * 그리는 것과 배치는 boss_view.c와 같다(위 상태 줄, 3D 화면, 아래 상태 줄. 그 위에 지도, 뇌 표시, 키 안내).
  * 다른 점은 색을 마음대로 쓸 수 있다는 것이다. 그래서
- *   - 벽과 바닥에 무늬를 넣고(벽돌, 널빤지, 타일), 멀수록 어둠에 묻히게 한다. 무늬는 그림 파일이 아니라 식으로 만든다.
+ *   - 벽과 바닥에 무늬를 넣고(돌, 널빤지, 타일), 멀수록 어둠에 묻히게 한다. 무늬는 그림 파일이 아니라 식으로 만든다.
+ *     돌과 나무와 타일에는 결(자리마다 정해진 무늬를 여러 크기로 겹친 것), 깨진 금, 모서리의 입체감(위와 왼쪽은
+ *     밝게, 아래와 오른쪽은 어둡게)을 넣는다. 무늬는 벽과 바닥의 자리에 붙어 있어서 움직여도 따라 움직인다.
+ *     화면 가운데가 조금 더 밝다(손전등처럼).
  *   - 바닥과 천장은 줄마다 "그 줄이 눈에서 얼마나 먼가"를 구해 픽셀이 가리키는 바닥의 자리를 찾는다(바닥 캐스팅).
  *   - 가장자리는 픽셀이 덮인 만큼만 칠한다. 벽의 위아래 끝, 초파리와 참가자의 윤곽, 상태 표시의 도형이 모두 그렇다.
  *   - 초파리는 타원과 선분 몇 개로 된 모양에 빛을 입힌다. 식으로 그리므로 가까이 가도 계단이 생기지 않는다.
  *   - 글자는 큰 글꼴로 그린다(ui/hd.c).
- * 상태 표시의 자리는 화면 너비를 480으로 나눈 단위(U)로 적는다. 배율 5(1200x670)에서 한 단위가 2.5픽셀이다. */
+ * 상태 표시의 자리는 화면 너비를 480으로 나눈 단위(U)로 적는다. 배율 10(2400x1340)에서 한 단위가 5픽셀이다.
+ * 바닥의 줄들, 벽의 세로줄들, 초파리의 줄들은 서로 무관해서 여러 스레드에 나눠 그린다(par_for). */
 #include "boss/boss_view.h"
 #include "brain.h"
 #include "ui/hd.h"
@@ -22,18 +26,18 @@
 #define BAR_TOP     14.0f            /* 위, 아래 상태 줄의 높이(U) */
 #define BAR_BOT     16.0f
 #define CELL        12.0f            /* 글자 한 칸의 크기(U) */
-#define FOG_K       0.10f            /* 멀수록 어둠에 묻히는 빠르기 */
+#define FOG_K       0.075f           /* 멀수록 어둠에 묻히는 빠르기 */
 
 typedef struct { float r, g, b; } col_t;
 typedef struct { float r, g, b, a; } acc_t;          /* 겹쳐 칠한 결과. 색에는 덮는 정도가 곱해져 있다 */
 
-static const col_t FOG = { 9.0f, 11.0f, 20.0f };
+static const col_t FOG = { 12.0f, 15.0f, 27.0f };
 static const rgb_t INK = { 235, 235, 225 }, DIM = { 150, 155, 170 }, KEY = { 250, 220, 70 }, SKY = { 70, 200, 220 };
 static const rgb_t PCOL[BOSS_PLAYERS] = { { 70, 200, 220 }, { 60, 180, 75 }, { 245, 130, 180 } };
 
 static uint8_t wall[BOSS_MAP][BOSS_MAP];
 static int     have_map;
-static float   zbuf[SCREEN_W * PRESENT_MAX_SCALE];
+static float   zbuf[SCREEN_W * HD_MAX_SCALE];
 /* 지금 그리는 그림에서: 한 단위의 픽셀 수, 3D 화면의 위쪽 끝과 높이, 지평선의 높이, 거리 1에 있는 벽의 높이 */
 static float   U;
 static int     VY, VH, VW;
@@ -63,13 +67,34 @@ static inline col_t cmix(col_t a, col_t b, float t) { return (col_t){ a.r + (b.r
 static inline col_t cmul(col_t a, float k) { return (col_t){ a.r * k, a.g * k, a.b * k }; }
 static inline uint8_t to8(float v) { return (uint8_t)(v < 0.0f ? 0.0f : (v > 255.0f ? 255.0f : v)); }
 
-/* 두 수를 고르게 섞은 0~1의 값. 벽돌과 널빤지마다 밝기를 조금씩 다르게 하는 데 쓴다 */
+/* 두 수를 고르게 섞은 0~1의 값. 돌과 널빤지마다 밝기를 조금씩 다르게 하는 데 쓴다 */
 static float hash2(int a, int b)
 {
     uint32_t h = (uint32_t)a * 374761393u + (uint32_t)b * 668265263u;
     h = (h ^ (h >> 13)) * 1274126177u;
     return (float)((h ^ (h >> 16)) & 0xffffu) / 65535.0f;
 }
+
+/* 부드럽게 이어지는 무늬(0~1). 정수 자리마다 정해진 값을 두고 그 사이를 매끄럽게 잇는다 */
+static float noise(float x, float y, int seed)
+{
+    float gx = floorf(x), gy = floorf(y), fx = x - gx, fy = y - gy;
+    int ix = (int)gx, iy = (int)gy;
+    fx = fx * fx * (3.0f - 2.0f * fx);
+    fy = fy * fy * (3.0f - 2.0f * fy);
+    float a = hash2(ix + seed * 57, iy), b = hash2(ix + 1 + seed * 57, iy);
+    float c = hash2(ix + seed * 57, iy + 1), d = hash2(ix + 1 + seed * 57, iy + 1);
+    return (a + (b - a) * fx) * (1.0f - fy) + (c + (d - c) * fx) * fy;
+}
+
+/* 결: 같은 무늬를 크기를 줄여 가며 겹친다(0~1). 큰 얼룩 위에 잔 알갱이가 얹힌다 */
+static float grain(float x, float y, int seed)
+{
+    return (noise(x, y, seed) * 0.5f + noise(x * 2.3f, y * 2.3f, seed + 1) * 0.3f + noise(x * 5.1f, y * 5.1f, seed + 2) * 0.2f);
+}
+
+/* 화면 가운데가 더 밝다(손전등). x는 화면의 가로 자리 */
+static inline float lamp(int x) { float r = ((float)x / (float)VW - 0.5f) * 2.0f; return 1.12f - 0.34f * r * r; }
 
 static inline void px_set(image_t *im, int x, int y, col_t c)
 {
@@ -108,80 +133,130 @@ static inline void over(acc_t *o, col_t c, float cov)
 /* ---- 바닥과 천장 -------------------------------------------------------------------- */
 /* 화면의 줄 하나는 바닥(또는 천장)에서 눈으로부터 같은 거리에 있는 곳들이다. 지평선에서 p픽셀 떨어진 줄은
  * UNIT / 2 / p 만큼 멀다(눈높이가 벽 높이의 절반). 그 줄의 왼쪽 끝과 오른쪽 끝이 가리키는 자리를 구해 고르게 나누면
- * 픽셀마다 바닥의 자리가 나온다. 바닥은 한 칸짜리 타일이고 천장은 두 칸짜리 판이다. 멀리서는 무늬가 픽셀보다
- * 잘아져서 어른거리므로 무늬를 흐리게 한다. */
-static void draw_ground(image_t *im, float px, float py, float dx, float dy)
+ * 픽셀마다 바닥의 자리가 나온다. 바닥은 한 칸짜리 돌판이고 천장은 두 칸짜리 판에 들보가 지나간다.
+ * 돌판마다 빛깔이 조금 다르고 결과 금이 있다. 가장자리는 위와 왼쪽이 밝고 아래와 오른쪽이 어두워 도드라져 보인다.
+ * 멀리서는 무늬가 픽셀보다 잘아져서 어른거리므로 무늬를 흐리게 한다. */
+typedef struct { image_t *im; float px, py, dx, dy; } view_job_t;
+
+static void ground_rows(int from, int to, void *arg)
 {
-    static const col_t tile_a = { 60, 80, 102 }, tile_b = { 49, 66, 87 }, grout = { 36, 49, 67 };
-    static const col_t ceil_c = { 30, 34, 52 }, ceil_line = { 24, 27, 43 };
-    float plx = -dy * PLANE, ply = dx * PLANE;
-    float lx = dx - plx, ly = dy - ply, rx = dx + plx, ry = dy + ply;
-    for (int y = VY; y < VY + VH; y++) {
+    static const col_t slab = { 86, 104, 124 }, slab2 = { 70, 86, 108 }, grout = { 24, 32, 46 };
+    static const col_t panel = { 50, 54, 78 }, beam = { 74, 54, 40 }, gap = { 20, 22, 34 };
+    const view_job_t *j = arg;
+    image_t *im = j->im;
+    float px = j->px, py = j->py, plx = -j->dy * PLANE, ply = j->dx * PLANE;
+    float lx = j->dx - plx, ly = j->dy - ply, rx = j->dx + plx, ry = j->dy + ply;
+    for (int y = VY + from; y < VY + to; y++) {
         float p = (float)y + 0.5f - MID, ap = fabsf(p) < 0.5f ? 0.5f : fabsf(p);
         float dist = 0.5f * UNIT / ap, ppu = UNIT / dist;
         float sx = dist * (rx - lx) / (float)VW, sy = dist * (ry - ly) / (float)VW;
         float wx = px + dist * lx + sx * 0.5f, wy = py + dist * ly + sy * 0.5f;
-        float vis = expf(-dist * FOG_K), detail = clamp01((ppu - 5.0f) / 18.0f);
+        float vis = expf(-dist * FOG_K), detail = clamp01((ppu - 4.0f) / 22.0f);
+        int floor_row = p > 0.0f;
         uint8_t *o = im->px + (size_t)y * (size_t)im->w * 3;
-        if (p > 0.0f) {
-            col_t avg = cmix(tile_a, tile_b, 0.5f);
-            col_t a = cmix(FOG, cmix(avg, tile_a, detail), vis), b = cmix(FOG, cmix(avg, tile_b, detail), vis);
-            col_t g = cmix(FOG, grout, vis);
-            for (int x = 0; x < VW; x++, wx += sx, wy += sy, o += 3) {
-                float fx = wx - floorf(wx), fy = wy - floorf(wy);
-                col_t c = (((int)floorf(wx) + (int)floorf(wy)) & 1) ? a : b;
+        for (int x = 0; x < VW; x++, wx += sx, wy += sy, o += 3) {
+            col_t c;
+            if (floor_row) {
+                float gx = floorf(wx), gy = floorf(wy), fx = wx - gx, fy = wy - gy;
+                int ix = (int)gx, iy = (int)gy;
+                float tone = 0.84f + 0.3f * hash2(ix * 7 + 3, iy * 13 + 1);
+                float g = grain(wx * 7.0f, wy * 7.0f, 3);
+                c = cmul(((ix + iy) & 1) ? slab : slab2, tone * (1.0f + (g - 0.5f) * 0.55f * detail));
+                /* 금: 돌판 넷에 하나꼴로, 구불구불한 선 */
+                if (hash2(ix + 91, iy + 17) > 0.74f) {
+                    float bend = fx + (noise(fy * 5.0f + (float)ix, (float)iy, 9) - 0.5f) * 0.3f - 0.5f;
+                    c = cmul(c, 1.0f - 0.5f * detail * clamp01(0.5f + (0.012f - fabsf(bend)) * ppu));
+                }
+                /* 가장자리의 입체감과 줄눈 */
                 float e = minf(minf(fx, 1.0f - fx), minf(fy, 1.0f - fy));
-                float line = clamp01(0.5f + (0.009f - e) * ppu) * detail;
-                if (line > 0.0f) c = cmix(c, g, line);
-                o[0] = to8(c.r); o[1] = to8(c.g); o[2] = to8(c.b);
-            }
-        } else {
-            col_t c0 = cmix(FOG, ceil_c, vis), l0 = cmix(FOG, ceil_line, vis);
-            for (int x = 0; x < VW; x++, wx += sx, wy += sy, o += 3) {
+                float lit_edge = clamp01(0.5f + (0.05f - minf(fx, fy)) * ppu * 0.5f) * detail;
+                float dark_edge = clamp01(0.5f + (0.05f - minf(1.0f - fx, 1.0f - fy)) * ppu * 0.5f) * detail;
+                c = cmul(c, 1.0f + 0.2f * lit_edge - 0.26f * dark_edge);
+                c = cmix(c, grout, clamp01(0.5f + (0.014f - e) * ppu) * (0.4f + 0.6f * detail));
+            } else {
                 float hx = wx * 0.5f, hy = wy * 0.5f, fx = hx - floorf(hx), fy = hy - floorf(hy);
+                float g = grain(wx * 5.0f, wy * 5.0f, 21);
+                c = cmul(panel, 1.0f + (g - 0.5f) * 0.4f * detail);
                 float e = minf(minf(fx, 1.0f - fx), minf(fy, 1.0f - fy)) * 2.0f;
-                float line = clamp01(0.5f + (0.012f - e) * ppu) * detail;
-                col_t c = line > 0.0f ? cmix(c0, l0, line) : c0;
-                o[0] = to8(c.r); o[1] = to8(c.g); o[2] = to8(c.b);
+                c = cmix(c, gap, clamp01(0.5f + (0.02f - e) * ppu) * (0.4f + 0.6f * detail));
+                /* 들보: 네 칸마다 한 줄, 나무결 */
+                float bx = wy * 0.25f, fb = bx - floorf(bx), be = fabsf(fb - 0.5f) * 4.0f;
+                float on = clamp01(0.5f + (0.16f - be) * ppu);
+                if (on > 0.0f) {
+                    float wood = grain(wx * 2.0f, wy * 26.0f, 33);
+                    c = cmix(c, cmul(beam, (0.8f + 0.5f * wood) * (1.0f - 0.35f * clamp01(be / 0.16f))), on);
+                }
             }
+            c = cmix(FOG, cmul(c, lamp(x)), vis);
+            o[0] = to8(c.r); o[1] = to8(c.g); o[2] = to8(c.b);
         }
     }
 }
 
 /* ---- 벽 ---------------------------------------------------------------------------- */
-/* 바깥 벽의 한 점. at은 칸 안에서의 가로 자리(0~1), v는 위에서 아래로(0~1), ppu는 한 칸이 화면에서 몇 픽셀인가.
- * 세 줄로 쌓은 돌이고 줄마다 반 칸씩 어긋난다. 돌마다 밝기가 조금 다르다 */
-static col_t stone(float at, float v, int mx, int my, int side, float ppu)
+/* 벽의 한 점을 정하는 데 필요한 것: 칸 안에서의 가로 자리 at(0~1), 벽이 놓인 칸과 면, 한 칸이 화면에서 몇 픽셀인가(ppu) */
+typedef struct { float at, ppu, px, py; int mx, my, side, face; } hit_t;     /* face: 벽면의 고정된 좌표(x 또는 y) */
+
+/* 바깥 벽: 세 줄로 쌓은 돌이고 줄마다 반 칸씩 어긋난다. v는 위에서 아래로(0~1), u는 벽을 따라 잰 자리(칸).
+ * 돌마다 빛깔이 다르고, 결과 얼룩과 금이 있고, 가장자리가 깎여 도드라져 보인다. 아래쪽은 습기로 어둡다 */
+static col_t stone(const hit_t *h, float v, float u)
 {
-    static const col_t base = { 152, 158, 176 }, mortar = { 84, 88, 104 };
-    float vr = v * 3.0f;
-    int row = (int)vr;
-    float uu = at * 2.0f + ((row & 1) ? 0.5f : 0.0f), fu = uu - floorf(uu), fv = vr - floorf(vr);
-    int block = (int)floorf(uu) + (side ? my : mx) * 2;
-    col_t c = cmul(base, (0.86f + 0.26f * hash2(block * 3 + row, mx * 7 + my * 13 + side)) * (1.06f - 0.16f * v));
-    float e = minf(minf(fu, 1.0f - fu) * 0.5f, minf(fv, 1.0f - fv) / 3.0f);
-    c = cmix(c, mortar, clamp01(0.5f + (0.016f - e) * ppu));
-    if (v > 0.93f) c = cmul(c, 0.72f);                               /* 바닥과 만나는 띠 */
-    return c;
+    static const col_t base = { 158, 164, 182 }, warm = { 172, 160, 150 }, mortar = { 58, 62, 78 }, moss = { 70, 92, 74 };
+    float vr = v * 3.0f, ppu = h->ppu;
+    int row = vr >= 3.0f ? 2 : (int)vr;
+    float uu = u * 2.0f + ((row & 1) ? 0.5f : 0.0f), block = floorf(uu), fu = uu - block, fv = vr - (float)row;
+    int id = (int)block * 3 + row + h->face * 131 + h->side * 17;
+    float t = hash2(id, 5), g = grain(u * 9.0f, v * 9.0f + (float)h->face, 7);
+    col_t c = cmul(cmix(base, warm, hash2(id, 9) * 0.6f), (0.8f + 0.34f * t) * (1.0f + (g - 0.5f) * 0.6f));
+    if (hash2(id, 23) > 0.7f) {                      /* 금 */
+        float bend = fu + (noise(fv * 4.0f, (float)id, 11) - 0.5f) * 0.35f - 0.3f - 0.4f * hash2(id, 31);
+        c = cmul(c, 1.0f - 0.55f * clamp01(0.5f + (0.008f - fabsf(bend) * 0.5f) * ppu));
+    }
+    /* 가장자리: 위와 왼쪽은 빛을 받고 아래와 오른쪽은 그늘진다. 칸 단위의 거리로 잰다 */
+    float el = fu * 0.5f, er = (1.0f - fu) * 0.5f, et = fv / 3.0f, eb = (1.0f - fv) / 3.0f;
+    c = cmul(c, 1.0f + 0.24f * clamp01(0.5f + (0.03f - minf(el, et)) * ppu * 0.6f)
+                     - 0.3f * clamp01(0.5f + (0.03f - minf(er, eb)) * ppu * 0.6f));
+    c = cmix(c, moss, smooth(0.62f, 1.0f, v + (g - 0.5f) * 0.5f) * 0.38f);
+    c = cmul(c, 1.0f - 0.3f * smooth(0.8f, 1.0f, v) - 0.14f * smooth(0.15f, 0.0f, v));          /* 바닥과 천장에 닿는 곳의 그늘 */
+    return cmix(c, mortar, clamp01(0.5f + (0.016f - minf(minf(el, er), minf(et, eb))) * ppu));
 }
 
-/* 기둥의 한 점. 세로 널빤지 넷에 위아래로 띠를 둘렀다 */
-static col_t plank(float at, float v, int id, float ppu)
+/* 기둥: 세로 널빤지 넷. 나무결이 세로로 흐르고 옹이가 있다. 위아래에 쇠띠를 두르고 못을 박았다 */
+static col_t plank(const hit_t *h, float v, float u)
 {
-    static const col_t wood = { 208, 150, 98 }, seam = { 112, 72, 44 }, band = { 232, 190, 142 };
-    float uu = at * 4.0f, fu = uu - floorf(uu);
-    col_t c = cmul(wood, (0.86f + 0.28f * hash2((int)uu, id)) * (1.06f - 0.2f * v));
-    c = cmix(c, seam, clamp01(0.5f + (0.012f - minf(fu, 1.0f - fu) * 0.25f) * ppu));
-    float cap = maxf(clamp01(0.5f + (0.075f - v) * ppu), clamp01(0.5f + (v - 0.925f) * ppu));
-    if (cap > 0.0f) c = cmix(c, cmul(band, v > 0.5f ? 0.8f : 1.0f), cap);
-    c = cmix(c, seam, maxf(clamp01(0.5f + (0.006f - fabsf(v - 0.08f)) * ppu), clamp01(0.5f + (0.006f - fabsf(v - 0.92f)) * ppu)));
-    return c;
+    static const col_t wood = { 196, 136, 84 }, dark = { 96, 60, 36 }, iron = { 96, 102, 116 }, rivet = { 196, 200, 210 };
+    float uu = h->at * 4.0f, board = floorf(uu), fu = uu - board, ppu = h->ppu;
+    if (board > 3.0f) board = 3.0f;
+    int id = (int)board + h->mx * 31 + h->my * 17 + h->side * 7;
+    float g = grain(u * 30.0f + (float)id, v * 2.2f, 41), ring = noise(u * 9.0f + (float)id * 3.0f, v * 1.2f, 43);
+    col_t c = cmul(cmix(wood, dark, ring * 0.45f), (0.84f + 0.3f * hash2(id, 3)) * (0.78f + 0.5f * g));
+    /* 옹이: 널빤지 셋에 하나꼴 */
+    if (hash2(id, 13) > 0.62f) {
+        float ku = fu - 0.3f - 0.4f * hash2(id, 14), kv = (v - 0.25f - 0.5f * hash2(id, 15)) * 3.0f, r = sqrtf(ku * ku + kv * kv);
+        c = cmix(c, dark, clamp01(1.0f - r * 7.0f) * 0.8f);
+    }
+    float e = minf(fu, 1.0f - fu) * 0.25f;
+    c = cmul(c, 1.0f + 0.16f * clamp01(0.5f + (0.012f - fu * 0.25f) * ppu) - 0.2f * clamp01(0.5f + (0.012f - (1.0f - fu) * 0.25f) * ppu));
+    c = cmix(c, cmul(dark, 0.5f), clamp01(0.5f + (0.007f - e) * ppu));
+    /* 쇠띠와 못 */
+    float bt = fabsf(v - 0.09f), bb = fabsf(v - 0.91f), band = minf(bt, bb);
+    float on = clamp01(0.5f + (0.045f - band) * ppu);
+    if (on > 0.0f) {
+        float sheen = 0.8f + 0.5f * clamp01(1.0f - band / 0.045f) * (bt < bb ? 1.0f : 0.7f);
+        col_t m = cmul(iron, sheen * (0.86f + 0.3f * noise(u * 40.0f, v * 40.0f, 51)));
+        float ru = fu - 0.5f, rv = (bt < bb ? v - 0.09f : v - 0.91f), rr = sqrtf(ru * ru * 0.0625f + rv * rv);
+        m = cmix(m, rivet, clamp01(0.5f + (0.014f - rr) * ppu));
+        c = cmix(c, m, on);
+    }
+    return cmul(c, 1.0f - 0.26f * smooth(0.84f, 1.0f, v));
 }
 
-static void draw_walls(image_t *im, float px, float py, float dx, float dy)
+static void wall_columns(int from, int to, void *arg)
 {
-    float plx = -dy * PLANE, ply = dx * PLANE;
-    for (int x = 0; x < VW; x++) {
+    const view_job_t *j = arg;
+    image_t *im = j->im;
+    float px = j->px, py = j->py, dx = j->dx, dy = j->dy, plx = -dy * PLANE, ply = dx * PLANE;
+    for (int x = from; x < to; x++) {
         float cam = 2.0f * ((float)x + 0.5f) / (float)VW - 1.0f;
         float rx = dx + plx * cam, ry = dy + ply * cam;
         int mx = (int)px, my = (int)py, sx, sy, side = 0;
@@ -199,16 +274,19 @@ static void draw_walls(image_t *im, float px, float py, float dx, float dy)
         zbuf[x] = d;
         float at = side == 0 ? py + d * ry : px + d * rx;
         at -= floorf(at);
-        float half = 0.5f * UNIT / d, yt = MID - half, yb = MID + half, ppu = UNIT / d;
+        float half = 0.5f * UNIT / d, yt = MID - half, yb = MID + half;
         int y0 = (int)floorf(yt), y1 = (int)ceilf(yb);
         if (y0 < VY) y0 = VY;
         if (y1 > VY + VH) y1 = VY + VH;
         int pillar = mx > 0 && my > 0 && mx < BOSS_MAP - 1 && my < BOSS_MAP - 1;
-        float vis = expf(-d * FOG_K), shade = side ? 0.76f : 1.0f;
+        /* 벽면의 좌표: 광선이 +쪽으로 가다 닿았으면 그 칸의 앞면(mx), -쪽이면 뒷면(mx + 1) */
+        hit_t h = { at, UNIT / d, px, py, mx, my, side, side == 0 ? (sx > 0 ? mx : mx + 1) : (sy > 0 ? my : my + 1) };
+        float along_u = (float)(side == 0 ? my : mx) + at;          /* 벽을 따라 잰 자리(칸) */
+        float vis = expf(-d * FOG_K), shade = (side ? 0.72f : 1.0f) * lamp(x);
         for (int y = y0; y < y1; y++) {
             float v = clamp01(((float)y + 0.5f - yt) / (yb - yt));
             float cov = minf(minf((float)(y + 1) - yt, yb - (float)y), 1.0f);     /* 위아래 끝의 픽셀은 덮인 만큼만 */
-            col_t c = pillar ? plank(at, v, mx * 31 + my * 17 + side, ppu) : stone(at, v, mx, my, side, ppu);
+            col_t c = pillar ? plank(&h, v, along_u) : stone(&h, v, along_u);
             px_mix(im, x, y, cmix(FOG, cmul(c, shade), vis), cov);
         }
     }
@@ -390,6 +468,21 @@ static void shadow(image_t *im, const thing_t *t, float cx, float fy, float rx, 
     }
 }
 
+typedef struct { image_t *im; float depth, cx, cy, half; int face, turn; const fly_look_t *look; int x0, x1, y0; } fly_job_t;
+
+static void fly_rows(int from, int to, void *arg)
+{
+    const fly_job_t *j = arg;
+    for (int y = j->y0 + from; y < j->y0 + to; y++) {
+        float v = ((float)y + 0.5f - j->cy) / j->half;
+        for (int x = j->x0; x < j->x1; x++) {
+            if (j->depth >= zbuf[x]) continue;
+            acc_t o = fly_point(((float)x + 0.5f - j->cx) / j->half, v, j->half, j->face, j->turn, j->look);
+            px_over(j->im, x, y, &o);
+        }
+    }
+}
+
 static void draw_fly(image_t *im, const boss_snap_t *b, const boss_view_t *v, const thing_t *t, float eye_x, float eye_y)
 {
     float scale = UNIT / t->depth, half = maxf(0.6f * scale, 2.0f);
@@ -404,20 +497,14 @@ static void draw_fly(image_t *im, const boss_snap_t *b, const boss_view_t *v, co
     fly_look_t look = { .stun = b->fly.stun > 0, .air = b->fly.air > 0, .tick = b->tick,
                         .charge = (b->fly.windup || b->fly.charging) ? 0.55f + 0.45f * sinf((float)b->tick * 1.6f) : 0.0f,
                         .flash = v->hit_ms >= 0 && v->hit_ms < 160 ? 0.7f * (1.0f - (float)v->hit_ms / 160.0f) : 0.0f };
-    int x0 = (int)floorf(cx - half * 1.05f), x1 = (int)ceilf(cx + half * 1.05f);
-    int y0 = (int)floorf(cy - half * 1.05f), y1 = (int)ceilf(cy + half * 1.05f);
-    if (x0 < 0) x0 = 0;
-    if (x1 > VW) x1 = VW;
-    if (y0 < VY) y0 = VY;
+    fly_job_t job = { im, t->depth, cx, cy, half, face, turn, &look,
+                      (int)floorf(cx - half * 1.05f), (int)ceilf(cx + half * 1.05f), (int)floorf(cy - half * 1.05f) };
+    int y1 = (int)ceilf(cy + half * 1.05f);
+    if (job.x0 < 0) job.x0 = 0;
+    if (job.x1 > VW) job.x1 = VW;
+    if (job.y0 < VY) job.y0 = VY;
     if (y1 > VY + VH) y1 = VY + VH;
-    for (int x = x0; x < x1; x++) {
-        if (t->depth >= zbuf[x]) continue;
-        float u = ((float)x + 0.5f - cx) / half;
-        for (int y = y0; y < y1; y++) {
-            acc_t o = fly_point(u, ((float)y + 0.5f - cy) / half, half, face, turn, &look);
-            px_over(im, x, y, &o);
-        }
-    }
+    par_for(y1 - job.y0, 8, fly_rows, &job);
 }
 
 /* 다른 참가자: 색 옷을 입은 둥근 기둥에 머리. 쓰러졌으면 바닥에 납작하게 */
@@ -756,11 +843,15 @@ static void draw_hud(image_t *im, const boss_snap_t *b, const boss_view_t *v, in
     /* 알림: 내가 맞았다(가장자리가 붉어진다), 돌진이 나를 겨눈다, 날갯짓, 끈끈이에 붙었다 */
     if (v->hurt_ms >= 0 && v->hurt_ms < 300) {
         float a = 0.55f * (1.0f - (float)v->hurt_ms / 300.0f), t = 26.0f * U;
-        for (int y = VY; y < VY + VH; y++)
+        int band = (int)t;
+        for (int y = VY; y < VY + VH; y++) {
+            int inner = y - VY >= band && VY + VH - 1 - y >= band;       /* 가운데 줄들은 양 끝만 칠한다 */
             for (int x = 0; x < VW; x++) {
+                if (inner && x == band) x = VW - band;
                 float e = minf(minf((float)x, (float)(VW - 1 - x)), minf((float)(y - VY), (float)(VY + VH - 1 - y)));
                 if (e < t) px_mix(im, x, y, (col_t){ 230, 40, 40 }, a * (1.0f - e / t));
             }
+        }
     }
     const char *note = NULL;
     rgb_t note_col = hd_rgb(245, 190, 60);
@@ -782,7 +873,7 @@ static void draw_hud(image_t *im, const boss_snap_t *b, const boss_view_t *v, in
 void boss_view_draw_hd(image_t *im, const boss_snap_t *b, const boss_view_t *v)
 {
     int eye = -1;
-    if (!im || im->w < SCREEN_W || im->w > SCREEN_W * PRESENT_MAX_SCALE) return;
+    if (!im || im->w < SCREEN_W || im->w > SCREEN_W * HD_MAX_SCALE) return;
     if (!have_map) load_map();
     U = (float)im->w / 480.0f;
     VW = im->w;
@@ -804,8 +895,9 @@ void boss_view_draw_hd(image_t *im, const boss_snap_t *b, const boss_view_t *v)
         /* 내 눈이면 마우스로 돌린 방향을 쓴다. 서버가 알려 준 방향은 한두 틱 늦다 */
         eye_ang = (float)(eye == v->me && v->look_on ? v->look_ang : b->p[eye].ang) * TWO_PI / 65536.0f;
         float dx = cosf(eye_ang), dy = sinf(eye_ang);
-        draw_ground(im, px, py, dx, dy);
-        draw_walls(im, px, py, dx, dy);
+        view_job_t job = { im, px, py, dx, dy };
+        par_for(VH, 8, ground_rows, &job);
+        par_for(VW, 16, wall_columns, &job);
         draw_things(im, b, v, eye, px, py, dx, dy);
     } else {
         hd_fill(im, hd_rgb(14, 16, 28));                 /* 볼 사람이 없다 */

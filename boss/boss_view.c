@@ -359,6 +359,7 @@ static int draw_brain_box(canvas_t *c, const boss_snap_t *b, const boss_view_t *
  * 아래로 내려오는 꼬리). boss/는 core/를 쓰지 않으므로 여기서 따로 그린다 */
 static void speech_box(canvas_t *c, int x, int y, int w, int h, int tail_x)
 {
+    if (ui_capture_note(c, UI_HD_BUBBLE, x, y, w, h, tail_x, NULL)) return;     /* 픽셀 그림으로 보낼 때는 다시 그린다 */
     ui_rect(c, x + 1, y, w - 2, h, C_BLACK);
     ui_rect(c, x, y + 1, w, h - 2, C_BLACK);
     ui_line(c, x + 2, y, x + w - 3, y, C_WHITE);
