@@ -3,30 +3,48 @@
  * 벽: 세로줄마다 광선의 방향을 정하고, 격자의 칸 경계를 하나씩 건너가며 처음 만나는 벽을 찾는다.
  *     벽까지의 거리는 눈에서 화면에 수직으로 잰다(비스듬히 재면 벽이 둥글게 휜다). 줄의 높이는 거리에 반비례한다.
  *     세로줄마다 그 거리를 적어 두고(zbuf), 뒤에 그리는 것들이 벽에 가려지는지 판단하는 데 쓴다.
- * 초파리와 참가자: 눈을 기준으로 한 좌표로 옮겨 화면의 가로 위치와 크기를 정하고, 먼 것부터 그린다. */
+ * 초파리와 참가자: 눈을 기준으로 한 좌표로 옮겨 화면의 가로 위치와 크기를 정하고, 먼 것부터 그린다.
+ *
+ * 그리는 면은 둘이다.
+ *   3D(벽, 바닥, 초파리, 참가자)는 받은 화면의 픽셀 그대로 그린다. 화면이 클수록(배율이 높을수록) 촘촘하다.
+ *   그 위에 얹는 것(상태 줄, 글자, 지도, 뇌 표시, 무기)은 "얹는 면"에 그린다. 얹는 면의 픽셀 하나는 화면의
+ *   hud x hud 픽셀이다(배율 3 이상이면 2, 아니면 1). 글자는 늘 얹는 면의 픽셀로 그리므로, 화면이 커지면 글자와
+ *   상태 줄이 화면에 비해 작아지고 3D 화면이 넓어진다.
+ * 얹는 면의 크기는 240x134(배율 1)부터 720x402(배율 6)까지 달라진다. 그래서 자리는 모두 가장자리에서 재고,
+ * 그림(지도, 뇌 표시, 무기)은 면이 넓으면 2배로 그린다(BIG). */
 #include "boss/boss_view.h"
+#include "brain.h"
 #include "ui/ui_internal.h"
 
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
 
-#define VY1     14                   /* 3D 화면의 위쪽 끝(배율 1일 때) */
-#define VH1     104                  /* 3D 화면의 높이(배율 1일 때) */
-#define PLANE   0.66f                /* 시야의 넓이(약 66도) */
-#define TWO_PI  6.2831853f
+#define BAR_TOP     14               /* 위 상태 줄의 높이(얹는 면의 픽셀) */
+#define BAR_BOT     16               /* 아래 상태 줄의 높이 */
+#define PLANE       0.66f            /* 시야의 넓이(약 66도) */
+#define TWO_PI      6.2831853f
+#define UNIT_PER_W  (104.0f / 240.0f)    /* 거리 1에 있는 벽의 높이 = 화면 너비 x 이 값. 배율 1에서 104픽셀이다 */
+#define SHADE_STEP  1.6f             /* 이만큼 멀어질 때마다 한 단계 어두워진다(칸) */
 
 static uint8_t wall[BOSS_MAP][BOSS_MAP];
 static int     have_map;
 static float   zbuf[SCREEN_W * PRESENT_MAX_SCALE];
-/* 지금 그리는 3D 화면의 위쪽 끝, 너비, 높이(픽셀). 배율 1이면 14, 240, 104이고 set_view로 바꾼다 */
-static int     VY = VY1, VW = SCREEN_W, VH = VH1;
+/* 지금 그리는 면: 크기(CW x CH), 그 안의 3D 화면 자리(위쪽 끝 VY, 너비 VW, 높이 VH), 거리 1에 있는 벽의 높이(UNIT),
+ * 그림을 몇 배로 그리는가(BIG). set_view로 바꾼다 */
+static int     CW = SCREEN_W, CH = SCREEN_H, VY = BAR_TOP, VW = SCREEN_W, VH = SCREEN_H - BAR_TOP - BAR_BOT, BIG = 1;
+static float   UNIT = SCREEN_W * UNIT_PER_W;
 
-static void set_view(int scale)
+/* w x h인 면에 그린다. bar는 상태 줄을 그 면의 픽셀로 몇 배로 치는가(3D를 그릴 때는 hud, 얹는 면에서는 1) */
+static void set_view(int w, int h, int bar)
 {
-    VY = VY1 * scale;
-    VW = SCREEN_W * scale;
-    VH = VH1 * scale;
+    CW = w;
+    CH = h;
+    VY = BAR_TOP * bar;
+    VW = w;
+    VH = h - (BAR_TOP + BAR_BOT) * bar;
+    UNIT = (float)w * UNIT_PER_W;
+    BIG = w / bar >= 440 ? 2 : 1;
 }
 static const color_t pcol[BOSS_PLAYERS] = { C_CYAN, C_GREEN, C_PINK };
 
@@ -52,21 +70,34 @@ static void px_view(canvas_t *c, int x, int y, color_t col)
     if (x >= 0 && x < VW && y >= VY && y < VY + VH) ui_px(c, x, y, col);
 }
 
+static float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
+
 /* ---- 벽 ---------------------------------------------------------------------------- */
+/* 거리에 따른 밝기 단계(0이 가장 밝다). 단계가 n개다 */
+static int shade_of(float d, int n)
+{
+    int k = (int)(d / SHADE_STEP);
+    return k < 0 ? 0 : (k >= n ? n - 1 : k);
+}
+
 static color_t wall_color(int pillar, int side, float d, int seam)
 {
-    static const color_t outer[2][3]  = { { C_GRAY3, C_GRAY2, C_GRAY2 }, { C_GRAY2, C_GRAY1, C_GRAY1 } };
-    static const color_t column[2][3] = { { CX_TAN, CX_CLAY, C_BROWN }, { CX_CLAY, C_BROWN, CX_MAROON } };
-    int far = d < 3.5f ? 0 : (d < 8.0f ? 1 : 2);
-    if (seam && far < 2) far++;                      /* 칸의 이음매는 한 단계 어둡게 */
-    return pillar ? column[side][far] : outer[side][far];
+    int k = shade_of(d, CX_SHADES) + side + (seam ? 1 : 0);      /* 옆면과 칸의 이음매는 한 단계 어둡게 */
+    if (k >= CX_SHADES) k = CX_SHADES - 1;
+    return (color_t)((pillar ? CX_PILL0 : CX_WALL0) + k);
 }
 
 static void draw_walls(canvas_t *c, float px, float py, float dx, float dy)
 {
     float plx = -dy * PLANE, ply = dx * PLANE;
-    ui_rect(c, 0, VY, VW, VH / 2, C_BG);                         /* 천장 */
-    ui_rect(c, 0, VY + VH / 2, VW, VH - VH / 2, CX_SLATE);       /* 바닥 */
+    /* 천장과 바닥은 화면의 줄마다 색이 정해진다(돌거나 걸어도 바뀌지 않는다). 지평선에 가까운 줄일수록 먼 곳이라
+     * 어둡다. 지평선에서 r픽셀 떨어진 줄은 UNIT / 2 / r 만큼 먼 곳이다(눈높이가 벽 높이의 절반이다) */
+    int mid = VY + VH / 2;
+    for (int y = VY; y < VY + VH; y++) {
+        float d = UNIT * 0.5f / (float)(y < mid ? mid - y : y - mid + 1);
+        if (y < mid) ui_rect(c, 0, y, VW, 1, (color_t)(CX_CEIL0 + shade_of(d * 1.3f, CX_CEILS)));
+        else         ui_rect(c, 0, y, VW, 1, (color_t)(CX_FLOOR0 + shade_of(d, CX_FLOORS)));
+    }
     for (int x = 0; x < VW; x++) {
         float cam = 2.0f * (float)x / (float)VW - 1.0f;
         float rx = dx + plx * cam, ry = dy + ply * cam;
@@ -85,7 +116,7 @@ static void draw_walls(canvas_t *c, float px, float py, float dx, float dy)
         zbuf[x] = d;
         float at = side == 0 ? py + d * ry : px + d * rx;        /* 벽의 어디에 닿았는가(이음매를 긋는 데 쓴다) */
         at -= floorf(at);
-        int h = (int)((float)VH / d), y0 = VY + VH / 2 - h / 2, y1 = y0 + h;
+        int h = (int)(UNIT / d), y0 = mid - h / 2, y1 = y0 + h;
         if (y0 < VY) y0 = VY;
         if (y1 > VY + VH) y1 = VY + VH;
         int pillar = mx > 0 && my > 0 && mx < BOSS_MAP - 1 && my < BOSS_MAP - 1;
@@ -135,13 +166,14 @@ static color_t fly_pixel(float u, float v, int face, int turn, color_t body, int
 
 static void draw_fly(canvas_t *c, const boss_snap_t *b, const thing_t *t, float eye_x, float eye_y)
 {
-    float scale = (float)VH / t->depth;                           /* 한 칸이 화면에서 몇 픽셀인가 */
+    float scale = UNIT / t->depth;                                /* 한 칸이 화면에서 몇 픽셀인가 */
     int half = (int)(0.6f * scale), cx = (int)((float)VW / 2.0f * (1.0f + t->side / t->depth));
     int floor_y = VY + VH / 2 + (int)(0.5f * scale), cy = floor_y - (int)(0.55f * scale);
     if (half < 2) half = 2;
     if (b->fly.air) {                                             /* 떠 있다: 바닥에 그림자를 남기고 위로 올린다 */
+        int thick = (int)(UNIT / 52.0f) > 1 ? (int)(UNIT / 52.0f) : 1;
         for (int x = cx - half * 2 / 3; x <= cx + half * 2 / 3; x++)
-            if (x >= 0 && x < VW && t->depth < zbuf[x]) ui_rect(c, x, floor_y - 1 > VY ? floor_y - 1 : VY, 1, VH / 52, C_BLACK);
+            if (x >= 0 && x < VW && t->depth < zbuf[x]) ui_rect(c, x, floor_y - 1 > VY ? floor_y - 1 : VY, 1, thick, C_BLACK);
         cy -= (int)(0.55f * scale);
     }
     /* 초파리가 나를 보고 있는가, 등을 돌렸는가, 옆을 보는가 */
@@ -162,7 +194,7 @@ static void draw_fly(canvas_t *c, const boss_snap_t *b, const thing_t *t, float 
 
 static void draw_player(canvas_t *c, const boss_snap_t *b, const thing_t *t)
 {
-    float scale = (float)VH / t->depth;
+    float scale = UNIT / t->depth;
     int cx = (int)((float)VW / 2.0f * (1.0f + t->side / t->depth)), floor_y = VY + VH / 2 + (int)(0.5f * scale);
     int w = (int)(0.4f * scale), h = (int)(0.8f * scale), head = (int)(0.13f * scale);
     color_t col = pcol[t->idx % BOSS_PLAYERS];
@@ -178,7 +210,7 @@ static void draw_player(canvas_t *c, const boss_snap_t *b, const thing_t *t)
 
 static void draw_trap(canvas_t *c, const thing_t *t)
 {
-    float scale = (float)VH / t->depth;
+    float scale = UNIT / t->depth;
     int cx = (int)((float)VW / 2.0f * (1.0f + t->side / t->depth)), cy = VY + VH / 2 + (int)(0.1f * scale);
     int r = (int)(0.12f * scale) + 1;
     for (int x = cx - r; x <= cx + r; x++) {
@@ -215,45 +247,51 @@ static void draw_things(canvas_t *c, const boss_snap_t *b, int eye, float px, fl
     }
 }
 
-/* ---- 손에 든 무기, 작은 지도, 상태 줄 -------------------------------------------------- */
+/* ---- 손에 든 무기, 작은 지도 ---------------------------------------------------------- */
 static void draw_weapon(canvas_t *c, const boss_snap_t *b, int me)
 {
+    const int k = BIG;
     int item = b->p[me].item, used = b->p[me].cool >= 6;         /* 방금 썼다 */
-    int bx = VW / 2 + 34, by = VY + VH - (used ? 44 : 30);
+    int bx = VW / 2 + 50 * k, by = VY + VH - (used ? 44 : 30) * k;
     if (item == BOSS_SWATTER) {
-        ui_rect(c, bx + 8, by + 18, 3, 30, C_BROWN);
-        ui_rect(c, bx, by, 20, 20, C_GRAY3);
-        for (int k = 3; k < 20; k += 4) { ui_rect(c, bx + k, by, 1, 20, C_GRAY1); ui_rect(c, bx, by + k, 20, 1, C_GRAY1); }
+        ui_rect(c, bx + 8 * k, by + 18 * k, 3 * k, 30 * k, C_BROWN);
+        ui_rect(c, bx, by, 20 * k, 20 * k, C_GRAY3);
+        for (int i = 3; i < 20; i += 4) {
+            ui_rect(c, bx + i * k, by, k, 20 * k, C_GRAY1);
+            ui_rect(c, bx, by + i * k, 20 * k, k, C_GRAY1);
+        }
     } else if (item == BOSS_SPRAY) {
-        ui_rect(c, bx + 4, by + 8, 12, 30, C_CYAN);
-        ui_rect(c, bx + 7, by + 2, 6, 6, C_WHITE);
-        if (used) for (int k = 0; k < 14; k++) ui_px(c, bx + 6 - k * 3, by + 4 - k, (k & 1) ? C_WHITE : C_CYAN);
+        ui_rect(c, bx + 4 * k, by + 8 * k, 12 * k, 30 * k, C_CYAN);
+        ui_rect(c, bx + 7 * k, by + 2 * k, 6 * k, 6 * k, C_WHITE);
+        if (used) for (int i = 0; i < 14; i++) ui_rect(c, bx + (6 - i * 3) * k, by + (4 - i) * k, k, k, (i & 1) ? C_WHITE : C_CYAN);
     } else {
-        for (int y = -7; y <= 7; y++)
-            for (int x = -9; x <= 9; x++)
-                if (x * x * 49 + y * y * 81 <= 49 * 81) px_view(c, bx + 10 + x, by + 14 + y, C_ORANGE);
+        for (int y = -7 * k; y <= 7 * k; y++)
+            for (int x = -9 * k; x <= 9 * k; x++)
+                if (x * x * 49 + y * y * 81 <= 49 * 81 * k * k) px_view(c, bx + 10 * k + x, by + 14 * k + y, C_ORANGE);
     }
 }
 
-static void draw_minimap(canvas_t *c, const boss_snap_t *b, int me)
+/* 오른쪽 위의 작은 지도. my_ang은 내가 보는 방향이다(me가 0 이상일 때) */
+static void draw_minimap(canvas_t *c, const boss_snap_t *b, int me, float my_ang)
 {
-    const int cell = 2, ox = VW - BOSS_MAP * cell - 2, oy = VY + 2;
+    const int cell = 2 * BIG, dot = BIG, ox = VW - BOSS_MAP * cell - 2, oy = VY + 2;
     ui_rect(c, ox - 1, oy - 1, BOSS_MAP * cell + 2, BOSS_MAP * cell + 2, C_BLACK);
     for (int y = 0; y < BOSS_MAP; y++)
         for (int x = 0; x < BOSS_MAP; x++)
             if (wall[y][x]) ui_rect(c, ox + x * cell, oy + y * cell, cell, cell, C_GRAY2);
-    ui_rect(c, ox + b->fly.x * cell / BOSS_FIX - 1, oy + b->fly.y * cell / BOSS_FIX - 1, 3, 3,
+    ui_rect(c, ox + b->fly.x * cell / BOSS_FIX - dot, oy + b->fly.y * cell / BOSS_FIX - dot, 3 * dot, 3 * dot,
             b->fly.stun ? C_ORANGE : (b->fly.air ? C_YELLOW : C_RED));
     for (int i = 0; i < b->n_players && i < BOSS_PLAYERS; i++) {
         int x = ox + b->p[i].x * cell / BOSS_FIX, y = oy + b->p[i].y * cell / BOSS_FIX;
-        float a = (float)b->p[i].dir * TWO_PI / BOSS_DIRS;
+        float a = i == me ? my_ang : (float)b->p[i].ang * TWO_PI / 65536.0f;
         if (!b->p[i].alive) continue;
-        ui_rect(c, x - 1, y - 1, 2, 2, i == me ? C_WHITE : pcol[i]);
-        ui_px(c, x + (int)(cosf(a) * 3.0f), y + (int)(sinf(a) * 3.0f), i == me ? C_WHITE : pcol[i]);
+        ui_rect(c, x - dot, y - dot, 2 * dot, 2 * dot, i == me ? C_WHITE : pcol[i]);
+        ui_rect(c, x + (int)(cosf(a) * 3.0f * (float)dot), y + (int)(sinf(a) * 3.0f * (float)dot), dot, dot,
+                i == me ? C_WHITE : pcol[i]);
     }
 }
 
-/* ---- 키 안내 ---------------------------------------------------------------------- */
+/* ---- 글자 ------------------------------------------------------------------------- */
 /* 글자열 하나를 한글 줄의 높이에 맞춰 놓는다. 영문만 있는 조각은 한글이 섞인 조각 안의 영문과 같은 높이로
  * 내려서 놓는다. 그린 폭을 돌려준다 */
 static int put_text(canvas_t *c, int x, int y, const char *s, color_t col)
@@ -264,15 +302,59 @@ static int put_text(canvas_t *c, int x, int y, const char *s, color_t col)
 
 typedef struct { const char *key, *what; } key_hint_t;
 
-/* 키는 노랗게, 설명은 흰색으로 한 줄에 이어 놓는다. key가 NULL인 항목에서 끝난다 */
-static void put_hints(canvas_t *c, int x, int y, const key_hint_t *h)
+/* 키는 노랗게, 설명은 흰색으로 한 줄에 이어 놓는다. key가 NULL인 항목에서 끝난다. gap은 항목 사이의 간격이고,
+ * hi번째 항목(0부터, 없으면 -1)의 설명은 켜져 있다는 뜻으로 하늘색으로 그린다 */
+static void put_hints(canvas_t *c, int x, int y, const key_hint_t *h, int gap, int hi)
 {
-    for (; h->key; h++) {
+    for (int i = 0; h->key; h++, i++) {
         x += put_text(c, x, y, h->key, C_YELLOW) + 4;
-        x += put_text(c, x, y, h->what, C_TEXT) + 10;
+        x += put_text(c, x, y, h->what, i == hi ? C_CYAN : C_TEXT) + gap;
     }
 }
 
+/* ---- 초파리 뇌 표시 ------------------------------------------------------------------ */
+/* 이름과 막대 하나. 값(0~1)만큼 차고, mark가 0보다 크면 그 자리에 세로줄(기준)을 긋는다 */
+static void gauge(canvas_t *c, int x, int y, int w, const char *label, float v, float mark, color_t col)
+{
+    int lw = put_text(c, x, y, label, C_GRAY3) + 4, bw = w - lw;
+    if (bw < 8) return;
+    ui_rect(c, x + lw, y + 3, bw, 7, C_GRAY1);
+    ui_rect(c, x + lw + 1, y + 4, (int)(clamp01(v) * (float)(bw - 2) + 0.5f), 5, col);
+    if (mark > 0.0f) ui_rect(c, x + lw + 1 + (int)(clamp01(mark) * (float)(bw - 3)), y + 2, 1, 9, C_WHITE);
+}
+
+/* 3D 화면의 왼쪽 위에 초파리 뇌를 보여 준다. 그림은 미니게임 화면의 뇌 표시와 같다(진짜 뇌이면 뇌 지도).
+ * 그 아래의 막대는 보스전에서 뇌가 하는 일을 읽는 법이다.
+ *   자극: 참가자가 다가가서 초파리의 눈에 들어가는 다가옴 자극(좌우 가운데 큰 쪽)
+ *   도약: 뇌의 달아남 반응. 세로줄(뛰는 기준)을 넘으면 초파리가 뛰어올라 달아난다
+ * 자리가 좁으면(배율 1) 이름과 자극 막대를 빼고 도약 막대만 둔다. 차지한 자리의 오른쪽 끝을 돌려준다 */
+static int draw_brain_box(canvas_t *c, const boss_snap_t *b, const boss_view_t *v)
+{
+    static canvas_t *panel;
+    static const float zero[BRAIN_GROUP_COUNT];
+    const int k = BIG, roomy = VH >= 150, x = 3, w = (BRAIN_PANEL_W + 2) * k, ph = (BRAIN_PANEL_H + 2) * k;
+    const float *stim = v->brain_stim ? v->brain_stim : zero, *rate = v->brain_rate;
+    int y = VY + 3;
+    if (!rate) return 0;
+    if (!panel) panel = canvas_new(BRAIN_PANEL_W + 2, BRAIN_PANEL_H + 2);
+    if (!panel) return 0;
+
+    ui_rect(c, x - 2, y - 2, w + 4, ph + (roomy ? 13 + 26 : 13) + 4, C_BLACK);
+    if (roomy) { put_text(c, x, y, "초파리 뇌", C_CYAN); y += 13; }
+    ui_clear(panel, C_BLACK);
+    compose_brain_panel(panel, 1, 1, stim, rate, v->brain_map, b->tick / 2);
+    canvas_blit_scaled(c, x, y, panel, k);
+    y += ph + 1;
+    if (roomy) {
+        float loom = stim[BR_LOOM_L] > stim[BR_LOOM_R] ? stim[BR_LOOM_L] : stim[BR_LOOM_R];
+        gauge(c, x, y, w, "자극", loom, 0.0f, C_CYAN);
+        y += 13;
+    }
+    gauge(c, x, y, w, "도약", rate[BR_ESCAPE], v->takeoff, v->takeoff > 0.0f && rate[BR_ESCAPE] >= v->takeoff ? C_WARN : C_CYAN);
+    return x + w + 2;
+}
+
+/* ---- 키 안내 ---------------------------------------------------------------------- */
 /* 말풍선 상자. core/scenes.c의 말풍선과 같은 모양이다(모서리를 한 픽셀 깎은 검은 상자에 흰 테두리,
  * 아래로 내려오는 꼬리). boss/는 core/를 쓰지 않으므로 여기서 따로 그린다 */
 static void speech_box(canvas_t *c, int x, int y, int w, int h, int tail_x)
@@ -294,18 +376,18 @@ static void speech_box(canvas_t *c, int x, int y, int w, int h, int tail_x)
     }
 }
 
-/* 시프봇의 키 안내. 화면 전체를 쓴다. 보스전이 시작하기 전(서버가 잠깐 기다려 준다)과 H를 눌렀을 때 띄운다.
+/* 시프봇의 키 안내. 240x134 한 장을 다 쓴다. 보스전이 시작하기 전(서버가 잠깐 기다려 준다)과 H를 눌렀을 때 띄운다.
  * 진행자 시프봇이 말풍선으로 키를 전부 알려 주고, 옆에 한마디(살금살금 다가가라)를 덧붙인다.
  * 조작이 바뀌면 여기와 draw_legend, 상태 줄의 숫자, docs/guide.md의 "보스전 조작"을 같이 고친다 */
 static void draw_guide(canvas_t *c, int intro, int age_ms)
 {
     static sprite_id_t cat = SPR_MISSING;
     static const key_hint_t rows[][4] = {
-        { { "W S", "앞뒤" }, { "A D", "돌기" }, { "SHIFT+W", "살금살금" }, { NULL, NULL } },
+        { { "W S", "앞뒤" }, { "A D", "옆걸음" }, { "마우스", "시선" }, { NULL, NULL } },
+        { { "클릭/SPACE", "무기 쓰기" }, { "C", "살금살금" }, { NULL, NULL } },
         { { "1", "파리채" }, { "2", "스프레이" }, { "3", "끈끈이" }, { NULL, NULL } },
-        { { "F", "다음 무기" }, { "SPACE", "무기 쓰기" }, { NULL, NULL } },
+        { { "F/휠", "다음 무기" }, { "H", "이 안내" }, { "Q", "나가기" }, { NULL, NULL } },
         { { "TAB", "쓰러진 뒤 다른 사람 보기" }, { NULL, NULL } },
-        { { "Q", "나가기" }, { "H", "이 안내 다시 보기" }, { NULL, NULL } },
     };
     const int n = (int)(sizeof rows / sizeof rows[0]), bx = 6, by = 18, bw = 228, bh = 10 + n * 13;
     const char *right = intro ? "곧 시작해요" : "H 닫기";
@@ -316,38 +398,41 @@ static void draw_guide(canvas_t *c, int intro, int age_ms)
     put_text(c, SCREEN_W - 8 - ui_text_w(right), 3, right, C_CYAN);
 
     speech_box(c, bx, by, bw, bh, 34);
-    for (int i = 0; i < n; i++) put_hints(c, bx + 8, by + 5 + i * 13, rows[i]);
+    for (int i = 0; i < n; i++) put_hints(c, bx + 8, by + 5 + i * 13, rows[i], 10, -1);
 
     /* 시프봇은 말풍선 아래 왼쪽에 서고, 그 옆에 가장 중요한 한마디를 둔다 */
     int cy = SCREEN_H - ui_sprite_h(cat), frames = ui_sprite_frames(cat);
     ui_sprite(c, cat, 10, cy, frames > 0 ? (age_ms < 0 ? 0 : age_ms / 300) % frames : 0);
     put_text(c, 72, by + bh + 8, "초파리는 다가가면 달아나요", C_TEXT);
-    put_text(c, 72, by + bh + 22, "SHIFT로 살금살금 다가가요", C_CYAN);
+    put_text(c, 72, by + bh + 22, "C를 누르고 살금살금 다가가요", C_CYAN);
 }
 
-/* 싸우는 동안 3D 화면의 왼쪽 아래에 늘 보이는 짧은 안내. 무기를 고르는 숫자 키는 아래 상태 줄에 적혀 있다 */
-static void draw_legend(canvas_t *c)
+/* 싸우는 동안 3D 화면의 왼쪽 아래에 늘 보이는 짧은 안내. 무기를 고르는 숫자 키는 아래 상태 줄에 적혀 있다.
+ * 살금살금이 켜져 있으면 그 글자가 하늘색이 된다. 오른쪽 끝(166)은 손에 든 무기의 왼쪽 끝보다 안쪽이어야 한다 */
+static void draw_legend(canvas_t *c, int sneak)
 {
-    static const key_hint_t a[] = { { "WASD", "이동" }, { "SPACE", "쓰기" }, { NULL, NULL } };
-    static const key_hint_t b[] = { { "SHIFT", "살금살금" }, { "H", "키 안내" }, { NULL, NULL } };
-    ui_rect(c, 0, VY + VH - 29, 150, 29, C_BLACK);
-    put_hints(c, 3, VY + VH - 27, a);
-    put_hints(c, 3, VY + VH - 14, b);
+    static const key_hint_t a[] = { { "WASD", "이동" }, { "마우스", "시선" }, { NULL, NULL } };
+    static const key_hint_t b[] = { { "클릭", "쓰기" }, { "C", "살금살금" }, { "H", "안내" }, { NULL, NULL } };
+    ui_rect(c, 0, VY + VH - 29, 166, 29, C_BLACK);
+    put_hints(c, 3, VY + VH - 27, a, 8, -1);
+    put_hints(c, 3, VY + VH - 14, b, 8, sneak ? 1 : -1);
 }
 
+/* ---- 상태 줄, 결과 ------------------------------------------------------------------- */
 static void draw_bars(canvas_t *c, const boss_snap_t *b, const boss_view_t *v, int eye)
 {
     static const char *item_name[BOSS_ITEMS] = { "파리채", "스프레이", "끈끈이" };
     char line[64];
-    ui_rect(c, 0, 0, SCREEN_W, VY, C_BLACK);
-    ui_rect(c, 0, VY + VH, SCREEN_W, SCREEN_H - VY - VH, C_BLACK);
+    int bar_w = CW - 42 - 76;                                    /* 초파리 체력 막대. 화면이 넓으면 길어진다 */
+    ui_rect(c, 0, 0, CW, VY, C_BLACK);
+    ui_rect(c, 0, VY + VH, CW, CH - VY - VH, C_BLACK);
     ui_text(c, 2, 1, "초파리", C_TEXT);
-    ui_rect(c, 42, 4, 122, 6, C_GRAY1);
-    ui_rect(c, 43, 5, b->fly.hp_max > 0 ? 120 * b->fly.hp / b->fly.hp_max : 0, 4, C_RED);
+    ui_rect(c, 42, 4, bar_w, 6, C_GRAY1);
+    ui_rect(c, 43, 5, b->fly.hp_max > 0 ? (bar_w - 2) * b->fly.hp / b->fly.hp_max : 0, 4, C_RED);
     snprintf(line, sizeof line, "%d/%d", b->fly.hp, b->fly.hp_max);
-    ui_text(c, 168, 3, line, C_TEXT);
+    ui_text(c, 42 + bar_w + 4, 3, line, C_TEXT);
     snprintf(line, sizeof line, "%d", b->ticks_left / 20);
-    ui_text(c, SCREEN_W - 2 - ui_text_w(line), 3, line, b->ticks_left < 600 ? C_WARN : C_TEXT);
+    ui_text(c, CW - 2 - ui_text_w(line), 3, line, b->ticks_left < 600 ? C_WARN : C_TEXT);
 
     int y = VY + VH + 2;
     if (eye < 0) { ui_text(c, 2, y, "모두 쓰러졌다", C_GRAY3); return; }
@@ -381,7 +466,7 @@ static void draw_outcome(canvas_t *c, const boss_snap_t *b)
     const char *sub  = win ? "살아남은 사람은 점수를 더 받아요" : "초파리가 이겼어요";
     color_t col = win ? C_GOOD : C_BAD;
     int hw = ui_text_w(head), sw = ui_text_w(sub);
-    /* 오른쪽 위의 작은 지도(세로 50픽셀)를 가리지 않게 화면의 아래쪽 절반에 놓는다 */
+    /* 위쪽의 작은 지도와 뇌 표시를 가리지 않게 화면의 아래쪽 절반에 놓는다 */
     int bw = (hw > sw ? hw : sw) + 24, bh = 44, bx = (VW - bw) / 2, by = VY + VH / 2 + 2;
     ui_rect(c, bx - 1, by - 1, bw + 2, bh + 2, col);
     ui_rect(c, bx, by, bw, bh, C_BLACK);
@@ -389,58 +474,73 @@ static void draw_outcome(canvas_t *c, const boss_snap_t *b)
     ui_text(c, (VW - sw) / 2, by + 26, sub, C_TEXT);
 }
 
-/* 3D 화면 위에 얹는 것: 손에 든 무기, 가운데 표시, 작은 지도, 짧은 키 안내, 알림, 상태 줄, 결과.
- * 시프봇의 키 안내를 띄울 때는 그것만 그린다. 배율 1의 좌표로 그린다 */
-static void draw_overlay(canvas_t *c, const boss_snap_t *b, const boss_view_t *v, int eye)
+/* 3D 화면 위에 얹는 것: 손에 든 무기, 가운데 표시, 작은 지도, 뇌 표시, 짧은 키 안내, 알림, 상태 줄, 결과.
+ * 얹는 면의 좌표로 그린다(set_view를 얹는 면의 크기로 부른 뒤). eye_ang은 지금 보는 눈의 방향이다 */
+static void draw_overlay(canvas_t *c, const boss_snap_t *b, const boss_view_t *v, int eye, float eye_ang)
 {
-    if (b->outcome == BOSS_GOING && (v->help || b->tick == 0)) {     /* tick 0: 아직 시작하지 않았다 */
-        draw_guide(c, b->tick == 0, v->age_ms);
-        return;
-    }
-    if (eye < 0) {                                   /* 볼 사람이 없다: 지도만 크게 */
+    if (eye < 0) {                                   /* 볼 사람이 없다: 지도와 뇌만 */
         ui_rect(c, 0, VY, VW, VH, C_BG);
-        draw_minimap(c, b, -1);
+        draw_minimap(c, b, -1, 0.0f);
+        draw_brain_box(c, b, v);
         draw_bars(c, b, v, eye);
         draw_outcome(c, b);
         return;
     }
     if (eye == v->me) {
+        /* 가운데 표시. 방금 맞혔으면 빨갛고, 살금살금이 켜져 있으면 하늘색이다 */
+        const int a = 3 * BIG, cx = VW / 2, cy = VY + VH / 2;
+        color_t col = v->hit_ms >= 0 && v->hit_ms < 250 ? C_RED : (b->p[eye].sneak ? C_CYAN : C_WHITE);
         draw_weapon(c, b, eye);
-        ui_rect(c, VW / 2 - 3, VY + VH / 2, 7, 1, v->hit_ms >= 0 && v->hit_ms < 250 ? C_RED : C_WHITE);   /* 가운데 표시 */
-        ui_rect(c, VW / 2, VY + VH / 2 - 3, 1, 7, v->hit_ms >= 0 && v->hit_ms < 250 ? C_RED : C_WHITE);
+        ui_rect(c, cx - a, cy, 2 * a + BIG, BIG, col);
+        ui_rect(c, cx, cy - a, BIG, 2 * a + BIG, col);
     }
-    draw_minimap(c, b, eye);
-    if (eye == v->me && b->outcome == BOSS_GOING) draw_legend(c);
+    draw_minimap(c, b, eye, eye_ang);
+    int left = draw_brain_box(c, b, v), right = VW - BOSS_MAP * 2 * BIG - 6;
+    if (eye == v->me && b->outcome == BOSS_GOING) draw_legend(c, b->p[eye].sneak);
 
     /* 알림: 내가 맞았다(테두리), 돌진이 나를 겨눈다, 날갯짓, 끈끈이에 붙었다 */
     if (v->hurt_ms >= 0 && v->hurt_ms < 300) {
-        ui_rect(c, 0, VY, VW, 3, C_RED); ui_rect(c, 0, VY + VH - 3, VW, 3, C_RED);
-        ui_rect(c, 0, VY, 3, VH, C_RED); ui_rect(c, VW - 3, VY, 3, VH, C_RED);
+        const int t = 3 * BIG;
+        ui_rect(c, 0, VY, VW, t, C_RED); ui_rect(c, 0, VY + VH - t, VW, t, C_RED);
+        ui_rect(c, 0, VY, t, VH, C_RED); ui_rect(c, VW - t, VY, t, VH, C_RED);
     }
     const char *note = NULL;
     color_t note_col = C_WARN;
     if (b->fly.windup && b->fly.target == eye) { note = "돌진이 온다!"; note_col = C_RED; }
     else if (v->wave_ms >= 0 && v->wave_ms < 500) note = "날갯짓!";
     else if (b->fly.stun) note = "붙었다! 지금이다";
-    else if (b->fly.air) note = "달아났다! SHIFT로 살금살금";
-    if (note && b->outcome == BOSS_GOING) {          /* 가운데에 놓되, 긴 글은 오른쪽 위의 작은 지도(x 189부터)를 피한다 */
+    else if (b->fly.air) note = "달아났다! C 살금살금";
+    if (note && b->outcome == BOSS_GOING) {          /* 가운데에 놓되, 왼쪽의 뇌 표시와 오른쪽의 작은 지도를 피한다 */
         int w = ui_text_w(note), x = (VW - w) / 2;
-        if (x + w > 186) x = 186 - w;
+        if (x + w > right) x = right - w;
+        if (x < left + 2) x = left + 2;
+        ui_rect(c, x - 2, VY + 3, w + 4, 14, C_BLACK);
         ui_text(c, x, VY + 4, note, note_col);
     }
     draw_bars(c, b, v, eye);
     draw_outcome(c, b);
 }
 
-/* full이 240x134이면 전처럼 그린다. 배율 N으로 키운 화면(240N x 134N)이면 벽, 초파리, 참가자는 그 크기에
- * 맞춰 촘촘하게 그리고, 무기와 지도와 글자는 240x134로 그린 것을 N배로 키워 얹는다. */
 void boss_view_draw(canvas_t *full, const boss_snap_t *b, const boss_view_t *v)
 {
-    static canvas_t *over;                           /* 배율이 2 이상일 때 얹을 것을 그리는 240x134 */
-    int eye = -1, scale = ui_width(full) / SCREEN_W;
+    static canvas_t *card;                           /* 시프봇의 키 안내를 그리는 240x134 */
+    static canvas_t *over;                           /* 얹는 면. 화면과 크기가 다를 때(hud가 2일 때)만 쓴다 */
+    int W = ui_width(full), H = ui_height(full), eye = -1, scale = W / SCREEN_W;
     if (scale < 1) scale = 1;
     if (scale > PRESENT_MAX_SCALE) scale = PRESENT_MAX_SCALE;
+    int hud = scale >= 3 ? 2 : 1;
     if (!have_map) load_map();
+
+    /* 시프봇의 키 안내는 다른 장면들처럼 240x134 한 장을 화면 크기로 키워 보여 준다. tick 0: 아직 시작하지 않았다 */
+    if (b->outcome == BOSS_GOING && (v->help || b->tick == 0)) {
+        if (scale == 1) { draw_guide(full, b->tick == 0, v->age_ms); return; }
+        if (!card) card = canvas_new(SCREEN_W, SCREEN_H);
+        if (!card) return;
+        draw_guide(card, b->tick == 0, v->age_ms);
+        canvas_blit_scaled(full, 0, 0, card, scale);
+        return;
+    }
+
     if (v->me >= 0 && v->me < b->n_players && b->p[v->me].alive) eye = v->me;
     int n = b->n_players < BOSS_PLAYERS ? b->n_players : BOSS_PLAYERS;
     for (int k = 0; eye < 0 && k < n; k++) {         /* 고른 사람부터 차례로, 살아 있는 사람을 찾는다 */
@@ -448,19 +548,27 @@ void boss_view_draw(canvas_t *full, const boss_snap_t *b, const boss_view_t *v)
         if (b->p[i].alive) eye = i;
     }
 
+    float eye_ang = 0.0f;
     ui_clear(full, C_BLACK);
     if (eye >= 0) {
         float px = (float)b->p[eye].x / BOSS_FIX, py = (float)b->p[eye].y / BOSS_FIX;
-        float a = (float)b->p[eye].dir * TWO_PI / BOSS_DIRS, dx = cosf(a), dy = sinf(a);
-        set_view(scale);
-        draw_walls(full, px, py, dx, dy);
-        draw_things(full, b, eye, px, py, dx, dy);
-        set_view(1);
+        /* 내 눈이면 마우스로 돌린 방향을 쓴다. 서버가 알려 준 방향은 한두 틱 늦다 */
+        eye_ang = (float)(eye == v->me && v->look_on ? v->look_ang : b->p[eye].ang) * TWO_PI / 65536.0f;
+        set_view(W, H, hud);
+        draw_walls(full, px, py, cosf(eye_ang), sinf(eye_ang));
+        draw_things(full, b, eye, px, py, cosf(eye_ang), sinf(eye_ang));
     }
-    if (scale == 1) { draw_overlay(full, b, v, eye); return; }
-    if (!over) over = canvas_new(SCREEN_W, SCREEN_H);
+    if (hud == 1) {
+        set_view(W, H, 1);
+        draw_overlay(full, b, v, eye, eye_ang);
+        return;
+    }
+    int ow = W / hud, oh = H / hud;
+    if (over && (ui_width(over) != ow || ui_height(over) != oh)) { canvas_free(over); over = NULL; }
+    if (!over) over = canvas_new(ow, oh);
     if (!over) return;
     ui_clear(over, C_NONE);
-    draw_overlay(over, b, v, eye);
-    canvas_blit_scaled(full, 0, 0, over, scale);
+    set_view(ow, oh, 1);
+    draw_overlay(over, b, v, eye, eye_ang);
+    canvas_blit_scaled(full, 0, 0, over, hud);
 }

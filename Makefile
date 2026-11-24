@@ -132,7 +132,7 @@ $(B)/termbench: $(B)/tools/termbench.o $(KIT_OBJ)
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 
-$(B)/server: $(B)/core/server.o $(B)/core/brain_sup.o $(B)/core/selfdir.o $(B)/core/msg.o $(KIT_OBJ)
+$(B)/server: $(B)/core/server.o $(B)/core/brain_sup.o $(B)/core/selfdir.o $(B)/core/msg.o $(B)/core/frame.o $(KIT_OBJ)
 	@mkdir -p $(@D)
 	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS)
 

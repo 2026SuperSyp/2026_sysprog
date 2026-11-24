@@ -14,12 +14,16 @@
  *   boss_snapshot(s, &snap)          보낼 것과 그릴 것
  *
  * 키 (include/stage.h의 SK_*)
- *   SK_UP / SK_DOWN      한 걸음 앞 / 뒤. 누르고 있어도 한 걸음에 step_ticks(3틱)이 걸린다
- *   SK_UP | BOSS_SLOW    살금살금 한 걸음(Shift를 누른 채 이동). 걸음이 짧다(slow_step)
- *   SK_LEFT / SK_RIGHT   한 칸(22.5도) 왼쪽 / 오른쪽으로 돈다
+ *   SK_UP / SK_DOWN      한 걸음 앞 / 뒤. 한 걸음은 step_ticks(3틱)에 걸쳐 고르게 움직이고, 누르고 있어도 그보다
+ *                        빨리 걷지 못한다
+ *   SK_LEFT / SK_RIGHT 에 BOSS_STRAFE를 더하면   시선은 그대로 두고 왼쪽 / 오른쪽으로 한 걸음(옆걸음)
+ *   이동 키에 BOSS_SLOW를 더하면                 그 걸음은 살금살금이다(걸음이 짧다, slow_step)
+ *   BOSS_SNEAK           살금살금을 켜고 끈다. 켜져 있으면 모든 걸음이 살금살금이다
+ *   SK_LEFT / SK_RIGHT   한 칸(22.5도) 왼쪽 / 오른쪽으로 돈다(마우스가 없을 때와 봇이 쓴다)
  *   SK_1, SK_2, SK_3     파리채 / 스프레이 / 끈끈이를 고른다
  *   SK_SUB               다음 무기로 바꾼다
  *   SK_ACT               고른 무기를 쓴다
+ * 시선은 boss_look으로도 정한다(마우스). 각도를 통째로 받아 다음 틱에 그쪽을 보게 한다.
  *
  * 좌표: 칸 단위. x는 오른쪽, y는 아래쪽으로 는다. 각도 0은 오른쪽(+x)이고 각도가 줄면 왼쪽으로 돈다.
  * 수치는 모두 boss_cfg_t에 있고 boss/config.ini로 바꿀 수 있다. */
@@ -34,9 +38,11 @@
 #define BOSS_PLAYERS    3
 #define BOSS_PROJ       8        /* 날아가는 끈끈이 수의 한도 */
 #define BOSS_EVENTS     16       /* 한 틱에 남기는 사건 수의 한도 */
-#define BOSS_DIRS       16       /* 참가자가 볼 수 있는 방향 수 */
+#define BOSS_DIRS       16       /* 키로 돌 때 한 바퀴를 나누는 수(한 번에 22.5도) */
 #define BOSS_FIX        256      /* 스냅숏 좌표의 고정 소수점: 1칸 = 256 */
-#define BOSS_SLOW       0x100    /* boss_input의 키에 더한다: 살금살금(Shift) */
+#define BOSS_SLOW       0x100    /* boss_input의 이동 키에 더한다: 이 걸음은 살금살금 */
+#define BOSS_STRAFE     0x200    /* boss_input의 SK_LEFT, SK_RIGHT에 더한다: 돌지 않고 옆으로 걷는다 */
+#define BOSS_SNEAK      0x400    /* boss_input의 키 하나: 살금살금을 켜고 끈다 */
 
 enum { BOSS_SWATTER = 0, BOSS_SPRAY, BOSS_TRAP, BOSS_ITEMS };
 enum { BOSS_GOING = 0, BOSS_PLAYERS_WIN, BOSS_FLY_WINS };
@@ -88,10 +94,14 @@ typedef struct {
 
 typedef struct {
     float x, y;
-    int   dir;                   /* 0 .. BOSS_DIRS-1 */
+    float ang;                   /* 보는 방향(라디안, 0 이상 2파이 미만) */
     int   hp, alive, item, ammo, traps, cool;
-    int   move, turn, use, pick; /* 다음 틱에 할 일 */
-    int   slow, move_cool;       /* 살금살금 걷는가, 다음 걸음까지 남은 틱 */
+    int   move, strafe, turn, use, pick;         /* 다음 틱에 할 일. move는 앞(1)/뒤(-1), strafe는 오른쪽(1)/왼쪽(-1) */
+    int   slow, sneak;           /* 다음 걸음이 살금살금인가(키에 BOSS_SLOW), 살금살금을 켜 두었는가(BOSS_SNEAK) */
+    int   has_look;              /* boss_look이 왔다. 다음 틱에 look을 보는 방향으로 삼는다 */
+    float look;
+    int   step_left;             /* 걷고 있는 걸음의 남은 틱. 0이어야 새 걸음을 뗀다 */
+    float step_dx, step_dy;      /* 걷고 있는 걸음이 한 틱에 가는 거리(칸) */
     float closing, approach;     /* 이번 틱에 초파리 쪽으로 움직인 거리(칸), 그것의 평균(칸/틱) */
 } boss_player_t;
 
@@ -130,8 +140,9 @@ typedef struct {
     uint16_t tick, ticks_left;
     uint8_t  outcome, n_players, n_proj, n_ev;
     struct {
-        int16_t x, y;
-        uint8_t dir, hp, alive, item, ammo, traps, cool, pad;
+        int16_t  x, y;
+        uint16_t ang;            /* 보는 방향. 0..65535가 한 바퀴 */
+        uint8_t  hp, alive, item, ammo, traps, cool, sneak, pad;
     } p[BOSS_PLAYERS];
     struct {
         int16_t  x, y;
@@ -150,6 +161,7 @@ void boss_cfg_load(boss_cfg_t *c, const char *path);    /* 기본값에서 시�
 /* lives[i]는 참가자 i의 시작 체력(1 이상)이다. 서버는 모두에게 3을 준다(미니게임에서 남은 기회와 무관하다) */
 void boss_init(boss_state_t *s, const boss_cfg_t *c, uint32_t seed, int n_players, const int lives[]);
 void boss_input(boss_state_t *s, int player, int key);
+void boss_look(boss_state_t *s, int player, float ang);     /* 보는 방향을 정한다(라디안). 다음 틱에 반영된다 */
 void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT]);
 void boss_tick(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT]);
 void boss_snapshot(const boss_state_t *s, boss_snap_t *out);

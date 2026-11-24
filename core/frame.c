@@ -25,6 +25,34 @@ static size_t get_blob(const uint8_t *in, size_t len, uint8_t *px, size_t n)
     return (size_t)l32 + 4;
 }
 
+/* 뇌 지도 하나를 붙인다. 칸마다 뉴런 유무, 발화(4배 해서 0~255), 표시를 차례로 담는다. 쓴 바이트 수, 실패하면 0. */
+static size_t put_map(uint8_t *out, size_t cap, const brain_map_t *map)
+{
+    uint8_t cells[FRAME_MAP_CELLS * 3];
+    for (int k = 0; k < FRAME_MAP_CELLS; k++) {
+        float h = map->heat[k] * 4.0f;
+        cells[k] = map->density[k] > 255 ? 255 : (uint8_t)map->density[k];
+        cells[FRAME_MAP_CELLS + k] = h > 255.0f ? 255 : (uint8_t)h;
+        cells[2 * FRAME_MAP_CELLS + k] = map->mark[k];
+    }
+    return put_blob(out, cap, cells, sizeof cells);
+}
+
+/* 뇌 지도 하나를 꺼내 fm에 담는다. 0이면 성공. */
+static int get_map(const uint8_t *in, size_t len, int w, int h, frame_map_t *fm)
+{
+    uint8_t cells[FRAME_MAP_CELLS * 3];
+    if (get_blob(in, len, cells, sizeof cells) == 0) return -1;
+    for (int k = 0; k < FRAME_MAP_CELLS; k++) {
+        fm->density[k] = cells[k];
+        fm->heat[k] = (float)cells[FRAME_MAP_CELLS + k] / 4.0f;
+        fm->mark[k] = cells[2 * FRAME_MAP_CELLS + k];
+    }
+    fm->map = (brain_map_t){ w, h, fm->density, fm->heat, fm->mark };
+    fm->has_map = 1;
+    return 0;
+}
+
 size_t frame_pack(uint8_t *out, size_t cap, frame_head_t *head, const canvas_t *fly,
                   canvas_t *const panes[], const brain_map_t *map, uint8_t *flags)
 {
@@ -42,15 +70,7 @@ size_t frame_pack(uint8_t *out, size_t cap, frame_head_t *head, const canvas_t *
 
     head->map_w = head->map_h = 0;
     if (map && map->w * map->h == FRAME_MAP_CELLS) {
-        /* 칸마다 뉴런 유무, 발화(4배 해서 0~255), 표시를 차례로 담는다 */
-        uint8_t cells[FRAME_MAP_CELLS * 3];
-        for (int k = 0; k < FRAME_MAP_CELLS; k++) {
-            float h = map->heat[k] * 4.0f;
-            cells[k] = map->density[k] > 255 ? 255 : (uint8_t)map->density[k];
-            cells[FRAME_MAP_CELLS + k] = h > 255.0f ? 255 : (uint8_t)h;
-            cells[2 * FRAME_MAP_CELLS + k] = map->mark[k];
-        }
-        if ((w = put_blob(out + o, cap - o, cells, sizeof cells)) == 0) return 0;
+        if ((w = put_map(out + o, cap - o, map)) == 0) return 0;
         o += w;
         head->map_w = (uint8_t)map->w;
         head->map_h = (uint8_t)map->h;
@@ -77,16 +97,35 @@ int frame_unpack(const uint8_t *in, size_t len, uint8_t flags, frame_head_t *hea
     }
 
     fm->has_map = 0;
-    if ((flags & FRAME_HAS_MAP) && head->map_w * head->map_h == FRAME_MAP_CELLS) {
-        uint8_t cells[FRAME_MAP_CELLS * 3];
-        if (get_blob(in + o, len - o, cells, sizeof cells) == 0) return -1;
-        for (int k = 0; k < FRAME_MAP_CELLS; k++) {
-            fm->density[k] = cells[k];
-            fm->heat[k] = (float)cells[FRAME_MAP_CELLS + k] / 4.0f;
-            fm->mark[k] = cells[2 * FRAME_MAP_CELLS + k];
-        }
-        fm->map = (brain_map_t){ head->map_w, head->map_h, fm->density, fm->heat, fm->mark };
-        fm->has_map = 1;
+    if ((flags & FRAME_HAS_MAP) && head->map_w * head->map_h == FRAME_MAP_CELLS)
+        return get_map(in + o, len - o, head->map_w, head->map_h, fm);
+    return 0;
+}
+
+size_t boss_brain_pack(uint8_t *out, size_t cap, boss_brain_msg_t *head, const brain_map_t *map, uint8_t *flags)
+{
+    size_t o = sizeof *head, w;
+    *flags = 0;
+    if (cap < o) return 0;
+    head->map_w = head->map_h = 0;
+    if (map && map->w * map->h == FRAME_MAP_CELLS) {
+        if ((w = put_map(out + o, cap - o, map)) == 0) return 0;
+        o += w;
+        head->map_w = (uint8_t)map->w;
+        head->map_h = (uint8_t)map->h;
+        *flags = FRAME_HAS_MAP;
     }
+    memcpy(out, head, sizeof *head);
+    return o;
+}
+
+int boss_brain_unpack(const uint8_t *in, size_t len, uint8_t flags, boss_brain_msg_t *head, frame_map_t *fm)
+{
+    size_t o = sizeof *head;
+    if (len < o) return -1;
+    memcpy(head, in, sizeof *head);
+    fm->has_map = 0;
+    if ((flags & FRAME_HAS_MAP) && head->map_w * head->map_h == FRAME_MAP_CELLS)
+        return get_map(in + o, len - o, head->map_w, head->map_h, fm);
     return 0;
 }

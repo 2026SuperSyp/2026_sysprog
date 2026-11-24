@@ -9,6 +9,8 @@
 #include "boss/boss.h"
 #include "ui.h"
 
+struct brain_map;                        /* brain/brain_host.h */
+
 typedef struct {
     int me;                              /* 내 참가자 번호. 관전자는 -1 */
     int watch;                           /* 내 눈으로 볼 수 없을 때(관전자, 쓰러짐) 누구의 눈으로 볼지. 쓰러진 사람이면 그다음 사람 */
@@ -16,8 +18,19 @@ typedef struct {
     int hit_ms, hurt_ms, wave_ms;        /* 내 공격이 맞은 뒤, 내가 맞은 뒤, 날갯짓 뒤로 지난 시간(ms). 없었으면 음수 */
     int help;                            /* 1이면 시프봇의 키 안내를 띄운다(H로 켜고 끈다). 시작하기 전에는 이것과 무관하게 띄운다 */
     int age_ms;                          /* 보스전 단계에 들어온 뒤 지난 시간(ms). 시프봇이 움직이는 데 쓴다 */
+    /* 내 눈의 방향. look_on이 1이면 상태에 든 내 방향 대신 look_ang(0..65535가 한 바퀴)으로 그린다.
+     * 마우스로 돌린 방향은 서버를 거쳐 돌아오기 전에 화면에 먼저 보여야 해서 클라이언트가 따로 넘긴다 */
+    int look_on;
+    uint16_t look_ang;
+    /* 초파리 뇌 표시(미니게임 화면의 것과 같은 그림). brain_rate가 NULL이면 그리지 않는다.
+     * brain_map은 진짜 뇌일 때만 있다. takeoff는 초파리가 뛰어오르는 기준(달아남 반응, 0~1)이다 */
+    const float *brain_stim, *brain_rate;
+    const struct brain_map *brain_map;
+    float takeoff;
 } boss_view_t;
 
+/* full은 240x134이거나 그것을 배율 N으로 키운 크기(240N x 134N)다. 키운 화면이면 3D는 그 크기에 맞춰
+ * 촘촘하게 그리고, 글자와 상태 줄은 화면에 비해 작게 그려서 3D 화면이 넓어진다. */
 void boss_view_draw(canvas_t *full, const boss_snap_t *b, const boss_view_t *v);
 
 #endif

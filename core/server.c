@@ -30,6 +30,7 @@
 #include "boss/boss.h"
 #include "brain/brain_host.h"
 #include "core/brain_sup.h"
+#include "core/frame.h"
 #include "core/msg.h"
 #include "core/selfdir.h"
 #include "core/toplist.h"
@@ -759,13 +760,33 @@ static void finish_boss(void)
     finish_game();
 }
 
-/* 지금의 보스전 상태를 접속한 모두에게 보낸다 */
-static void boss_send(void)
+/* 지금의 보스전 상태를 접속한 모두에게 보낸다. 상태 뒤에 이번 틱의 뇌(넣은 자극 stim, 나온 반응 rate, 진짜 뇌이면
+ * 뇌 지도)를 붙인다. 클라이언트는 그것으로 미니게임 때와 같은 뇌 표시를 보스전 화면에 그린다.
+ * 아직 틱을 돌리지 않았으면 stim과 rate가 NULL이고 뇌 값은 0으로 간다.
+ * 한 메시지에 같이 싣는 까닭: 이 메시지는 "최신 것만" 보내는 칸에 두는데(conn_post의 latest) 그 칸은 접속마다
+ * 하나라서, 따로 보내면 뒤에 맡긴 것이 앞의 것을 밀어낸다 */
+static void boss_send(const float *stim, const float *rate)
 {
+    /* 뇌 지도는 줄여 담아도 원래의 2배를 넘지 않는다 */
+    static uint8_t buf[sizeof(boss_snap_t) + sizeof(boss_brain_msg_t) + 4 + 2 * FRAME_MAP_CELLS * 3];
     boss_snap_t snap;
+    boss_brain_msg_t head;
+    uint8_t flags = 0;
     boss_snapshot(&boss, &snap);
+    memcpy(buf, &snap, sizeof snap);
+    memset(&head, 0, sizeof head);
+    for (int g = 0; stim && rate && g < BRAIN_GROUP_COUNT && g < PROTO_GROUPS; g++) {
+        float s = stim[g] < 0.0f ? 0.0f : (stim[g] > 1.0f ? 1.0f : stim[g]);
+        float r = rate[g] < 0.0f ? 0.0f : (rate[g] > 1.0f ? 1.0f : rate[g]);
+        head.stim[g] = (uint8_t)(s * 255.0f);
+        head.rate[g] = (uint8_t)(r * 255.0f);
+    }
+    float t = boss.cfg.takeoff_level < 0.0f ? 0.0f : (boss.cfg.takeoff_level > 1.0f ? 1.0f : boss.cfg.takeoff_level);
+    head.takeoff = (uint8_t)(t * 255.0f);
+    size_t len = boss_brain_pack(buf + sizeof snap, sizeof buf - sizeof snap, &head, stim ? brain_host_map() : NULL, &flags);
+    if (len == 0) flags = 0;                         /* 뇌 부분을 만들지 못했으면 상태만 보낸다 */
     for (int i = 0; i < MAX_CONN; i++)
-        if (members[i].in) conn_post(i, members[i].gen, MSG_BOSS, 0, &snap, sizeof snap, 1);
+        if (members[i].in) conn_post(i, members[i].gen, MSG_BOSS, flags, buf, (uint32_t)(sizeof snap + len), 1);
 }
 
 static void start_boss(void)
@@ -797,7 +818,7 @@ static void start_boss(void)
     /* 첫 틱을 BOSS_INTRO_MS 뒤로 미룬다. 그 전에 처음 상태(tick 0)를 보내 두면 클라이언트가 키 안내를 띄운다 */
     deadline = now_ms() + (opt.fast ? 100 : BOSS_INTRO_MS);
     send_phase();
-    boss_send();
+    boss_send(NULL, NULL);
 }
 
 static void boss_step(void)
@@ -809,7 +830,7 @@ static void boss_step(void)
     for (int g = 0; g < BRAIN_GROUP_COUNT; g++) rate[g] = brain_rate((brain_group_t)g);
     brain_host_end_tick();
     boss_tick(&boss, rate);
-    boss_send();
+    boss_send(stim, rate);
     /* 승패가 났으면 여기서 멈춘다. 방금 보낸 상태에 결과가 들어 있어서 클라이언트가 그것을 그린다.
      * 점수를 매기고 랭킹으로 넘어가는 일(finish_boss)은 BOSS_END_MS 뒤에 한다 */
     if (boss.outcome != BOSS_GOING) boss_over = 1;
@@ -972,9 +993,21 @@ static void on_input(const event_t *e)
          * 하면 스테이지가 끝내면서 보낸 결과까지 버리게 된다. 결과 없이 끝난 것인지는 읽는 쪽이 가린다 */
         (void)msg_send_once(st.to, MSG_INPUT, 0, 0, &out, sizeof out);
     } else if (phase == PH_BOSS && seats[s].pane >= 0 && ie.kind == IN_KEY) {
-        /* 보스전: Shift와 함께 누른 이동은 살금살금이다 */
-        int key = input_stage_key(&ie);
-        if (key != SK_NONE) boss_input(&boss, seats[s].pane, key | ((ie.flags & IN_F_SHIFT) ? BOSS_SLOW : 0));
+        /* 보스전의 키. A와 D는 옆걸음이고 방향키 좌우는 도는 키다(마우스가 없을 때와 봇이 쓴다).
+         * C는 살금살금을 켜고 끈다. Shift와 함께 누른 이동은 그 걸음만 살금살금이다 */
+        int key;
+        switch (ie.code) {
+        case 'a': case 'A': key = SK_LEFT | BOSS_STRAFE; break;
+        case 'd': case 'D': key = SK_RIGHT | BOSS_STRAFE; break;
+        case 'c': case 'C': key = BOSS_SNEAK; break;
+        default:            key = input_stage_key(&ie); break;
+        }
+        if (key == SK_NONE) return;
+        if ((ie.flags & IN_F_SHIFT) && key != BOSS_SNEAK) key |= BOSS_SLOW;
+        boss_input(&boss, seats[s].pane, key);
+    } else if (phase == PH_BOSS && seats[s].pane >= 0 && ie.kind == INPUT_LOOK) {
+        /* 보스전의 시선. 클라이언트가 마우스로 정한 방향을 통째로 알려 온다 */
+        boss_look(&boss, seats[s].pane, (float)ie.code * (6.2831853f / 65536.0f));
     }
 }
 

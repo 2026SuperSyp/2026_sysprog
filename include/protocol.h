@@ -11,7 +11,7 @@
 
 #include <stdint.h>
 
-#define PROTO_VERSION    1
+#define PROTO_VERSION    2             /* 2: 보스전의 시선 입력(INPUT_LOOK), MSG_BOSS에 붙는 뇌 표시, boss_snap_t의 각도 */
 #define PROTO_PORT       4620
 #define PROTO_MAX_LEN    (256u * 1024u)
 #define PROTO_NAME_LEN   16
@@ -37,7 +37,8 @@ enum {
     MSG_PING,
     MSG_PONG,
     MSG_TOP,                           /* S->C  top_msg_t. 접속한 직후와 한 판이 끝났을 때 */
-    MSG_BOSS,                          /* S->C  boss_snap_t(boss/boss.h). 보스전 동안 틱마다. 최신 것만 있으면 된다 */
+    MSG_BOSS,                          /* S->C  boss_snap_t(boss/boss.h), boss_brain_msg_t, 뇌 지도(flags에 FRAME_HAS_MAP이
+                                          있을 때)를 차례로 붙인 것. 보스전 동안 틱마다. 최신 것만 있으면 된다 */
     /* 서버 <-> 스테이지 */
     MSG_INFO = 32,                     /* 스테이지->S  info_msg_t. 뜨자마자 한 번 */
     MSG_TICK,                          /* S->스테이지  내용 없음. 한 틱을 진행하라 */
@@ -94,9 +95,12 @@ typedef struct {
 
 /* 입력. 클라이언트는 해석만 한 원시 사건을 올린다.
  *   C->S        kind, flags, code는 ui의 in_event_t와 같다. 마우스의 x, y는 전체 화면(240x134) 픽셀이다.
+ *               보스전에서는 kind가 INPUT_LOOK인 것도 올린다: code가 내가 보는 방향(0..65535가 한 바퀴)이다.
+ *               마우스로 도는 양은 클라이언트가 계산하고 서버에는 결과인 방향만 알린다.
  *   S->스테이지  player가 채워진다. 키는 code가 SK_*이고, 마우스의 x, y는 칸 기준 좌표다. */
+#define INPUT_LOOK 3
 typedef struct {
-    uint8_t  kind;                     /* 1: 키, 2: 마우스 */
+    uint8_t  kind;                     /* 1: 키, 2: 마우스, 3: 보스전의 시선(INPUT_LOOK) */
     uint8_t  flags;                    /* 마우스: 1이면 왼쪽 버튼이 눌려 있다 */
     uint16_t code;
     int16_t  x, y;
@@ -119,6 +123,17 @@ typedef struct {
     uint8_t  stim[PROTO_GROUPS];       /* 뇌 집단별 자극(0~255) */
     uint8_t  rate[PROTO_GROUPS];       /* 뇌 집단별 반응(0~255) */
 } frame_head_t;
+
+/* 보스전의 뇌 표시. 미니게임의 화면 메시지에 실리는 뇌 값과 같은 것이다. 보스전에서는 MSG_BOSS의 상태 뒤에 붙는다
+ * (따로 보내면 "최신 것만" 보내는 칸에서 상태와 서로 밀어낸다).
+ * flags에 FRAME_HAS_MAP이 있으면 뒤에 뇌 지도가 온다(화면 메시지의 뇌 지도와 같은 모양). */
+typedef struct {
+    uint8_t  stim[PROTO_GROUPS];       /* 뇌 집단별 자극(0~255) */
+    uint8_t  rate[PROTO_GROUPS];       /* 뇌 집단별 반응(0~255) */
+    uint8_t  map_w, map_h;
+    uint8_t  takeoff;                  /* 초파리가 뛰어오르는 기준. 달아남 반응이 이 값 이상이면 뛴다(0~255) */
+    uint8_t  pad;
+} boss_brain_msg_t;
 
 typedef struct {
     uint16_t n_ticks;

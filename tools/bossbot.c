@@ -31,7 +31,8 @@ static int face_fly(const boss_state_t *s, int i)
 {
     float a = atan2f(s->fly.y - s->p[i].y, s->fly.x - s->p[i].x);
     int want = ((int)lroundf(a / (2.0f * 3.14159265f / BOSS_DIRS)) % BOSS_DIRS + BOSS_DIRS) % BOSS_DIRS;
-    int diff = (want - s->p[i].dir + BOSS_DIRS) % BOSS_DIRS;
+    int cur = (int)lroundf(s->p[i].ang / (2.0f * 3.14159265f / BOSS_DIRS)) % BOSS_DIRS;   /* 봇은 키로만 돌아서 늘 22.5도 단위다 */
+    int diff = (want - cur + BOSS_DIRS) % BOSS_DIRS;
     if (diff == 0) return 0;
     return diff <= BOSS_DIRS / 2 ? SK_RIGHT : SK_LEFT;
 }

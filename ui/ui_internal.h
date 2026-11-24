@@ -26,6 +26,14 @@ void canvas_blit_scaled(canvas_t *dst, int dx, int dy, const canvas_t *src, int 
 #define CX_MAROON ((color_t)26)   /* 어두운 빨강 */
 #define CX_TEAL   ((color_t)27)   /* 어두운 청록 */
 #define CX_SLATE  ((color_t)28)   /* 어두운 남회색 */
+/* 보스전의 3D 화면에 쓰는 단계 색. 0이 가장 밝고(가깝고) 번호가 클수록 어둡다(멀다) */
+#define CX_SHADES 7
+#define CX_WALL0  ((color_t)29)   /* 바깥 벽: 29..35 */
+#define CX_PILL0  ((color_t)36)   /* 기둥: 36..42 */
+#define CX_FLOORS 5
+#define CX_FLOOR0 ((color_t)43)   /* 바닥: 43..47. 0이 발밑이다 */
+#define CX_CEILS  4
+#define CX_CEIL0  ((color_t)48)   /* 천장: 48..51. 0이 머리 위다 */
 void ui_palette_rgb(color_t c, uint8_t rgb[3]);
 
 /* ---- 글자 (font.c, utf8.c) ---- */
@@ -70,13 +78,20 @@ void compose_stage_frame(canvas_t *full, const canvas_t *fly, canvas_t *const pa
                          int n_players, int me, const hud_t *hud);
 /* 전체 화면의 좌표가 me의 칸 안이면 1을 돌려주고 칸 기준 좌표를 채운다. */
 int  compose_my_pane_xy(int screen_x, int screen_y, int *pane_x, int *pane_y);
+/* 초파리 뇌 표시 하나를 (x, y)부터 BRAIN_PANEL_W x BRAIN_PANEL_H 크기로 그린다(테두리는 그 바깥 한 픽셀).
+ * 미니게임 화면의 오른쪽 아래에 놓는 것과 같은 그림이고, 보스전 화면도 이것을 쓴다.
+ * map이 있으면 진짜 뇌의 지도를, 없으면 점 격자 그림을 그린다. stim, rate는 없으면 NULL이다. */
+#define BRAIN_PANEL_W (PANE_W / 2)
+#define BRAIN_PANEL_H (PANE_H / 2)
+void compose_brain_panel(canvas_t *c, int x, int y, const float *stim, const float *rate,
+                         const struct brain_map *map, int frame);
 
 /* ---- 표시 (present.c) ---- */
 typedef struct present_state present_state_t;
 present_state_t *present_new(void);
 void present_free(present_state_t *st);
 void present_invalidate(present_state_t *st);    /* 다음 번에 전부 다시 그리게 한다 */
-#define PRESENT_MAX_SCALE 4      /* 화면을 키우는 배율의 한도. 배율 N의 화면은 240N x 134N 픽셀, 터미널 240N칸 67N줄이다 */
+#define PRESENT_MAX_SCALE 6      /* 화면을 키우는 배율의 한도. 배율 N의 화면은 240N x 134N 픽셀, 터미널 240N칸 67N줄이다 */
 /* 전체 화면을 터미널에 보낼 글자열로 바꾼다. 지난번과 달라진 칸만 담는다.
  * full은 240x134이거나 그것을 배율 N으로 키운 크기다. 터미널이 그보다 작으면(배율 1이면 240x67칸)
  * 0을 돌려준다. 돌려주는 값은 out에 쓴 바이트 수다. */
@@ -96,7 +111,10 @@ int  term_size(int *cols, int *rows);
 /* ---- 입력 해석 (input.c) ---- */
 enum { IN_KEY = 1, IN_POINTER = 2 };
 enum { IN_F_PRESSED = 1,         /* 포인터: 왼쪽 버튼이 눌려 있다 */
-       IN_F_SHIFT = 2 };         /* 키: Shift와 함께 눌렀다(대문자, Shift+방향키). 보스전에서 살금살금 걷는 데 쓴다 */
+       IN_F_SHIFT = 2,           /* 키: Shift와 함께 눌렀다(대문자, Shift+방향키). 보스전에서 그 걸음을 살금살금 걷는 데 쓴다 */
+       IN_F_CLICK = 4,           /* 포인터: 왼쪽 버튼을 방금 눌렀다(누른 채 움직이는 동안에는 없다) */
+       IN_F_WHEEL_UP = 8,        /* 포인터: 휠을 위로 굴렸다. 버튼이 눌린 것으로 치지 않는다 */
+       IN_F_WHEEL_DOWN = 16 };
 enum { IN_K_UP = 0x101, IN_K_DOWN, IN_K_RIGHT, IN_K_LEFT };   /* 그 밖의 키는 글자 코드 그대로 */
 typedef struct {
     uint8_t  kind;               /* IN_KEY 또는 IN_POINTER */

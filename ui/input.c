@@ -21,8 +21,14 @@ static int parse_mouse(const uint8_t *buf, size_t n, in_event_t *ev, size_t *use
             ev->kind = IN_POINTER;
             ev->x = (int16_t)(v[1] - 1);
             ev->y = (int16_t)(v[2] - 1);
-            /* 아래 두 비트가 0이면 왼쪽 버튼이다. 'M'은 눌림 또는 누른 채 움직임, 'm'은 뗌 */
-            ev->flags = ((v[0] & 3) == 0 && ch == 'M') ? IN_F_PRESSED : 0;
+            /* 버튼 값: 아래 두 비트가 버튼(0이 왼쪽), 32가 누른 채 움직임, 64가 휠(64는 위로, 65는 아래로).
+             * 'M'은 눌림 또는 누른 채 움직임, 'm'은 뗌 */
+            if (v[0] & 64) {
+                ev->flags = (v[0] & 1) ? IN_F_WHEEL_DOWN : IN_F_WHEEL_UP;
+            } else if ((v[0] & 3) == 0 && ch == 'M') {
+                ev->flags = IN_F_PRESSED;
+                if (!(v[0] & 32)) ev->flags |= IN_F_CLICK;      /* 움직임이 아니면 방금 누른 것이다 */
+            }
             return 1;
         } else {
             *used = i + 1;

@@ -1,5 +1,5 @@
 /* 보스전 계산부: 벽, 무기 셋의 거리와 피해와 대기와 탄수, 끈끈이, 돌진, 날갯짓, 끝나는 조건 셋,
- * 참가자 1~3명, 같은 입력이면 같은 결과, 쓰러진 사람의 키 */
+ * 참가자 1~3명, 같은 입력이면 같은 결과, 쓰러진 사람의 키, 옆걸음과 시선과 살금살금 켜기 */
 #include "boss/boss.h"
 #include "t.h"
 
@@ -7,6 +7,7 @@
 #include <string.h>
 
 enum { EAST = 0, SOUTH = 4, WEST = 8, NORTH = 12 };
+#define DIR_STEP (2.0f * 3.14159265f / BOSS_DIRS)     /* 키로 한 번 도는 각도 */
 
 static const float still[BRAIN_GROUP_COUNT];     /* 뇌의 반응이 모두 0: 초파리가 가만히 있다 */
 static boss_state_t S;
@@ -29,15 +30,15 @@ static void setup(const boss_cfg_t *c, int n)
 
 static void put_player(int i, float x, float y, int dir)
 {
-    S.p[i].x = x; S.p[i].y = y; S.p[i].dir = dir;
+    S.p[i].x = x; S.p[i].y = y; S.p[i].ang = (float)dir * DIR_STEP;
     S.p[i].approach = 0.0f;                                      /* 가만히 서 있던 것으로 한다 */
-    S.p[i].move_cool = 0;
+    S.p[i].step_left = 0;
 }
 
 static void put_fly(float x, float y)
 {
     S.fly.x = x; S.fly.y = y;
-    for (int i = 0; i < S.n_players; i++) put_player(i, S.p[i].x, S.p[i].y, S.p[i].dir);
+    for (int i = 0; i < S.n_players; i++) { S.p[i].approach = 0.0f; S.p[i].step_left = 0; }
 }
 
 static void ticks(int n, const float *rate) { for (int i = 0; i < n; i++) boss_tick(&S, rate); }
@@ -50,6 +51,8 @@ static int count_ev(int kind)
 }
 
 static void press(int i, int key) { boss_input(&S, i, key); boss_tick(&S, still); }
+/* 키를 한 번 누르고 그 걸음이 끝날 때까지(step_ticks) 기다린다 */
+static void walk(int i, int key) { press(i, key); ticks(S.cfg.step_ticks - 1, still); }
 
 static void test_walls(void)
 {
@@ -62,10 +65,14 @@ static void test_walls(void)
     for (int k = 0; k < 5; k++) press(0, SK_UP);
     T_CHECK(S.p[0].x <= 5.0f - c.player_radius + 1e-4f);
     put_player(0, 8.5f, 15.0f, NORTH);                            /* 빈 곳에서는 한 걸음씩 간다 */
-    press(0, SK_UP);
+    press(0, SK_UP);                                              /* 한 걸음을 step_ticks에 나눠 간다 */
+    T_CHECK(fabsf(S.p[0].y - (15.0f - c.step / (float)c.step_ticks)) < 1e-4f);
+    ticks(c.step_ticks - 1, still);
+    T_CHECK(fabsf(S.p[0].y - (15.0f - c.step)) < 1e-4f);
+    ticks(3, still);                                              /* 키가 더 오지 않으면 거기서 선다 */
     T_CHECK(fabsf(S.p[0].y - (15.0f - c.step)) < 1e-4f);
     press(0, SK_LEFT);
-    T_EQ_INT(S.p[0].dir, NORTH - 1);
+    T_CHECK(fabsf(S.p[0].ang - (float)(NORTH - 1) * DIR_STEP) < 1e-4f);
 }
 
 static void test_swatter(void)
@@ -362,7 +369,7 @@ static void test_sneak(void)
     put_fly(8.5f, 9.0f);
     S.fly.ang = 0.0f;
     put_player(0, 8.5f, 15.0f, NORTH);
-    press(0, SK_UP | BOSS_SLOW);
+    walk(0, SK_UP | BOSS_SLOW);
     T_CHECK(fabsf(S.p[0].y - (15.0f - c.slow_step)) < 1e-4f);     /* 짧은 걸음 */
     put_player(0, 8.5f, 15.0f, NORTH);
     for (int k = 0; k < c.step_ticks * 4; k++) press(0, SK_UP);   /* 틱마다 눌러도 step_ticks에 한 걸음 */
@@ -437,13 +444,64 @@ static void test_dead_input(void)
     ticks(c.charge_windup + c.charge_ticks + 2, still);
     T_EQ_INT(S.p[0].alive, 0);
     T_EQ_INT(S.outcome, BOSS_GOING);
-    float x = S.p[0].x, y = S.p[0].y;
-    int dir = S.p[0].dir, traps = S.p[0].traps;
+    float x = S.p[0].x, y = S.p[0].y, ang = S.p[0].ang;
+    int traps = S.p[0].traps;
     boss_input(&S, 0, SK_UP); boss_input(&S, 0, SK_LEFT); boss_input(&S, 0, SK_3); boss_input(&S, 0, SK_ACT);
+    boss_input(&S, 0, SK_RIGHT | BOSS_STRAFE); boss_input(&S, 0, BOSS_SNEAK);
+    boss_look(&S, 0, 1.0f);
     boss_tick(&S, still);
     T_CHECK(S.p[0].x == x && S.p[0].y == y);
-    T_EQ_INT(S.p[0].dir, dir);
+    T_CHECK(S.p[0].ang == ang);
+    T_EQ_INT(S.p[0].sneak, 0);
     T_EQ_INT(S.p[0].traps, traps);
+}
+
+/* 옆걸음, 마우스로 정하는 시선, 살금살금 켜고 끄기 */
+static void test_look_strafe(void)
+{
+    boss_cfg_t c = calm();
+    boss_snap_t snap;
+    setup(&c, 1);
+    put_fly(3.0f, 3.0f);
+    put_player(0, 8.5f, 15.0f, NORTH);
+    walk(0, SK_RIGHT | BOSS_STRAFE);                              /* 위를 보고 있으면 오른쪽은 +x다 */
+    T_CHECK(fabsf(S.p[0].x - (8.5f + c.step)) < 1e-4f && fabsf(S.p[0].y - 15.0f) < 1e-4f);
+    T_CHECK(fabsf(S.p[0].ang - (float)NORTH * DIR_STEP) < 1e-4f); /* 시선은 그대로다 */
+    walk(0, SK_LEFT | BOSS_STRAFE);
+    T_CHECK(fabsf(S.p[0].x - 8.5f) < 1e-4f);
+    boss_input(&S, 0, SK_UP);                                     /* 앞과 옆이 같이 오면 비스듬히 한 걸음 */
+    boss_input(&S, 0, SK_RIGHT | BOSS_STRAFE);
+    boss_tick(&S, still);
+    ticks(c.step_ticks - 1, still);
+    T_CHECK(fabsf(hypotf(S.p[0].x - 8.5f, S.p[0].y - 15.0f) - c.step) < 1e-4f);
+    T_CHECK(S.p[0].x > 8.5f + 0.3f && S.p[0].y < 15.0f - 0.3f);
+
+    put_player(0, 8.5f, 15.0f, NORTH);
+    boss_look(&S, 0, 0.3f);                                       /* 시선: 다음 틱에 그쪽을 본다 */
+    T_CHECK(fabsf(S.p[0].ang - (float)NORTH * DIR_STEP) < 1e-4f);
+    boss_tick(&S, still);
+    T_CHECK(fabsf(S.p[0].ang - 0.3f) < 1e-5f);
+    boss_snapshot(&S, &snap);
+    T_EQ_INT(snap.p[0].ang, (int)lroundf(0.3f / (2.0f * 3.14159265f) * 65536.0f));
+    boss_look(&S, 0, -0.5f);                                      /* 범위 밖의 각도는 한 바퀴 안으로 옮긴다 */
+    boss_tick(&S, still);
+    T_CHECK(fabsf(S.p[0].ang - (2.0f * 3.14159265f - 0.5f)) < 1e-4f);
+    boss_look(&S, 0, 0.0f);                                       /* 오른쪽(+x)을 보고 앞으로 */
+    walk(0, SK_UP);
+    T_CHECK(fabsf(S.p[0].x - (8.5f + c.step)) < 1e-4f && fabsf(S.p[0].y - 15.0f) < 1e-4f);
+
+    put_player(0, 8.5f, 15.0f, NORTH);                            /* 살금살금을 켜면 모든 걸음이 짧다 */
+    boss_input(&S, 0, BOSS_SNEAK);
+    walk(0, SK_UP);
+    T_CHECK(fabsf(S.p[0].y - (15.0f - c.slow_step)) < 1e-4f);
+    walk(0, SK_RIGHT | BOSS_STRAFE);
+    T_CHECK(fabsf(S.p[0].x - (8.5f + c.slow_step)) < 1e-4f);
+    boss_snapshot(&S, &snap);
+    T_EQ_INT(snap.p[0].sneak, 1);
+    boss_input(&S, 0, BOSS_SNEAK);                                /* 다시 누르면 꺼진다 */
+    put_player(0, 8.5f, 15.0f, NORTH);
+    walk(0, SK_UP);
+    T_CHECK(fabsf(S.p[0].y - (15.0f - c.step)) < 1e-4f);
 }
 
 int main(void)
@@ -461,6 +519,7 @@ int main(void)
     test_hurt();
     test_takeoff();
     test_sneak();
+    test_look_strafe();
     printf("  스냅숏 %zu바이트\n", sizeof(boss_snap_t));
     T_DONE();
 }

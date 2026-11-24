@@ -1,8 +1,9 @@
 /* 클라이언트. 서버에 접속해 화면을 그리고 입력을 올린다.
  *
- *   build/dev/client [--host=주소] [--port=N] [--name=이름] [--no-title] [--scale=N]
+ *   build/dev/client [--host=주소] [--port=N] [--name=이름] [--no-title] [--scale=N|auto]
  *       입장 화면(입장, 지난 랭킹 보기, 나가기)을 먼저 보여 준다. --no-title이면 바로 접속한다
- *       --scale=N(1~4)이면 화면을 N배로 키워 그린다. 터미널이 240N칸 67N줄 이상이어야 한다(글자를 더 줄인다).
+ *       --scale=N(1~6)이면 화면을 N배로 키워 그린다. 터미널이 240N칸 67N줄 이상이어야 한다(글자를 더 줄인다).
+ *       --scale=auto이면 시작할 때의 터미널 크기에 들어가는 가장 큰 배율을 고른다.
  *       보스전의 3D 화면은 그 크기에 맞춰 촘촘하게 그리고, 나머지 화면은 같은 그림을 크게만 보여 준다
  *   build/dev/client --bot [--wait=N] [...]   화면 없이 접속해 준비하고 무작위로 누른다(검사용).
  *                                             방장이면 참가자가 N명 이상일 때 시작한다
@@ -11,7 +12,11 @@
  *   입력 스레드   키와 마우스를 읽어 서버로 올린다. 소켓에 쓰는 스레드는 이것 하나다
  *   수신 스레드   서버 메시지를 읽어 상태를 바꾼다
  *   렌더(main)    상태가 바뀌면 합성해서 터미널에 쓴다
- * 세 스레드가 같이 보는 상태는 뮤텍스 하나로 지킨다. */
+ * 세 스레드가 같이 보는 상태는 뮤텍스 하나로 지킨다.
+ *
+ * 보스전의 시선은 여기서 정한다. 마우스가 가로로 움직인 만큼 내 방향(S.look_ang)을 돌려 바로 그 방향으로 그리고,
+ * 서버에는 결과인 방향만 알린다(INPUT_LOOK). 서버를 거쳐 돌아온 방향으로 그리면 한두 틱 늦어서 마우스가 무겁다.
+ * 터미널은 마우스를 가둘 수 없어서 화면 끝에서 더 못 움직이므로, 마우스가 화면 양 끝에 있는 동안은 계속 돈다. */
 #include "core/frame.h"
 #include "core/msg.h"
 #include "core/scenes.h"
@@ -42,6 +47,13 @@
 #include <unistd.h>
 
 #define OUT_CAP (1 << 20)
+#define FRAME_MIN_MS   25            /* 화면을 다시 그리는 간격의 하한(1초에 40번까지). 마우스가 움직이면 사건이 아주 자주 온다 */
+/* 보스전의 시선(각도는 65536이 한 바퀴) */
+#define LOOK_SPAN      (65536.0 * 200.0 / 360.0)     /* 마우스가 화면 너비만큼 움직이면 도는 각도: 200도 */
+#define LOOK_EDGE      0.04                          /* 마우스가 화면 양 끝의 이만큼(너비의 비율) 안에 있으면 계속 돈다 */
+#define LOOK_EDGE_RATE (65536.0 * 150.0 / 360.0)     /* 그때 1초에 도는 각도: 150도 */
+#define LOOK_SEND_MS   16            /* 시선을 서버에 알리는 간격의 하한 */
+#define LOOK_KEY_STEP  (65536 / BOSS_DIRS)           /* 방향키 좌우로 한 번에 도는 각도 */
 
 static int sock = -1;
 static int view_scale = 1;           /* --scale. 화면을 몇 배로 키워 터미널에 그리는가 */
@@ -61,6 +73,11 @@ static struct {
     boss_snap_t boss;                /* 보스전의 마지막 상태 */
     int have_boss, boss_watch;       /* boss_watch: 관전할 때 누구의 눈으로 볼지 */
     int boss_help;                   /* 보스전에서 H로 켠 키 안내 */
+    int have_look;                   /* 보스전에서 내가 보는 방향을 정했다(처음 받은 상태의 방향에서 시작한다) */
+    uint16_t look_ang;               /* 내가 보는 방향. 마우스와 방향키로 여기서 바꾸고 서버에 알린다 */
+    int have_boss_brain;             /* 보스전의 뇌 표시를 받았다 */
+    float boss_stim[BRAIN_GROUP_COUNT], boss_rate[BRAIN_GROUP_COUNT], boss_takeoff;
+    frame_map_t boss_fm;
     int64_t boss_hit_at, boss_hurt_at, boss_wave_at;     /* 내 공격이 맞은 때, 내가 맞은 때, 날갯짓이 있던 때(ms) */
     int watch;                       /* 오른쪽 위에 볼 칸. WATCH_FLY이면 키보드 치는 초파리 */
     int dirty, quit;
@@ -129,7 +146,10 @@ static void *recv_main(void *arg)
             if (S.ph.phase != was) {
                 S.phase_at = now_ms();
                 if (S.ph.phase != PH_PLAY) S.have_frame = 0;
-                if (S.ph.phase != PH_BOSS) { S.have_boss = 0; S.boss_hit_at = S.boss_hurt_at = S.boss_wave_at = 0; }
+                if (S.ph.phase != PH_BOSS) {
+                    S.have_boss = S.have_look = S.have_boss_brain = 0;
+                    S.boss_hit_at = S.boss_hurt_at = S.boss_wave_at = 0;
+                }
                 S.boss_help = 0;
                 if (S.ph.phase == PH_CARD) S.watch = -1;         /* 새 라운드: 볼 칸을 다시 고른다 */
             }
@@ -148,12 +168,26 @@ static void *recv_main(void *arg)
             S.dirty = 1;
             pthread_cond_broadcast(&S.cv);
             pthread_mutex_unlock(&S.mu);
-        } else if (h.type == MSG_BOSS && h.len == sizeof(boss_snap_t)) {
+        } else if (h.type == MSG_BOSS && h.len >= sizeof(boss_snap_t)) {
+            boss_brain_msg_t bb;
             pthread_mutex_lock(&S.mu);
             memcpy(&S.boss, body, sizeof S.boss);
             S.have_boss = 1;
+            /* 상태 뒤에 이번 틱의 뇌가 붙어 온다 */
+            if (boss_brain_unpack(body + sizeof S.boss, h.len - sizeof S.boss, h.flags, &bb, &S.boss_fm) == 0) {
+                for (int g = 0; g < BRAIN_GROUP_COUNT; g++) {
+                    S.boss_stim[g] = (float)bb.stim[g] / 255.0f;
+                    S.boss_rate[g] = (float)bb.rate[g] / 255.0f;
+                }
+                S.boss_takeoff = (float)bb.takeoff / 255.0f;
+                S.have_boss_brain = 1;
+            }
             /* 사건은 그 틱의 상태에만 실려 온다. 화면에 잠깐 남기려고 본 시각을 적어 둔다 */
             int me = (S.ph.me >= 0 && S.ph.me < PROTO_SEATS) ? S.ph.pane_of[S.ph.me] : -1;
+            if (!S.have_look && me >= 0 && me < S.boss.n_players && me < BOSS_PLAYERS) {
+                S.look_ang = S.boss.p[me].ang;                   /* 내 시선은 서버가 세워 준 방향에서 시작한다 */
+                S.have_look = 1;
+            }
             for (int k = 0; k < S.boss.n_ev && k < BOSS_EVENTS; k++) {
                 int kind = S.boss.ev[k].kind, who = S.boss.ev[k].who;
                 if ((kind == BOSS_EV_SWAT_HIT || kind == BOSS_EV_SPRAY_HIT) && who == me) S.boss_hit_at = now_ms();
@@ -206,6 +240,56 @@ static void next_watch(void)
     pthread_mutex_unlock(&S.mu);
 }
 
+/* 보스전의 시선. 입력 스레드만 쓴다(방향 자체인 S.look_ang은 S.mu로 지킨다) */
+static struct {
+    int last_cx;                 /* 마지막으로 본 마우스의 칸(가로). 모르면 -1 */
+    int edge;                    /* 마우스가 화면의 왼쪽 끝에 있으면 -1, 오른쪽 끝이면 1, 아니면 0 */
+    int64_t edge_at;             /* 끝에 있어서 도는 양을 마지막으로 더한 시각 */
+    double frac;                 /* 방향에 아직 더하지 못한 1 미만의 나머지 */
+    int unsent;                  /* 서버에 알리지 않은 변화가 있다 */
+    int64_t sent_at;
+} look = { .last_cx = -1 };
+
+/* 내 시선을 d만큼(65536이 한 바퀴, 양수가 오른쪽) 돌린다. 싸우는 중이고 내가 살아 있을 때만 돈다(키 안내가 떠 있을
+ * 때는 돌지 않는다). 돌았으면 1을 돌려준다 */
+static int look_turn(double d)
+{
+    int ok = 0;
+    pthread_mutex_lock(&S.mu);
+    int me = (S.ph.me >= 0 && S.ph.me < PROTO_SEATS) ? S.ph.pane_of[S.ph.me] : -1;
+    if (S.have_phase && S.ph.phase == PH_BOSS && S.have_boss && S.have_look && !S.boss_help && S.boss.tick > 0 &&
+        S.boss.outcome == BOSS_GOING && me >= 0 && me < S.boss.n_players && me < BOSS_PLAYERS && S.boss.p[me].alive) {
+        double a = (double)S.look_ang + d + look.frac, whole = floor(a);
+        look.frac = a - whole;
+        S.look_ang = (uint16_t)((long long)whole & 0xffff);
+        S.dirty = 1;
+        pthread_cond_broadcast(&S.cv);
+        look.unsent = 1;
+        ok = 1;
+    }
+    pthread_mutex_unlock(&S.mu);
+    return ok;
+}
+
+/* 바뀐 시선을 서버에 알린다. 너무 자주 보내지 않되, now가 1이면(키나 클릭을 보내기 직전) 바로 보낸다. 0이면 성공 */
+static int look_send(int now)
+{
+    if (!look.unsent || (!now && now_ms() - look.sent_at < LOOK_SEND_MS)) return 0;
+    pthread_mutex_lock(&S.mu);
+    input_msg_t m = { .kind = INPUT_LOOK, .code = S.look_ang };
+    pthread_mutex_unlock(&S.mu);
+    look.unsent = 0;
+    look.sent_at = now_ms();
+    return msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m);
+}
+
+static int send_boss_key(uint16_t code)
+{
+    input_msg_t m = { .kind = IN_KEY, .code = code };
+    if (look_send(1) != 0) return -1;                /* 무기는 지금 보는 방향으로 써야 한다 */
+    return msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m);
+}
+
 static void *input_main(void *arg)
 {
     uint8_t buf[512];
@@ -220,10 +304,23 @@ static void *input_main(void *arg)
             if (msg_send(sock, MSG_PING, 0, 0, NULL, 0) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
         }
         pthread_mutex_lock(&S.mu);
-        int quit = S.quit;
+        int quit = S.quit, boss = S.have_phase && S.ph.phase == PH_BOSS;
         pthread_mutex_unlock(&S.mu);
         if (quit) return NULL;
-        if (poll(&pf, 1, 100) <= 0) continue;
+        if (!boss) {
+            look.last_cx = -1;
+            look.edge = 0;
+        } else {
+            /* 마우스가 화면 끝에 있는 동안은 계속 돈다. 그리고 바뀐 시선을 서버에 알린다 */
+            if (look.edge) {
+                int64_t now = now_ms();
+                double dt = (double)(now - look.edge_at) / 1000.0;
+                look.edge_at = now;
+                if (dt > 0.0) look_turn((double)look.edge * LOOK_EDGE_RATE * (dt > 0.1 ? 0.1 : dt));
+            }
+            if (look_send(0) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
+        }
+        if (poll(&pf, 1, boss ? 15 : 100) <= 0) continue;
         ssize_t r = read(STDIN_FILENO, buf + len, sizeof buf - len);
         if (r <= 0) continue;
         len += (size_t)r;
@@ -236,6 +333,31 @@ static void *input_main(void *arg)
             if (ev.kind == IN_KEY && (ev.code == 'q' || ev.code == 'Q' || ev.code == 3)) { quit_with(""); return NULL; }
             if (ev.kind == IN_KEY && ev.code == '\t') { next_watch(); continue; }
             if (ev.kind == IN_KEY && (ev.code == 'h' || ev.code == 'H') && toggle_boss_help()) continue;
+            if (boss && ev.kind == IN_POINTER) {
+                /* 보스전의 마우스는 서버로 올리지 않고 여기서 쓴다. 가로로 움직인 칸 수가 시선이 도는 양이고,
+                 * 왼쪽 버튼은 무기 쓰기(스페이스), 휠은 다음 무기(F)다 */
+                int cols = 0, rows = 0;
+                term_size(&cols, &rows);
+                int cw = SCREEN_W * view_scale, x = ev.x - (cols - cw) / 2, zone = (int)((double)cw * LOOK_EDGE);
+                if (zone < 2) zone = 2;
+                if (look.last_cx >= 0 && ev.x != look.last_cx)
+                    look_turn((double)(ev.x - look.last_cx) * LOOK_SPAN / (double)cw);
+                look.last_cx = ev.x;
+                int edge = x < zone ? -1 : (x >= cw - zone ? 1 : 0);
+                if (edge != look.edge) { look.edge = edge; look.edge_at = now_ms(); }
+                int bad = 0;
+                if (ev.flags & IN_F_CLICK) bad = send_boss_key(' ');
+                else if (ev.flags & (IN_F_WHEEL_UP | IN_F_WHEEL_DOWN)) bad = send_boss_key('f');
+                if (bad != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
+                continue;
+            }
+            if (boss && ev.kind == IN_KEY && (ev.code == IN_K_LEFT || ev.code == IN_K_RIGHT)) {
+                /* 보스전의 방향키 좌우: 마우스 없이 시선을 한 칸씩 돌린다 */
+                look_turn(ev.code == IN_K_LEFT ? -(double)LOOK_KEY_STEP : (double)LOOK_KEY_STEP);
+                if (look_send(1) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
+                continue;
+            }
+            if (boss && look_send(1) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
             input_msg_t m = { .kind = ev.kind, .flags = ev.flags, .code = ev.code };
             if (ev.kind == IN_POINTER) {
                 /* 터미널 글자 칸을 전체 화면의 픽셀로 바꿔서 올린다 */
@@ -262,8 +384,15 @@ static void draw_boss(canvas_t *full, const phase_msg_t *ph)
     boss_view_t v = { .me = (ph->me >= 0 && ph->me < PROTO_SEATS) ? ph->pane_of[ph->me] : -1,
                       .hit_ms = ms_since(S.boss_hit_at), .hurt_ms = ms_since(S.boss_hurt_at),
                       .wave_ms = ms_since(S.boss_wave_at), .watch = S.boss_watch, .help = S.boss_help,
-                      .age_ms = (int)(now_ms() - S.phase_at) };
+                      .age_ms = (int)(now_ms() - S.phase_at),
+                      .look_on = S.have_look, .look_ang = S.look_ang };
     if (!S.have_boss) { scene_message(full, "BOSS", C_YELLOW); return; }
+    if (S.have_boss_brain) {
+        v.brain_stim = S.boss_stim;
+        v.brain_rate = S.boss_rate;
+        v.brain_map = S.boss_fm.has_map ? &S.boss_fm.map : NULL;
+        v.takeoff = S.boss_takeoff;
+    }
     for (int s = 0; s < PROTO_SEATS; s++)
         if (ph->pane_of[s] >= 0 && ph->pane_of[s] < BOSS_PLAYERS) v.name[ph->pane_of[s]] = ph->name[s];
     boss_view_draw(full, &S.boss, &v);
@@ -506,7 +635,12 @@ static int run_screen(void)
     pthread_create(&t_recv, NULL, recv_main, NULL);
     pthread_create(&t_input, NULL, input_main, NULL);
 
+    int64_t shown_at = 0;
     for (;;) {
+        /* 방금 그렸으면 조금 쉰다. 마우스가 움직이는 동안은 상태가 쉬지 않고 바뀌어서, 그때마다 그리면 터미널이 밀린다 */
+        int64_t rest = shown_at + FRAME_MIN_MS - now_ms();
+        if (rest > 0) usleep((useconds_t)rest * 1000);
+        shown_at = now_ms();
         /* 상태가 바뀌거나 50ms가 지나면 다시 그린다(카운트다운처럼 시간으로 움직이는 화면이 있다) */
         struct timespec until;
         clock_gettime(CLOCK_REALTIME, &until);
@@ -593,7 +727,7 @@ static int run_bot(int wait_players)
 int main(int argc, char **argv)
 {
     const char *host = "127.0.0.1", *name = "PLAYER";
-    int port = PROTO_PORT, bot = 0, wait_players = 1, no_title = 0;
+    int port = PROTO_PORT, bot = 0, wait_players = 1, no_title = 0, auto_scale = 0;
     setvbuf(stdout, NULL, _IOLBF, 0);
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -603,11 +737,12 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--wait=", 7) == 0)   wait_players = atoi(a + 7);
         else if (strcmp(a, "--bot") == 0)         bot = 1;
         else if (strcmp(a, "--no-title") == 0)    no_title = 1;
+        else if (strcmp(a, "--scale=auto") == 0)  auto_scale = 1;
         else if (strncmp(a, "--scale=", 8) == 0)  view_scale = atoi(a + 8);
         else { printf("모르는 옵션: %s\n", a); return 2; }
     }
     if (view_scale < 1 || view_scale > PRESENT_MAX_SCALE) {
-        printf("--scale은 1부터 %d까지입니다\n", PRESENT_MAX_SCALE);
+        printf("--scale은 1부터 %d까지, 또는 auto입니다\n", PRESENT_MAX_SCALE);
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
@@ -617,6 +752,14 @@ int main(int argc, char **argv)
         if (term_enter() != 0) {
             printf("터미널에서 실행해 주세요\n");
             return 2;
+        }
+        if (auto_scale) {
+            /* 지금 터미널에 들어가는 가장 큰 배율. 글자가 작을수록(칸이 많을수록) 높아진다 */
+            int cols = 0, rows = 0;
+            term_size(&cols, &rows);
+            view_scale = cols / SCREEN_W < rows / (SCREEN_H / 2) ? cols / SCREEN_W : rows / (SCREEN_H / 2);
+            if (view_scale < 1) view_scale = 1;
+            if (view_scale > PRESENT_MAX_SCALE) view_scale = PRESENT_MAX_SCALE;
         }
         full_canvas = canvas_new(SCREEN_W, SCREEN_H);
         if (view_scale > 1) big_canvas = canvas_new(SCREEN_W * view_scale, SCREEN_H * view_scale);

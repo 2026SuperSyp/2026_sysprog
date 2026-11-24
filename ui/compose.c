@@ -153,6 +153,13 @@ static void draw_brain_map(canvas_t *c, int x, int y, const brain_map_t *m, cons
     }
 }
 
+void compose_brain_panel(canvas_t *c, int x, int y, const float *stim, const float *rate,
+                         const struct brain_map *map, int frame)
+{
+    if (map) draw_brain_map(c, x, y, map, rate);
+    else draw_brain(c, x, y, stim, rate, frame);
+}
+
 void compose_stage_frame(canvas_t *full, const canvas_t *fly, canvas_t *const panes[],
                          int n_players, int me, const hud_t *hud)
 {
@@ -188,10 +195,8 @@ void compose_stage_frame(canvas_t *full, const canvas_t *fly, canvas_t *const pa
     ui_text(full, OTHER_X + OTHER_W - 20, TOP_H + OTHER_H - 10, "TAB", C_GRAY3);    /* 이 칸에 볼 사람을 바꾸는 키 */
 
     /* 오른쪽 아래: 초파리 뇌 표시 */
-    if (hud->brain_map)
-        draw_brain_map(full, OTHER_X, TOP_H + OTHER_H, hud->brain_map, hud->brain_rate);
-    else
-        draw_brain(full, OTHER_X, TOP_H + OTHER_H, hud->brain_stim, hud->brain_rate, hud->ticks_left / 2);
+    compose_brain_panel(full, OTHER_X, TOP_H + OTHER_H, hud->brain_stim, hud->brain_rate, hud->brain_map,
+                        hud->ticks_left / 2);
 
     /* 아래 띠 */
     int by = TOP_H + PANE_H + 1;

@@ -123,7 +123,12 @@ static int line_clear(const boss_state_t *s, float x0, float y0, float x1, float
     return 1;
 }
 
-static float dir_angle(int dir) { return (float)dir * (2.0f * PI_F / BOSS_DIRS); }
+/* 각도를 0 이상 2파이 미만으로 */
+static float wrap_angle(float a)
+{
+    a = fmodf(a, 2.0f * PI_F);
+    return a < 0.0f ? a + 2.0f * PI_F : a;
+}
 static float dist(float ax, float ay, float bx, float by) { return sqrtf((ax - bx) * (ax - bx) + (ay - by) * (ay - by)); }
 static float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 
@@ -149,7 +154,7 @@ void boss_init(boss_state_t *s, const boss_cfg_t *c, uint32_t seed, int n_player
         boss_player_t *p = &s->p[i];
         p->x = start_x[i];
         p->y = 20.5f;
-        p->dir = BOSS_DIRS * 3 / 4;                  /* 위쪽(-y)을 본다 */
+        p->ang = 1.5f * PI_F;                        /* 위쪽(-y)을 본다 */
         p->hp = lives ? lives[i] : 3;
         if (p->hp < 1) p->hp = 1;
         p->alive = 1;
@@ -170,12 +175,19 @@ void boss_input(boss_state_t *s, int player, int key)
     if (player < 0 || player >= s->n_players || s->outcome != BOSS_GOING) return;
     boss_player_t *p = &s->p[player];
     if (!p->alive) return;                           /* 쓰러진 사람의 키는 쓰지 않는다 */
-    int slow = (key & BOSS_SLOW) != 0;
-    switch (key & ~BOSS_SLOW) {
+    if (key == BOSS_SNEAK) { p->sneak = !p->sneak; return; }
+    int slow = (key & BOSS_SLOW) != 0, strafe = (key & BOSS_STRAFE) != 0;
+    switch (key & ~(BOSS_SLOW | BOSS_STRAFE)) {
     case SK_UP:    p->move = 1;  p->slow = slow; break;
     case SK_DOWN:  p->move = -1; p->slow = slow; break;
-    case SK_LEFT:  if (p->turn > -2) p->turn--; break;
-    case SK_RIGHT: if (p->turn < 2) p->turn++; break;
+    case SK_LEFT:
+        if (strafe) { p->strafe = -1; p->slow = slow; }
+        else if (p->turn > -2) p->turn--;
+        break;
+    case SK_RIGHT:
+        if (strafe) { p->strafe = 1; p->slow = slow; }
+        else if (p->turn < 2) p->turn++;
+        break;
     case SK_1:     p->pick = 1 + BOSS_SWATTER; break;
     case SK_2:     p->pick = 1 + BOSS_SPRAY; break;
     case SK_3:     p->pick = 1 + BOSS_TRAP; break;
@@ -183,6 +195,15 @@ void boss_input(boss_state_t *s, int player, int key)
     case SK_ACT:   p->use = 1; break;
     default: break;
     }
+}
+
+void boss_look(boss_state_t *s, int player, float ang)
+{
+    if (player < 0 || player >= s->n_players || s->outcome != BOSS_GOING) return;
+    boss_player_t *p = &s->p[player];
+    if (!p->alive || !isfinite(ang)) return;
+    p->look = wrap_angle(ang);
+    p->has_look = 1;
 }
 
 /* ---- 자극 ------------------------------------------------------------------------- */
@@ -265,7 +286,7 @@ static void use_item(boss_state_t *s, int i)
     const boss_cfg_t *c = &s->cfg;
     boss_player_t *p = &s->p[i];
     boss_fly_t *f = &s->fly;
-    float a = dir_angle(p->dir), ux = cosf(a), uy = sinf(a);
+    float ux = cosf(p->ang), uy = sinf(p->ang);
     if (p->cool > 0) return;
 
     if (p->item == BOSS_SWATTER) {
@@ -310,15 +331,25 @@ static void players_act(boss_state_t *s)
     for (int i = 0; i < s->n_players; i++) {
         boss_player_t *p = &s->p[i];
         if (p->cool > 0) p->cool--;
-        if (p->move_cool > 0) p->move_cool--;
         p->closing = 0.0f;
-        if (!p->alive) { p->move = p->turn = p->use = p->pick = 0; continue; }
-        p->dir = ((p->dir + p->turn) % BOSS_DIRS + BOSS_DIRS) % BOSS_DIRS;
-        if (p->move && p->move_cool == 0) {              /* 걷는 중에 온 키는 버린다(누르고 있으면 또 온다) */
-            float a = dir_angle(p->dir), len = (p->slow ? c->slow_step : c->step) * (float)p->move;
+        if (!p->alive) { p->move = p->strafe = p->turn = p->use = p->pick = p->has_look = p->step_left = 0; continue; }
+        if (p->has_look) p->ang = p->look;               /* 마우스로 정한 방향 */
+        if (p->turn) p->ang = wrap_angle(p->ang + (float)p->turn * (2.0f * PI_F / BOSS_DIRS));
+        if ((p->move || p->strafe) && p->step_left == 0) {   /* 걷는 중에 온 키는 버린다(누르고 있으면 또 온다) */
+            /* 새 걸음. 앞은 (cos, sin), 오른쪽은 거기서 90도 돈 (-sin, cos)이다. 앞과 옆이 같이 왔으면 비스듬히 간다.
+             * 방향은 걸음을 뗄 때 정하고, 한 걸음의 거리를 step_ticks에 고르게 나눠 간다 */
+            float fx = cosf(p->ang), fy = sinf(p->ang);
+            float mx = fx * (float)p->move - fy * (float)p->strafe, my = fy * (float)p->move + fx * (float)p->strafe;
+            float n = sqrtf(mx * mx + my * my), len = (p->slow || p->sneak) ? c->slow_step : c->step;
+            int ticks = c->step_ticks > 1 ? c->step_ticks : 1;
+            p->step_left = ticks;
+            p->step_dx = mx / n * len / (float)ticks;
+            p->step_dy = my / n * len / (float)ticks;
+        }
+        if (p->step_left > 0) {
             float nx = p->x, ny = p->y, ox = p->x, oy = p->y;
-            p->move_cool = c->step_ticks;
-            slide(s, &nx, &ny, cosf(a) * len, sinf(a) * len, c->player_radius);
+            p->step_left--;
+            slide(s, &nx, &ny, p->step_dx, p->step_dy, c->player_radius);
             /* 초파리 몸을 뚫고 지나가지 않는다 */
             if (dist(nx, ny, f->x, f->y) >= c->fly_radius + c->player_radius ||
                 dist(nx, ny, f->x, f->y) >= dist(p->x, p->y, f->x, f->y)) {
@@ -331,7 +362,7 @@ static void players_act(boss_state_t *s)
         }
         if (p->pick) p->item = p->pick - 1;
         if (p->use) use_item(s, i);
-        p->move = p->turn = p->use = p->pick = 0;
+        p->move = p->strafe = p->turn = p->use = p->pick = p->has_look = 0;
     }
 }
 
@@ -545,7 +576,8 @@ void boss_snapshot(const boss_state_t *s, boss_snap_t *o)
         const boss_player_t *p = &s->p[i];
         o->p[i].x = (int16_t)(p->x * BOSS_FIX);
         o->p[i].y = (int16_t)(p->y * BOSS_FIX);
-        o->p[i].dir = (uint8_t)p->dir;
+        o->p[i].ang = (uint16_t)(lroundf(p->ang / (2.0f * PI_F) * 65536.0f) & 0xffff);
+        o->p[i].sneak = (uint8_t)p->sneak;
         o->p[i].hp = (uint8_t)p->hp;
         o->p[i].alive = (uint8_t)p->alive;
         o->p[i].item = (uint8_t)p->item;

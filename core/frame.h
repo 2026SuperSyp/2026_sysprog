@@ -28,4 +28,10 @@ size_t frame_pack(uint8_t *out, size_t cap, frame_head_t *head, const canvas_t *
 int frame_unpack(const uint8_t *in, size_t len, uint8_t flags, frame_head_t *head,
                  canvas_t *fly, canvas_t *const panes[], frame_map_t *fm);
 
+/* 보스전의 뇌 표시(MSG_BOSS에서 상태 뒤에 붙는 부분)를 만들고 푼다. 서버가 만들고 클라이언트가 푼다.
+ * 만들기: head의 stim, rate, takeoff는 채워서 넘긴다. 쓴 바이트 수를 돌려주고 실패하면 0이다.
+ * 풀기: 0이면 성공. 뇌 지도가 없으면 fm->has_map이 0이다. */
+size_t boss_brain_pack(uint8_t *out, size_t cap, boss_brain_msg_t *head, const brain_map_t *map, uint8_t *flags);
+int boss_brain_unpack(const uint8_t *in, size_t len, uint8_t flags, boss_brain_msg_t *head, frame_map_t *fm);
+
 #endif
