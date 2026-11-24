@@ -42,7 +42,7 @@ static int   move_gap, hop_cooldown;
 static const stage_info_t info = {
     .title    = "돌 피하기",
     .rule     = "떨어지는 돌을 피하세요\n초파리보다 많이 피하면 승리",
-    .controls = "← → 또는 마우스",
+    .controls = "A D 또는 마우스",
 };
 
 const stage_info_t *stage_info(void) { return &info; }
