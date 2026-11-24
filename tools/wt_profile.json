@@ -1,6 +1,22 @@
 {
   "profiles": [
     {
+      "guid": "{3e3d9a0e-3c6b-5c0e-9d55-6a1f1a0c8b11}",
+      "name": "Super Syp Party HD",
+      "commandline": "wsl.exe --cd ~",
+      "font": {
+        "face": "Cascadia Mono",
+        "size": 24,
+        "cellWidth": "21px",
+        "cellHeight": "42px"
+      },
+      "padding": "20, 12, 20, 0",
+      "background": "#000000",
+      "scrollbarState": "hidden",
+      "adjustIndistinguishableColors": "never",
+      "bellStyle": "none"
+    },
+    {
       "guid": "{c0566939-9fcb-5a9b-9312-894a9e92ffd8}",
       "name": "Super Syp Party",
       "commandline": "wsl.exe --cd ~",
