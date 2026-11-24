@@ -223,8 +223,22 @@ void ui_sprite(canvas_t *c, sprite_id_t id, int x, int y, int frame)
     if (!c) return;
     frame %= s->frames;
     if (frame < 0) frame += s->frames;
+    /* 화면을 픽셀 그림으로 보낼 때 진행자 시프봇은 같은 그림을 실제 해상도로 매끈하게 키워 그린다(ui/hd_art.c).
+     * 여기서는 자리만 알려 둔다 */
+    if (strncmp(s->name, "sipbot", 6) == 0 && ui_capture_note(c, UI_HD_SPRITE, x, y, s->w, s->h, frame, s->name)) return;
     const color_t *px = s->px + (size_t)frame * s->w * s->h;
     for (int yy = 0; yy < s->h; yy++)
         for (int xx = 0; xx < s->w; xx++)
             ui_px(c, x + xx, y + yy, px[yy * s->w + xx]);
+}
+
+const color_t *ui_sprite_pixels(sprite_id_t id, int frame, int *w, int *h)
+{
+    const sprite_t *s = get(id);
+    if (!s->px || s->frames < 1) return NULL;
+    frame %= s->frames;
+    if (frame < 0) frame += s->frames;
+    if (w) *w = s->w;
+    if (h) *h = s->h;
+    return s->px + (size_t)frame * s->w * s->h;
 }

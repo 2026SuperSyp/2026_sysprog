@@ -42,16 +42,20 @@ int    ui_text_h(const char *s);                             /* 한 줄의 높�
 /* 받아 두기. 화면을 픽셀 그림으로 보낼 때(ui/hd.h) 글자와 몇 가지 그림은 캔버스에 그린 것을 키우지 않고 실제
  * 해상도로 다시 그린다(ui/hd_art.c). begin과 end 사이에 target 캔버스에 ui_text로 그리는 글자는 캔버스에 그려지지
  * 않고 목록에 쌓인다. 말풍선의 상자도 그린 쪽이 ui_capture_note로 알려 두고 캔버스에는 그리지 않는다.
- * 그림(.spr)은 받아 두지 않는다(그린 사람의 그림 그대로 캔버스에 그린다).
+ * 그림(.spr) 가운데 진행자 시프봇도 알려 두고 캔버스에는 그리지 않는다(같은 그림을 매끈하게 키워 그린다).
+ * 다른 그림은 받아 두지 않는다(캔버스에 그대로 그린다).
  * end는 쌓인 개수를 돌려주고 목록을 items에 준다(다음 begin까지 유효하다).
  * 목록에는 그린 순서대로 쌓인다. 목록이 차면 그 뒤의 것은 그냥 캔버스에 그려진다. */
 enum { UI_HD_TEXT = 0,           /* 글자: s를 (x, y)에 col로 */
-       UI_HD_BUBBLE };           /* 말풍선 상자: (x, y)에 w x h. 꼬리의 자리가 a(없으면 -1) */
+       UI_HD_BUBBLE,             /* 말풍선 상자: (x, y)에 w x h. 꼬리의 자리가 a(없으면 -1) */
+       UI_HD_SPRITE };           /* 그림: 이름이 s인 그림(w x h)의 a번째 장을 (x, y)에 */
 typedef struct { uint8_t kind; color_t col; int16_t x, y, w, h, a; char s[128]; } ui_text_item_t;
 void   ui_text_capture_begin(const canvas_t *target);
 int    ui_text_capture_end(const ui_text_item_t **items);
 /* c가 받아 두는 캔버스이면 목록에 올리고 1을 돌려준다(그러면 부른 쪽은 캔버스에 그리지 않는다). 아니면 0 */
 int    ui_capture_note(const canvas_t *c, int kind, int x, int y, int w, int h, int a, const char *s);
+/* 그림 한 장의 픽셀(w x h개의 색 번호, 빈 곳은 C_NONE). 없는 그림이면 NULL */
+const color_t *ui_sprite_pixels(sprite_id_t id, int frame, int *w, int *h);
 int    utf8_next(const char **s);                            /* 글자 하나를 읽고 다음으로 넘어간다. 끝이면 0 */
 size_t utf8_copy(char *dst, size_t cap, const char *src);    /* 넘치면 글자 경계에서 잘라 담는다 */
 
