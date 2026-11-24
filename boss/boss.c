@@ -34,7 +34,7 @@ void boss_cfg_default(boss_cfg_t *c)
 {
     memset(c, 0, sizeof *c);
     c->ticks = 180 * 20;
-    c->fly_hp[0] = 40.0f; c->fly_hp[1] = 70.0f; c->fly_hp[2] = 100.0f;
+    c->fly_hp[0] = 40.0f; c->fly_hp[1] = 120.0f; c->fly_hp[2] = 180.0f;
     c->fly_radius = 0.6f;
     c->player_radius = 0.25f;
     c->step = 0.5f; c->slow_step = 0.1f; c->step_ticks = 3;
@@ -308,7 +308,8 @@ static void use_item(boss_state_t *s, int i)
 
     if (p->item == BOSS_SWATTER) {
         float dx = f->x - p->x, dy = f->y - p->y, d = sqrtf(dx * dx + dy * dy);
-        int hit = d <= c->fly_radius + c->player_radius + c->swat_range && d > 1e-4f &&
+        /* 달아나느라 솟아오른 동안(air)은 파리채가 닿지 않는다. 스프레이와 끈끈이는 닿는다 */
+        int hit = f->air == 0 && d <= c->fly_radius + c->player_radius + c->swat_range && d > 1e-4f &&
                   (ux * dx + uy * dy) / d >= 0.82f && line_clear(s, p->x, p->y, f->x, f->y);
         if (hit) hurt_fly(s, i, (int)c->swat_damage);
         event(s, hit ? BOSS_EV_SWAT_HIT : BOSS_EV_SWAT_MISS, i, p->x + ux, p->y + uy);
