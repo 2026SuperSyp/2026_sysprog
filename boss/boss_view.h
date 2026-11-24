@@ -10,6 +10,7 @@
 #include "ui.h"
 
 struct brain_map;                        /* brain/brain_host.h */
+struct image;                            /* ui/hd.h */
 
 typedef struct {
     int me;                              /* 내 참가자 번호. 관전자는 -1 */
@@ -32,5 +33,10 @@ typedef struct {
 /* full은 240x134이거나 그것을 배율 N으로 키운 크기(240N x 134N)다. 키운 화면이면 3D는 그 크기에 맞춰
  * 촘촘하게 그리고, 글자와 상태 줄은 화면에 비해 작게 그려서 3D 화면이 넓어진다. */
 void boss_view_draw(canvas_t *full, const boss_snap_t *b, const boss_view_t *v);
+
+/* 같은 화면을 픽셀 그림에 그린다(boss_view_hd.c). 화면을 Sixel 그림으로 보낼 때 쓴다. 색을 마음대로 쓸 수 있어서
+ * 벽과 바닥에 무늬와 명암을 넣고 가장자리를 부드럽게 그린다. 그림의 크기는 240x134의 정수배여야 한다.
+ * 시프봇의 키 안내는 그리지 않는다(그때는 boss_view_draw로 240x134에 그린 것을 키워 쓴다). */
+void boss_view_draw_hd(struct image *im, const boss_snap_t *b, const boss_view_t *v);
 
 #endif

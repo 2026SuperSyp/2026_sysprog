@@ -39,6 +39,12 @@ void ui_palette_rgb(color_t c, uint8_t rgb[3]);
 /* ---- 글자 (font.c, utf8.c) ---- */
 #define UI_KFONT_LATIN_DY 3      /* 한글이 섞인 글자열에서 영문과 숫자를 이만큼 내려 그린다(ui_text) */
 int    ui_text_h(const char *s);                             /* 한 줄의 높이. 한글이 섞였으면 12, 아니면 8 */
+/* 글자 받아 두기. 화면을 픽셀 그림으로 보낼 때(ui/hd.h) 글자만은 캔버스에 그린 것을 키우지 않고 큰 글꼴로 다시 그린다.
+ * begin과 end 사이에 target 캔버스에 ui_text로 그리는 글자는 캔버스에 그려지지 않고 목록에 쌓인다.
+ * end는 쌓인 개수를 돌려주고 목록을 items에 준다(다음 begin까지 유효하다). 목록이 차면 그 뒤의 글자는 그냥 그려진다. */
+typedef struct { int16_t x, y; color_t col; char s[128]; } ui_text_item_t;
+void   ui_text_capture_begin(const canvas_t *target);
+int    ui_text_capture_end(const ui_text_item_t **items);
 int    utf8_next(const char **s);                            /* 글자 하나를 읽고 다음으로 넘어간다. 끝이면 0 */
 size_t utf8_copy(char *dst, size_t cap, const char *src);    /* 넘치면 글자 경계에서 잘라 담는다 */
 
@@ -107,6 +113,12 @@ int  present_cell_to_screen_scaled(int cols, int rows, int scale, int cell_x, in
 int  term_enter(void);           /* 원시 입력, 대체 화면, 커서 숨김, 마우스 보고를 켠다. 0이면 성공 */
 void term_leave(void);           /* 전부 되돌린다. 여러 번 불러도 된다 */
 int  term_size(int *cols, int *rows);
+/* 터미널이 할 수 있는 것. term_enter가 터미널에 물어서 채운다(답이 없으면 sixel은 0이고 칸은 10x20으로 둔다) */
+typedef struct {
+    int sixel;                   /* Sixel 그림을 받는다 */
+    int cell_w, cell_h;          /* 그림을 놓을 때 글자 한 칸으로 치는 픽셀 수 */
+} term_caps_t;
+const term_caps_t *term_caps(void);
 
 /* ---- 입력 해석 (input.c) ---- */
 enum { IN_KEY = 1, IN_POINTER = 2 };

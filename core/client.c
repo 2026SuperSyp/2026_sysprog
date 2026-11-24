@@ -5,6 +5,8 @@
  *       --scale=N(1~6)이면 화면을 N배로 키워 그린다. 터미널이 240N칸 67N줄 이상이어야 한다(글자를 더 줄인다).
  *       --scale=auto이면 시작할 때의 터미널 크기에 들어가는 가장 큰 배율을 고른다.
  *       보스전의 3D 화면은 그 크기에 맞춰 촘촘하게 그리고, 나머지 화면은 같은 그림을 크게만 보여 준다
+ *       --gfx=auto|sixel|cell: 화면을 픽셀 그림(Sixel)으로 보낼지 글자 칸으로 보낼지. auto(기본값)는 터미널에 물어서
+ *       그림을 받으면 그림으로 보낸다. 그림으로 보낼 때 --scale은 그림 배율의 상한이다(기본 5배 = 1200x670)
  *   build/dev/client --bot [--wait=N] [...]   화면 없이 접속해 준비하고 무작위로 누른다(검사용).
  *                                             방장이면 참가자가 N명 이상일 때 시작한다
  *
@@ -27,6 +29,7 @@
 #include "protocol.h"
 #include "screen.h"
 #include "stage.h"
+#include "ui/hd.h"
 #include "ui/ui_internal.h"
 
 #include <arpa/inet.h>
@@ -38,6 +41,7 @@
 #include <poll.h>
 #include <pthread.h>
 #include <signal.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,9 +58,16 @@
 #define LOOK_EDGE_RATE (65536.0 * 150.0 / 360.0)     /* 그때 1초에 도는 각도: 150도 */
 #define LOOK_SEND_MS   16            /* 시선을 서버에 알리는 간격의 하한 */
 #define LOOK_KEY_STEP  (65536 / BOSS_DIRS)           /* 방향키 좌우로 한 번에 도는 각도 */
+#define LOOK_SMOOTH_MS 45.0          /* 화면의 시선이 정한 방향을 따라가는 빠르기. 글자 칸이 크면 마우스가 뚝뚝 끊겨 온다 */
+#define HD_SCALE       5             /* 픽셀 그림으로 보낼 때 그림의 배율(240x134의 몇 배)의 기본 상한: 1200x670 */
 
 static int sock = -1;
 static int view_scale = 1;           /* --scale. 화면을 몇 배로 키워 터미널에 그리는가 */
+/* 화면을 픽셀 그림(Sixel)으로 보내는가(--gfx). 터미널이 받아 주면 그렇게 하고, 아니면 글자 칸으로 보낸다.
+ * 그림의 크기는 240x134의 hd_n배이고 창 크기에 맞춰 hd_cap 이하에서 고른다. 입력 스레드도 hd_n을 읽는다 */
+static int gfx_sixel;
+static int hd_cap = HD_SCALE;
+static atomic_int hd_n = 1;
 
 /* 스레드들이 같이 보는 상태 */
 static struct {
@@ -75,6 +86,9 @@ static struct {
     int boss_help;                   /* 보스전에서 H로 켠 키 안내 */
     int have_look;                   /* 보스전에서 내가 보는 방향을 정했다(처음 받은 상태의 방향에서 시작한다) */
     uint16_t look_ang;               /* 내가 보는 방향. 마우스와 방향키로 여기서 바꾸고 서버에 알린다 */
+    int look_shown_ok;               /* 화면에 그리는 방향(look_shown)을 정했다. look_ang을 부드럽게 따라간다 */
+    double look_shown;
+    int64_t look_shown_at;
     int have_boss_brain;             /* 보스전의 뇌 표시를 받았다 */
     float boss_stim[BRAIN_GROUP_COUNT], boss_rate[BRAIN_GROUP_COUNT], boss_takeoff;
     frame_map_t boss_fm;
@@ -147,7 +161,7 @@ static void *recv_main(void *arg)
                 S.phase_at = now_ms();
                 if (S.ph.phase != PH_PLAY) S.have_frame = 0;
                 if (S.ph.phase != PH_BOSS) {
-                    S.have_boss = S.have_look = S.have_boss_brain = 0;
+                    S.have_boss = S.have_look = S.have_boss_brain = S.look_shown_ok = 0;
                     S.boss_hit_at = S.boss_hurt_at = S.boss_wave_at = 0;
                 }
                 S.boss_help = 0;
@@ -238,6 +252,27 @@ static void next_watch(void)
     S.dirty = 1;
     pthread_cond_broadcast(&S.cv);
     pthread_mutex_unlock(&S.mu);
+}
+
+/* 화면(그림)이 터미널에서 차지하는 칸 수(가로) */
+static int picture_cols(void)
+{
+    if (!gfx_sixel) return SCREEN_W * view_scale;
+    int cw = term_caps()->cell_w;
+    return (SCREEN_W * atomic_load(&hd_n) + cw - 1) / cw;
+}
+
+/* 터미널 글자 칸을 전체 화면(240x134)의 픽셀로 바꾼다. 화면 밖이면 0 */
+static int cell_to_screen(int cols, int rows, int cell_x, int cell_y, int *sx, int *sy)
+{
+    if (!gfx_sixel) return present_cell_to_screen_scaled(cols, rows, view_scale, cell_x, cell_y, sx, sy);
+    int n = atomic_load(&hd_n), px, py;
+    image_t size = { SCREEN_W * n, SCREEN_H * n, NULL };
+    const term_caps_t *tc = term_caps();
+    if (!sixel_cell_to_pixel(&size, cols, rows, tc->cell_w, tc->cell_h, cell_x, cell_y, &px, &py)) return 0;
+    *sx = px / n;
+    *sy = py / n;
+    return 1;
 }
 
 /* 보스전의 시선. 입력 스레드만 쓴다(방향 자체인 S.look_ang은 S.mu로 지킨다) */
@@ -338,7 +373,7 @@ static void *input_main(void *arg)
                  * 왼쪽 버튼은 무기 쓰기(스페이스), 휠은 다음 무기(F)다 */
                 int cols = 0, rows = 0;
                 term_size(&cols, &rows);
-                int cw = SCREEN_W * view_scale, x = ev.x - (cols - cw) / 2, zone = (int)((double)cw * LOOK_EDGE);
+                int cw = picture_cols(), x = ev.x - (cols - cw) / 2, zone = (int)((double)cw * LOOK_EDGE);
                 if (zone < 2) zone = 2;
                 if (look.last_cx >= 0 && ev.x != look.last_cx)
                     look_turn((double)(ev.x - look.last_cx) * LOOK_SPAN / (double)cw);
@@ -363,7 +398,7 @@ static void *input_main(void *arg)
                 /* 터미널 글자 칸을 전체 화면의 픽셀로 바꿔서 올린다 */
                 int cols = 0, rows = 0, sx, sy;
                 term_size(&cols, &rows);
-                if (!present_cell_to_screen_scaled(cols, rows, view_scale, ev.x, ev.y, &sx, &sy)) continue;
+                if (!cell_to_screen(cols, rows, ev.x, ev.y, &sx, &sy)) continue;
                 m.x = (int16_t)sx;
                 m.y = (int16_t)sy;
             } else if (ev.kind != IN_KEY) {
@@ -379,14 +414,36 @@ static void *input_main(void *arg)
 /* 보스전 화면. 그리는 일은 boss/boss_view.c가 한다. S.mu를 잡은 채로 부른다. */
 static int ms_since(int64_t at) { return at ? (int)(now_ms() - at) : -1; }
 
-static void draw_boss(canvas_t *full, const phase_msg_t *ph)
+/* 화면에 그릴 내 시선. 정한 방향(S.look_ang)을 조금 늦게 부드럽게 따라간다. 터미널은 마우스 자리를 글자 칸으로만
+ * 알려 줘서, 칸이 크면 방향이 한 번에 1~2도씩 뛴다. 다 따라가지 못했으면 곧바로 다시 그리게 한다 */
+static uint16_t shown_look(void)
+{
+    int64_t now = now_ms();
+    if (!S.look_shown_ok) {
+        S.look_shown = (double)S.look_ang;
+        S.look_shown_ok = 1;
+    } else {
+        int diff = (int16_t)(uint16_t)(S.look_ang - (uint16_t)(long long)S.look_shown);
+        if (diff > -24 && diff < 24) {
+            S.look_shown = (double)S.look_ang;
+        } else {
+            S.look_shown += (double)diff * (1.0 - exp(-(double)(now - S.look_shown_at) / LOOK_SMOOTH_MS));
+            S.look_shown = fmod(S.look_shown + 65536.0, 65536.0);
+            S.dirty = 1;
+        }
+    }
+    S.look_shown_at = now;
+    return (uint16_t)(long long)S.look_shown;
+}
+
+/* 보스전을 그릴 때 그리는 쪽에 넘길 것들을 채운다. S.mu를 잡은 채로 부른다 */
+static boss_view_t boss_view(const phase_msg_t *ph)
 {
     boss_view_t v = { .me = (ph->me >= 0 && ph->me < PROTO_SEATS) ? ph->pane_of[ph->me] : -1,
                       .hit_ms = ms_since(S.boss_hit_at), .hurt_ms = ms_since(S.boss_hurt_at),
                       .wave_ms = ms_since(S.boss_wave_at), .watch = S.boss_watch, .help = S.boss_help,
                       .age_ms = (int)(now_ms() - S.phase_at),
-                      .look_on = S.have_look, .look_ang = S.look_ang };
-    if (!S.have_boss) { scene_message(full, "BOSS", C_YELLOW); return; }
+                      .look_on = S.have_look, .look_ang = S.have_look ? shown_look() : 0 };
     if (S.have_boss_brain) {
         v.brain_stim = S.boss_stim;
         v.brain_rate = S.boss_rate;
@@ -395,6 +452,13 @@ static void draw_boss(canvas_t *full, const phase_msg_t *ph)
     }
     for (int s = 0; s < PROTO_SEATS; s++)
         if (ph->pane_of[s] >= 0 && ph->pane_of[s] < BOSS_PLAYERS) v.name[ph->pane_of[s]] = ph->name[s];
+    return v;
+}
+
+static void draw_boss(canvas_t *full, const phase_msg_t *ph)
+{
+    if (!S.have_boss) { scene_message(full, "BOSS", C_YELLOW); return; }
+    boss_view_t v = boss_view(ph);
     boss_view_draw(full, &S.boss, &v);
 }
 
@@ -554,6 +618,56 @@ static void show(canvas_t *c)
     }
 }
 
+/* ---- 픽셀 그림으로 보내기 (Sixel) ------------------------------------------------ */
+static image_t *hd_img;              /* 터미널에 보내는 그림(240n x 134n) */
+static sixel_state_t *sx;
+
+/* 지금 창에 들어가는 가장 큰 그림을 마련한다. 창 크기가 바뀌면 다시 만든다. 못 만들면 0 */
+static int hd_prepare(void)
+{
+    const term_caps_t *tc = term_caps();
+    int cols = 0, rows = 0;
+    term_size(&cols, &rows);
+    int n = cols * tc->cell_w / SCREEN_W, m = rows * tc->cell_h / SCREEN_H;
+    if (m < n) n = m;
+    if (n > hd_cap) n = hd_cap;
+    if (n < 1) n = 1;
+    if (!hd_img || hd_img->w != SCREEN_W * n) {
+        image_free(hd_img);
+        hd_img = image_new(SCREEN_W * n, SCREEN_H * n);
+        if (!hd_img) return 0;
+    }
+    atomic_store(&hd_n, n);
+    return 1;
+}
+
+/* 240x134 캔버스에 그린 화면을 그림으로 옮긴다. 그림은 계단을 깎아 가며 키우고, 받아 둔 글자는 큰 글꼴로 다시 그린다 */
+static void hd_from_canvas(const canvas_t *full, const ui_text_item_t *items, int n_items)
+{
+    int n = hd_img->w / SCREEN_W;
+    hd_upscale(hd_img, full);
+    for (int i = 0; i < n_items; i++)
+        hd_text(hd_img, (float)(items[i].x * n), (float)(items[i].y * n), items[i].s, hd_color(items[i].col),
+                (float)(UI_KFONT_H * n), 1.0f);
+}
+
+static void show_hd(void)
+{
+    const term_caps_t *tc = term_caps();
+    int cols = 0, rows = 0;
+    size_t len = 0;
+    term_size(&cols, &rows);
+    const char *p = sixel_encode(sx, hd_img, cols, rows, tc->cell_w, tc->cell_h, &len);
+    if (p) {
+        if (len > 0) write_all(p, len);
+        notice = 0;
+    } else if (!notice) {
+        static const char msg[] = "\033[0m\033[2J\033[H창이 너무 작습니다. 창을 키워 주세요. (q: 나가기)\r\n";
+        write_all(msg, sizeof msg - 1);
+        notice = 1;
+    }
+}
+
 /* ---- 입장 화면 ---------------------------------------------------------------- */
 /* 서버에 잠깐 붙어 역대 순위만 받아 온다. 로비에는 나타나지 않는다. 1이면 받았다. */
 static int peek_top(const char *host, int port, top_msg_t *top)
@@ -587,6 +701,8 @@ static int run_title(const char *host, int port)
     int sel = 0, past = 0, past_ok = 0;
 
     for (int tick = 0; ; tick++) {
+        int hd = gfx_sixel && hd_prepare();
+        if (hd) ui_text_capture_begin(full);
         if (past) {
             /* 지난 랭킹 */
             ui_clear(full, C_BG);
@@ -598,7 +714,14 @@ static int run_title(const char *host, int port)
         } else {
             scene_title(full, tick, sel);
         }
-        show(full);
+        if (hd) {
+            const ui_text_item_t *items;
+            int n_items = ui_text_capture_end(&items);
+            hd_from_canvas(full, items, n_items);
+            show_hd();
+        } else {
+            show(full);
+        }
 
         struct pollfd pf = { STDIN_FILENO, POLLIN, 0 };
         if (poll(&pf, 1, 50) > 0) {
@@ -651,7 +774,18 @@ static int run_screen(void)
         if (S.quit) { pthread_mutex_unlock(&S.mu); break; }
         S.dirty = 0;
         canvas_t *shown = full;
-        if (big_canvas && S.have_phase && S.ph.phase == PH_BOSS && S.have_boss) {
+        const ui_text_item_t *items = NULL;
+        int hd = gfx_sixel && hd_prepare(), n_items = 0, boss = S.have_phase && S.ph.phase == PH_BOSS && S.have_boss;
+        /* 보스전에서 싸우는 화면인가(시프봇의 키 안내가 떠 있지 않다). 그 화면은 큰 그림에 바로 그린다 */
+        int fight = boss && !(S.boss.outcome == BOSS_GOING && (S.boss_help || S.boss.tick == 0));
+        if (hd && fight) {
+            boss_view_t v = boss_view(&S.ph);
+            boss_view_draw_hd(hd_img, &S.boss, &v);
+        } else if (hd) {
+            ui_text_capture_begin(full);
+            draw(full);
+            n_items = ui_text_capture_end(&items);
+        } else if (big_canvas && boss) {
             draw_boss(big_canvas, &S.ph);            /* 보스전의 3D 화면은 키운 화면에 바로 그린다 */
             shown = big_canvas;
         } else {
@@ -659,7 +793,12 @@ static int run_screen(void)
         }
         pthread_mutex_unlock(&S.mu);
 
-        show(shown);
+        if (hd) {
+            if (!fight) hd_from_canvas(full, items, n_items);
+            show_hd();
+        } else {
+            show(shown);
+        }
     }
 
     shutdown(sock, SHUT_RDWR);                       /* 수신 스레드를 깨운다 */
@@ -727,7 +866,8 @@ static int run_bot(int wait_players)
 int main(int argc, char **argv)
 {
     const char *host = "127.0.0.1", *name = "PLAYER";
-    int port = PROTO_PORT, bot = 0, wait_players = 1, no_title = 0, auto_scale = 0;
+    int port = PROTO_PORT, bot = 0, wait_players = 1, no_title = 0, auto_scale = 0, scale_given = 0;
+    const char *gfx = "auto";
     setvbuf(stdout, NULL, _IOLBF, 0);
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -738,7 +878,8 @@ int main(int argc, char **argv)
         else if (strcmp(a, "--bot") == 0)         bot = 1;
         else if (strcmp(a, "--no-title") == 0)    no_title = 1;
         else if (strcmp(a, "--scale=auto") == 0)  auto_scale = 1;
-        else if (strncmp(a, "--scale=", 8) == 0)  view_scale = atoi(a + 8);
+        else if (strncmp(a, "--scale=", 8) == 0)  { view_scale = atoi(a + 8); scale_given = 1; }
+        else if (strcmp(a, "--gfx=auto") == 0 || strcmp(a, "--gfx=cell") == 0 || strcmp(a, "--gfx=sixel") == 0) gfx = a + 6;
         else { printf("모르는 옵션: %s\n", a); return 2; }
     }
     if (view_scale < 1 || view_scale > PRESENT_MAX_SCALE) {
@@ -752,6 +893,15 @@ int main(int argc, char **argv)
         if (term_enter() != 0) {
             printf("터미널에서 실행해 주세요\n");
             return 2;
+        }
+        /* 터미널이 그림을 받아 주면 화면을 픽셀 그림으로 보낸다. 그때 --scale은 그림 배율의 상한이다 */
+        gfx_sixel = strcmp(gfx, "sixel") == 0 || (strcmp(gfx, "auto") == 0 && term_caps()->sixel);
+        if (gfx_sixel) {
+            if (scale_given) hd_cap = view_scale;
+            view_scale = 1;
+            auto_scale = 0;
+            sx = sixel_new();
+            if (!sx) gfx_sixel = 0;
         }
         if (auto_scale) {
             /* 지금 터미널에 들어가는 가장 큰 배율. 글자가 작을수록(칸이 많을수록) 높아진다 */

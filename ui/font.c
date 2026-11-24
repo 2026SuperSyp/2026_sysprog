@@ -163,9 +163,38 @@ static int has_wide(const char *s)
     return 0;
 }
 
+/* ---- 글자 받아 두기 ---- */
+#define CAPTURE_MAX 160
+static struct {
+    const canvas_t *target;        /* NULL이면 받아 두지 않는다 */
+    int n;
+    ui_text_item_t item[CAPTURE_MAX];
+} capture;
+
+void ui_text_capture_begin(const canvas_t *target)
+{
+    capture.target = target;
+    capture.n = 0;
+}
+
+int ui_text_capture_end(const ui_text_item_t **items)
+{
+    capture.target = NULL;
+    if (items) *items = capture.item;
+    return capture.n;
+}
+
 void ui_text(canvas_t *c, int x, int y, const char *s, color_t col)
 {
     if (!c || !s) return;
+    if (c == capture.target && capture.n < CAPTURE_MAX && col != C_NONE) {
+        ui_text_item_t *it = &capture.item[capture.n++];
+        it->x = (int16_t)x;
+        it->y = (int16_t)y;
+        it->col = col;
+        utf8_copy(it->s, sizeof it->s, s);
+        return;
+    }
     int latin_y = y + (has_wide(s) ? UI_KFONT_LATIN_DY : 0);
     int cp;
     while ((cp = utf8_next(&s)) != 0) {
