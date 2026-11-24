@@ -602,7 +602,7 @@ void boss_view_draw(canvas_t *full, const boss_snap_t *b, const boss_view_t *v)
         float px = (float)b->p[eye].x / BOSS_FIX, py = (float)b->p[eye].y / BOSS_FIX;
         /* 내 눈이면 마우스로 돌린 방향을 쓴다. 서버가 알려 준 방향은 한두 틱 늦다 */
         eye_ang = (float)(eye == v->me && v->look_on ? v->look_ang : b->p[eye].ang) * TWO_PI / 65536.0f;
-        EZ = BOSS_VIEW_EYE_H + (float)b->p[eye].z / 100.0f;          /* 뛰어오른 만큼 눈이 올라간다 */
+        EZ = BOSS_VIEW_EYE_H + (eye == v->me && v->z_on ? v->z : (float)b->p[eye].z / 100.0f);      /* 뛰어오른 만큼 올라간다 */
         set_view(W, H, hud);
         draw_walls(full, px, py, cosf(eye_ang), sinf(eye_ang));
         draw_things(full, b, eye, px, py, cosf(eye_ang), sinf(eye_ang));

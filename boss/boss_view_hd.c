@@ -1246,7 +1246,7 @@ void boss_view_draw_hd(image_t *im, const boss_snap_t *b, const boss_view_t *v)
         float px = (float)b->p[eye].x / BOSS_FIX, py = (float)b->p[eye].y / BOSS_FIX;
         /* 내 눈이면 마우스로 돌린 방향을 쓴다. 서버가 알려 준 방향은 한두 틱 늦다 */
         eye_ang = (float)(eye == v->me && v->look_on ? v->look_ang : b->p[eye].ang) * TWO_PI / 65536.0f;
-        EZ += (float)b->p[eye].z / 100.0f;           /* 뛰어오른 만큼 눈이 올라간다 */
+        EZ += eye == v->me && v->z_on ? v->z : (float)b->p[eye].z / 100.0f;      /* 뛰어오른 만큼 눈이 올라간다 */
         float dx = cosf(eye_ang), dy = sinf(eye_ang);
         draw_background(im, px, py, eye_ang, dx, dy);
         draw_things(im, b, v, eye, px, py, dx, dy);

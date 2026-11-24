@@ -21,8 +21,9 @@
  *   BOSS_SNEAK           살금살금을 켜고 끈다. 켜져 있으면 모든 걸음이 살금살금이다
  *   BOSS_GUARD           막기. 잠깐(guard_ticks) 막는 자세를 한다. 그동안 돌진에 닿으면 다치지 않고 초파리가 잠깐 멈춘다.
  *                        한 번 쓰면 guard_cooldown 동안 다시 못 쓴다
- *   BOSS_JUMP            뛰어오른다(jump_ticks 동안 포물선으로). 돌진이 닿는 순간에 jump_clear보다 높이 떠 있으면
- *                        돌진이 발밑으로 지나가서 맞지 않는다. 막기와 달리 초파리는 멈추지 않는다
+ *   BOSS_JUMP            뛰어오른다(jump_ticks 동안, 높이는 boss_jump_curve). 돌진이 닿는 순간에 jump_clear보다 높이
+ *                        떠 있으면 돌진이 발밑으로 지나가서 맞지 않는다. 막기와 달리 초파리는 멈추지 않는다.
+ *                        아직 떠 있을 때 누르면 jump_buffer 동안 기억해 두었다가 내려서자마자 다시 뛴다
  *   SK_LEFT / SK_RIGHT   한 칸(22.5도) 왼쪽 / 오른쪽으로 돈다(마우스가 없을 때와 봇이 쓴다)
  *   SK_1, SK_2, SK_3, SK_4   파리채 / 스프레이 / 끈끈이 / 먹이를 고른다
  *   SK_SUB               다음 무기로 바꾼다
@@ -90,6 +91,7 @@ typedef struct {
     float takeoff_scale;                         /* 도약에만 곱하는 게임용 배율(speed_scale 대신) */
     int   guard_ticks, guard_cooldown, guard_stun;   /* 막는 자세의 길이, 다시 쓸 때까지, 막힌 초파리가 멈추는 시간 */
     int   jump_ticks, jump_rest;                 /* 뛰어올라 떠 있는 시간, 내려선 뒤 다시 뛰지 못하는 시간 */
+    int   jump_buffer;                           /* 뛸 수 없을 때 누른 키를 기억해 두는 시간. 그 안에 뛸 수 있게 되면 뛴다 */
     float jump_height, jump_clear;               /* 꼭대기의 높이(칸), 이 높이 이상이면 돌진이 발밑으로 지나간다 */
     /* 먹이. 초파리는 냄새가 닿는 거리(bait_smell) 안에 보이는 먹이로 걸어가고(bait_speed), 닿으면 단맛 자극
      * (bait_sugar)이 뇌로 들어간다. 뇌의 먹기 반응이 feed_level 이상이면 먹는다. 다 먹는 데 bait_ticks가 걸리고
@@ -120,6 +122,7 @@ typedef struct {
     int   slow, sneak;           /* 다음 걸음이 살금살금인가(키에 BOSS_SLOW), 살금살금을 켜 두었는가(BOSS_SNEAK) */
     int   guard, guard_cool;     /* 막는 자세가 남은 틱, 막기를 다시 쓸 때까지 남은 틱 */
     int   jump, jump_rest;       /* 뛰어올라 떠 있는 남은 틱, 내려선 뒤 다시 뛸 때까지 남은 틱 */
+    int   jump_buf;              /* 뛸 수 없을 때 누른 키를 기억하는 남은 틱 */
     float z;                     /* 발이 바닥에서 떠 있는 높이(칸) */
     int   baits;                 /* 남은 먹이 */
     int   has_look;              /* boss_look이 왔다. 다음 틱에 look을 보는 방향으로 삼는다 */
@@ -197,6 +200,8 @@ void boss_cfg_load(boss_cfg_t *c, const char *path);    /* 기본값에서 시�
 void boss_init(boss_state_t *s, const boss_cfg_t *c, uint32_t seed, int n_players, const int lives[]);
 void boss_input(boss_state_t *s, int player, int key);
 void boss_look(boss_state_t *s, int player, float ang);     /* 보는 방향을 정한다(라디안). 다음 틱에 반영된다 */
+/* 뛰어오른 높이의 모양. t는 뛰기 시작한 뒤로 지난 정도(0~1)이고 꼭대기가 1이다. 서버의 판정과 클라이언트의 화면이 같이 쓴다 */
+float boss_jump_curve(float t);
 void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT]);
 void boss_tick(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT]);
 void boss_snapshot(const boss_state_t *s, boss_snap_t *out);

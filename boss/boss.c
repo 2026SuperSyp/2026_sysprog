@@ -47,7 +47,7 @@ void boss_cfg_default(boss_cfg_t *c)
     c->takeoff_level = 0.5f; c->takeoff_mm_s = 480.0f; c->air_ticks = 10; c->air_rest_ticks = 20;
     c->takeoff_scale = 0.055f;
     c->guard_ticks = 10; c->guard_cooldown = 50; c->guard_stun = 24;
-    c->jump_ticks = 12; c->jump_rest = 4; c->jump_height = 1.0f; c->jump_clear = 0.5f;
+    c->jump_ticks = 10; c->jump_rest = 0; c->jump_buffer = 3; c->jump_height = 1.0f; c->jump_clear = 0.35f;
     c->bait_count = 3; c->bait_ticks = 60; c->bait_wary = 100;
     c->bait_throw = 3.0f; c->bait_smell = 8.0f; c->bait_speed = 0.12f; c->bait_sugar = 1.0f; c->bait_heal = 5.0f;
     c->feed_level = 0.5f;
@@ -75,7 +75,7 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     F(body_mm); F(walk_mm_s); F(run_mm_s); F(back_mm_s); F(turn_deg_s); I(accel_ticks); F(speed_scale); F(turn_scale);
     F(takeoff_level); F(takeoff_mm_s); I(air_ticks); I(air_rest_ticks); F(takeoff_scale);
     I(guard_ticks); I(guard_cooldown); I(guard_stun);
-    I(jump_ticks); I(jump_rest); F(jump_height); F(jump_clear);
+    I(jump_ticks); I(jump_rest); I(jump_buffer); F(jump_height); F(jump_clear);
     I(bait_count); I(bait_ticks); I(bait_wary); F(bait_throw); F(bait_smell); F(bait_speed); F(bait_sugar); F(bait_heal);
     F(feed_level);
     F(swat_range); F(swat_damage); I(swat_cooldown);
@@ -186,6 +186,16 @@ void boss_init(boss_state_t *s, const boss_cfg_t *c, uint32_t seed, int n_player
     s->fly.target = -1;
 }
 
+/* 올라갈 때는 빨리 솟아 꼭대기에서 느려지고, 내려올 때는 올라갈 때보다 빨리 떨어진다(오르는 데 55%, 내리는 데 45%).
+ * 좌우가 같은 포물선은 붕 떠 있는 것처럼 느리게 느껴진다 */
+float boss_jump_curve(float t)
+{
+    const float up = 0.55f;
+    if (t <= 0.0f || t >= 1.0f) return 0.0f;
+    float u = t < up ? (up - t) / up : (t - up) / (1.0f - up);
+    return 1.0f - u * u;
+}
+
 void boss_input(boss_state_t *s, int player, int key)
 {
     if (player < 0 || player >= s->n_players || s->outcome != BOSS_GOING) return;
@@ -196,8 +206,10 @@ void boss_input(boss_state_t *s, int player, int key)
         if (p->guard_cool == 0) { p->guard = s->cfg.guard_ticks; p->guard_cool = s->cfg.guard_cooldown; }
         return;
     }
-    if (key == BOSS_JUMP) {                          /* 뛰어오르기: 땅에 서 있고 방금 내려선 것이 아니면 뛴다 */
-        if (p->jump == 0 && p->jump_rest == 0 && s->cfg.jump_ticks > 0) p->jump = s->cfg.jump_ticks;
+    if (key == BOSS_JUMP) {      /* 뛰어오르기: 땅에 서 있으면 바로 뛴다. 아직 떠 있으면 눌렀다는 것을 잠깐 기억해 둔다 */
+        if (s->cfg.jump_ticks <= 0) return;
+        if (p->jump == 0 && p->jump_rest == 0) p->jump = s->cfg.jump_ticks;
+        else p->jump_buf = s->cfg.jump_buffer;
         return;
     }
     int slow = (key & BOSS_SLOW) != 0, strafe = (key & BOSS_STRAFE) != 0;
@@ -383,13 +395,16 @@ static void players_act(boss_state_t *s)
         if (p->cool > 0) p->cool--;
         if (p->guard > 0) p->guard--;
         if (p->guard_cool > 0) p->guard_cool--;
-        if (p->jump > 0) {                               /* 떠 있다: 포물선으로 올라갔다 내려온다 */
+        if (p->jump > 0) {                               /* 떠 있다 */
             p->jump--;
-            float t = 1.0f - (float)p->jump / (float)c->jump_ticks;
-            p->z = p->jump > 0 ? c->jump_height * 4.0f * t * (1.0f - t) : 0.0f;
+            p->z = p->jump > 0 ? c->jump_height * boss_jump_curve(1.0f - (float)p->jump / (float)c->jump_ticks) : 0.0f;
             if (p->jump == 0) p->jump_rest = c->jump_rest;
         } else if (p->jump_rest > 0) {
             p->jump_rest--;
+        }
+        if (p->jump_buf > 0) {                           /* 기억해 둔 키: 뛸 수 있게 되면(내려서자마자) 뛴다 */
+            p->jump_buf--;
+            if (p->jump == 0 && p->jump_rest == 0 && p->alive) { p->jump = c->jump_ticks; p->jump_buf = 0; }
         }
         p->closing = 0.0f;
         if (!p->alive) { p->move = p->strafe = p->turn = p->use = p->pick = p->has_look = p->step_left = 0; continue; }

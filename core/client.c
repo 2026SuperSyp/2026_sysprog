@@ -94,6 +94,8 @@ static struct {
     frame_map_t boss_fm;
     int64_t boss_hit_at, boss_hurt_at, boss_wave_at;     /* 내 공격이 맞은 때, 내가 맞은 때, 날갯짓이 있던 때(ms) */
     int64_t boss_block_at, boss_dodge_at;        /* 내가 돌진을 막은 때, 뛰어넘은 때 */
+    int64_t jump_at, jump_done_at;   /* 내가 뛰어오른 때(뛰는 중이 아니면 0), 그 뜀이 화면에서 끝난 때 */
+    int jump_queued;                 /* 내려서기 직전에 또 눌렀다: 내려서자마자 다시 뛴다 */
     int watch;                       /* 오른쪽 위에 볼 칸. WATCH_FLY이면 키보드 치는 초파리 */
     int dirty, quit;
     char why[96];                    /* 끝난 이유 */
@@ -164,6 +166,8 @@ static void *recv_main(void *arg)
                 if (S.ph.phase != PH_BOSS) {
                     S.have_boss = S.have_look = S.have_boss_brain = S.look_shown_ok = 0;
                     S.boss_hit_at = S.boss_hurt_at = S.boss_wave_at = S.boss_block_at = S.boss_dodge_at = 0;
+                    S.jump_at = S.jump_done_at = 0;
+                    S.jump_queued = 0;
                 }
                 S.boss_help = 0;
                 if (S.ph.phase == PH_CARD) S.watch = -1;         /* 새 라운드: 볼 칸을 다시 고른다 */
@@ -290,6 +294,8 @@ static int cell_to_screen(int cols, int rows, int cell_x, int cell_y, int *sx, i
     return 1;
 }
 
+static void jump_predict(void);      /* 아래 "뛰어오르기"에 있다 */
+
 /* 보스전의 시선. 입력 스레드만 쓴다(방향 자체인 S.look_ang은 S.mu로 지킨다) */
 static struct {
     int last_cx;                 /* 마지막으로 본 마우스의 칸(가로). 모르면 -1 */
@@ -409,6 +415,7 @@ static void *input_main(void *arg)
                 continue;
             }
             if (boss && look_send(1) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
+            if (boss && ev.kind == IN_KEY && ev.code == ' ') jump_predict();     /* 뛰어오르기는 누른 순간부터 그린다 */
             input_msg_t m = { .kind = ev.kind, .flags = ev.flags, .code = ev.code };
             if (ev.kind == IN_POINTER) {
                 /* 터미널 글자 칸을 전체 화면의 픽셀로 바꿔서 올린다 */
@@ -429,6 +436,55 @@ static void *input_main(void *arg)
 /* ---- 그리기 ------------------------------------------------------------------ */
 /* 보스전 화면. 그리는 일은 boss/boss_view.c가 한다. S.mu를 잡은 채로 부른다. */
 static int ms_since(int64_t at) { return at ? (int)(now_ms() - at) : -1; }
+
+/* ---- 뛰어오르기 --------------------------------------------------------------------- */
+/* 뛰어오르기는 서버의 답을 기다리지 않고 키를 누른 순간부터 화면에 보인다. 서버는 다음 틱에야 뛰기 시작하고 그 상태가
+ * 돌아오기까지 한두 틱이 더 걸려서, 기다렸다 그리면 누른 뒤 0.1초쯤 늦게 뛰는 것처럼 느껴진다. 높이도 상태가 오는
+ * 1초에 20번이 아니라 프레임마다 시간에서 구해서 매끈하게 움직인다. 맞았는지의 판정은 서버가 한다.
+ * 규칙의 수치(떠 있는 시간, 높이, 키를 기억하는 시간)는 서버와 같은 boss/config.ini에서 읽는다 */
+#define LAND_MS   120                /* 내려선 뒤 눈이 살짝 주저앉았다 돌아오는 시간 */
+#define LAND_DIP  0.06f              /* 주저앉는 깊이(칸) */
+static boss_cfg_t boss_cfg;
+
+/* 뛰어오르는 키를 눌렀다. 서 있으면 바로 뛰고, 아직 떠 있으면 내려서기 직전일 때만 기억해 둔다(서버와 같은 규칙).
+ * 입력 스레드가 부른다 */
+static void jump_predict(void)
+{
+    pthread_mutex_lock(&S.mu);
+    int me = (S.have_phase && S.ph.me >= 0 && S.ph.me < PROTO_SEATS) ? S.ph.pane_of[S.ph.me] : -1;
+    int64_t now = now_ms(), dur = (int64_t)boss_cfg.jump_ticks * 50;
+    if (S.have_boss && !S.boss_help && S.boss.tick > 0 && S.boss.outcome == BOSS_GOING && me >= 0 && me < S.boss.n_players &&
+        me < BOSS_PLAYERS && S.boss.p[me].alive && dur > 0) {
+        if (!S.jump_at) S.jump_at = now;
+        else if (now - S.jump_at >= dur - (int64_t)boss_cfg.jump_buffer * 50) S.jump_queued = 1;
+        S.dirty = 1;
+        pthread_cond_broadcast(&S.cv);
+    }
+    pthread_mutex_unlock(&S.mu);
+}
+
+/* 화면에 그릴 내 눈의 높이(칸). 뛰는 중이면 누른 때부터 흐른 시간으로 구하고, 내려선 뒤 잠깐은 살짝 주저앉았다 돌아온다
+ * (내려선 느낌). 그리는 동안은 *on이 1이다. 뛰는 중이 아니면 *on이 0이고 그리는 쪽이 서버가 알려 준 높이를 쓴다.
+ * 다만 뛴 직후 잠깐은 *on을 1로 둔다: 서버는 한두 틱 늦게 뛰었으므로 그 상태에는 아직 떠 있는 것으로 온다.
+ * S.mu를 잡은 채로 부른다 */
+static float shown_jump(int *on)
+{
+    int64_t now = now_ms(), dur = (int64_t)boss_cfg.jump_ticks * 50;
+    *on = 0;
+    if (S.jump_at) {
+        int64_t age = now - S.jump_at;
+        *on = 1;
+        S.dirty = 1;                                 /* 움직이는 중이다. 곧바로 다시 그린다 */
+        if (age < dur) return boss_cfg.jump_height * boss_jump_curve((float)age / (float)dur);
+        if (S.jump_queued) { S.jump_queued = 0; S.jump_at = now; return 0.0f; }
+        if (age < dur + LAND_MS) return -LAND_DIP * sinf(3.14159265f * (float)(age - dur) / (float)LAND_MS);
+        S.jump_at = 0;
+        S.jump_done_at = now;
+        return 0.0f;
+    }
+    if (S.jump_done_at && now - S.jump_done_at < 250) *on = 1;
+    return 0.0f;
+}
 
 /* 화면에 그릴 내 시선. 정한 방향(S.look_ang)을 조금 늦게 부드럽게 따라간다. 터미널은 마우스 자리를 글자 칸으로만
  * 알려 줘서, 칸이 크면 방향이 한 번에 1~2도씩 뛴다. 다 따라가지 못했으면 곧바로 다시 그리게 한다 */
@@ -455,7 +511,10 @@ static uint16_t shown_look(void)
 /* 보스전을 그릴 때 그리는 쪽에 넘길 것들을 채운다. S.mu를 잡은 채로 부른다 */
 static boss_view_t boss_view(const phase_msg_t *ph)
 {
+    int z_on;
+    float z = shown_jump(&z_on);
     boss_view_t v = { .me = (ph->me >= 0 && ph->me < PROTO_SEATS) ? ph->pane_of[ph->me] : -1,
+                      .z_on = z_on, .z = z,
                       .hit_ms = ms_since(S.boss_hit_at), .hurt_ms = ms_since(S.boss_hurt_at),
                       .wave_ms = ms_since(S.boss_wave_at), .block_ms = ms_since(S.boss_block_at),
                       .dodge_ms = ms_since(S.boss_dodge_at),
@@ -1029,6 +1088,7 @@ int main(int argc, char **argv)
         printf("%s:%d 에 접속할 수 없습니다\n", host, port);
         return 1;
     }
+    boss_cfg_load(&boss_cfg, "boss/config.ini");     /* 뛰어오르기를 서버와 같은 수치로 그린다 */
     hello_msg_t hello = { .version = PROTO_VERSION };
     utf8_copy(hello.name, sizeof hello.name, name);
     if (msg_send(sock, MSG_HELLO, 0, 0, &hello, sizeof hello) != 0) { if (!bot) term_leave(); return 1; }

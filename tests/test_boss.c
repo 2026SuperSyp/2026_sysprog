@@ -502,15 +502,20 @@ static void test_jump(void)
     for (int k = 0; k < c.jump_ticks; k++) {
         boss_tick(&S, still);
         if (S.p[0].z > top) top = S.p[0].z;
-        if (k == c.jump_ticks / 2) boss_input(&S, 0, BOSS_JUMP);  /* 떠 있는 동안에는 또 뛰지 못한다 */
+        if (k == c.jump_ticks / 2) boss_input(&S, 0, BOSS_JUMP);  /* 한창 떠 있을 때 누른 것은 내려서기 전에 잊는다 */
     }
     T_CHECK(top > c.jump_height * 0.9f && top <= c.jump_height + 1e-4f);
     T_CHECK(S.p[0].z == 0.0f && S.p[0].jump == 0);
-    boss_input(&S, 0, BOSS_JUMP);                                 /* 내려선 직후에도 못 뛴다 */
-    T_EQ_INT(S.p[0].jump, 0);
-    ticks(c.jump_rest, still);
-    boss_input(&S, 0, BOSS_JUMP);
+    boss_tick(&S, still);
+    T_EQ_INT(S.p[0].jump, 0);                                     /* 잊었다 */
+    boss_input(&S, 0, BOSS_JUMP);                                 /* 내려선 뒤에는 바로 다시 뛸 수 있다 */
     T_EQ_INT(S.p[0].jump, c.jump_ticks);
+    ticks(c.jump_ticks - 2, still);
+    boss_input(&S, 0, BOSS_JUMP);                                 /* 내려서기 직전에 누르면 기억해 두었다가 내려서자마자 뛴다 */
+    T_CHECK(S.p[0].jump > 0 && S.p[0].jump_buf > 0);
+    ticks(2, still);
+    T_EQ_INT(S.p[0].jump, c.jump_ticks);
+    T_CHECK(boss_jump_curve(0.3f) > boss_jump_curve(0.8f));       /* 올라갈 때보다 빨리 떨어진다 */
     boss_snap_t snap;
     ticks(c.jump_ticks / 2, still);
     boss_snapshot(&S, &snap);
