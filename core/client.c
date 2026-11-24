@@ -727,6 +727,24 @@ static void hd_from_canvas(const canvas_t *full, const ui_text_item_t *items, in
     hd_items(hd_img, items, n_items, k, ox, oy);
 }
 
+/* 로비를 픽셀 그림에 바로 그린다(ui/art.c). 글자 칸으로 보낼 때는 screen_lobby가 캔버스에 그린다.
+ * S.mu를 잡은 채로 부른다 */
+static void draw_lobby_hd(void)
+{
+    static char top_line[6][PROTO_NAME_LEN + 24];
+    const phase_msg_t *ph = &S.ph;
+    art_seat_t seat[PROTO_SEATS];
+    const char *top[6];
+    int n = 0, n_top = 0;
+    for (int s = 0; s < PROTO_SEATS; s++)
+        if (ph->seated[s]) seat[n++] = (art_seat_t){ ph->name[s], ph->ready[s], s == ph->host, s == ph->me };
+    for (int i = 0; i < S.top.n && i < 6 && i < PROTO_TOP_N; i++) {
+        snprintf(top_line[i], sizeof top_line[i], "%d   %.*s   %d", i + 1, PROTO_NAME_LEN, S.top.name[i], (int)S.top.score[i]);
+        top[n_top++] = top_line[i];
+    }
+    art_lobby(hd_img, seat, n, top, n_top, (double)(now_ms() - S.phase_at) / 1000.0);
+}
+
 static void show_hd(void)
 {
     const term_caps_t *tc = term_caps();
@@ -855,9 +873,12 @@ static int run_screen(void)
         int hd = gfx_sixel && hd_prepare(), n_items = 0, boss = S.have_phase && S.ph.phase == PH_BOSS && S.have_boss;
         /* 보스전에서 싸우는 화면인가(시프봇의 키 안내가 떠 있지 않다). 그 화면은 큰 그림에 바로 그린다 */
         int fight = boss && !(S.boss.outcome == BOSS_GOING && (S.boss_help || S.boss.tick == 0));
+        int lobby = S.have_phase && S.ph.phase == PH_LOBBY;      /* 로비도 큰 그림에 바로 그린다 */
         if (hd && fight) {
             boss_view_t v = boss_view(&S.ph);
             boss_view_draw_hd(hd_img, &S.boss, &v);
+        } else if (hd && lobby) {
+            draw_lobby_hd();
         } else if (hd) {
             ui_text_capture_begin(full);
             draw(full);
@@ -871,7 +892,7 @@ static int run_screen(void)
         pthread_mutex_unlock(&S.mu);
 
         if (hd) {
-            if (!fight) hd_from_canvas(full, items, n_items);
+            if (!fight && !lobby) hd_from_canvas(full, items, n_items);
             show_hd();
         } else {
             show(shown);

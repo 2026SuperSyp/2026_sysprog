@@ -54,6 +54,11 @@ static inline void hd_blend(image_t *im, int x, int y, rgb_t c, float a)
 void  hd_text(image_t *im, float x, float y, const char *s, rgb_t c, float cell, float a);
 float hd_text_w(const char *s, float cell);
 
+/* 로비를 글자로 찍은 그림으로 그린다(art.c): 유리 돔 안의 시프봇과 그 둘레를 도는 초파리, 내리는 색종이.
+ * 오른쪽에 참가자(seat)와 안내, 역대 순위(top: 한 줄씩 다 만든 글자열)를 적는다. t는 로비에 들어온 뒤 흐른 초 */
+typedef struct { const char *name; int ready, host, me; } art_seat_t;
+void art_lobby(image_t *im, const art_seat_t *seat, int n_seats, const char *const top[], int n_top, double t);
+
 /* 받아 둔 것들(ui_text_capture_end가 준 목록: 글자, 말풍선 상자, 시프봇)을 실제 해상도로 그린다(hd_art.c).
  * 캔버스를 n배로 키워 (ox, oy)에 놓았을 때의 자리에 그린다. 받아 둔 순서대로 그린다 */
 void hd_items(image_t *im, const ui_text_item_t *items, int n_items, int n, int ox, int oy);
