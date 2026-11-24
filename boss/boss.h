@@ -38,7 +38,7 @@
 #include "brain.h"
 #include "stage.h"
 
-#define BOSS_MAP        24       /* 맵은 24 x 24칸 */
+#define BOSS_MAP        18       /* 맵은 18 x 18칸(바깥 벽을 빼면 16 x 16). 24칸일 때는 쫓아다니는 길이 너무 길었다 */
 #define BOSS_PLAYERS    3
 #define BOSS_PROJ       8        /* 날아가는 끈끈이 수의 한도 */
 #define BOSS_EVENTS     16       /* 한 틱에 남기는 사건 수의 한도 */

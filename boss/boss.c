@@ -84,10 +84,10 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
 }
 
 /* ---- 맵과 기하 ------------------------------------------------------------------- */
-/* 바깥 벽, 네 귀퉁이 쪽의 2x2 기둥, 가운데 2x2 기둥 */
+/* 바깥 벽과 2x2 기둥 넷. 벽과 기둥 사이, 기둥과 기둥 사이의 통로는 모두 4칸이다 */
 static void build_map(boss_state_t *s)
 {
-    static const int pillars[][2] = { { 5, 5 }, { 17, 5 }, { 5, 17 }, { 17, 17 }, { 11, 11 } };
+    static const int pillars[][2] = { { 5, 5 }, { 11, 5 }, { 5, 11 }, { 11, 11 } };
     memset(s->wall, 0, sizeof s->wall);
     for (int i = 0; i < BOSS_MAP; i++)
         s->wall[0][i] = s->wall[BOSS_MAP - 1][i] = s->wall[i][0] = s->wall[i][BOSS_MAP - 1] = 1;
@@ -150,7 +150,7 @@ static void event(boss_state_t *s, int kind, int who, float x, float y)
 /* ---- 시작과 입력 ----------------------------------------------------------------- */
 void boss_init(boss_state_t *s, const boss_cfg_t *c, uint32_t seed, int n_players, const int lives[])
 {
-    static const float start_x[BOSS_PLAYERS] = { 9.5f, 12.0f, 14.5f };
+    static const float start_x[BOSS_PLAYERS] = { 7.5f, 9.0f, 10.5f };
     memset(s, 0, sizeof *s);
     s->cfg = *c;
     stage_rng_seed(&s->rng, seed);
@@ -161,7 +161,7 @@ void boss_init(boss_state_t *s, const boss_cfg_t *c, uint32_t seed, int n_player
     for (int i = 0; i < n_players; i++) {
         boss_player_t *p = &s->p[i];
         p->x = start_x[i];
-        p->y = 20.5f;
+        p->y = 15.5f;
         p->ang = 1.5f * PI_F;                        /* 위쪽(-y)을 본다 */
         p->hp = lives ? lives[i] : 3;
         if (p->hp < 1) p->hp = 1;
@@ -170,8 +170,8 @@ void boss_init(boss_state_t *s, const boss_cfg_t *c, uint32_t seed, int n_player
         p->ammo = c->spray_ammo;
         p->traps = c->trap_count;
     }
-    s->fly.x = 12.0f;
-    s->fly.y = 5.5f;
+    s->fly.x = 9.0f;
+    s->fly.y = 3.5f;
     s->fly.ang = PI_F / 2.0f;                        /* 아래쪽(참가자 쪽)을 본다 */
     s->fly.hp = s->fly.hp_max = (int)(c->fly_hp[n_players - 1] + 0.5f);
     if (s->fly.hp_max < 1) s->fly.hp = s->fly.hp_max = 1;

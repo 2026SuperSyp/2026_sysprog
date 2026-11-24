@@ -12,6 +12,7 @@
 /* 방의 높이. 계산부는 평면에서만 계산하고(뛰어오른 높이만 따로 가진다), 벽이 얼마나 높은가는 그리는 쪽의 일이다 */
 #define BOSS_VIEW_WALL_H   6.0f          /* 벽의 높이(칸). 천장이 이 높이에 있다. 방의 너비가 22칸이라 이보다 낮으면 납작해 보인다 */
 #define BOSS_VIEW_EYE_H    0.5f          /* 서 있을 때의 눈높이(칸). 뛰어오르면 그만큼 높아진다 */
+#define BOSS_VIEW_FLY_HOVER 0.45f        /* 초파리가 평소에 떠 있는 높이(칸, 발끝에서 바닥까지) */
 
 struct brain_map;                        /* brain/brain_host.h */
 struct image;                            /* ui/hd.h */
@@ -39,6 +40,9 @@ typedef struct {
 /* full은 240x134이거나 그것을 배율 N으로 키운 크기(240N x 134N)다. 키운 화면이면 3D는 그 크기에 맞춰
  * 촘촘하게 그리고, 글자와 상태 줄은 화면에 비해 작게 그려서 3D 화면이 넓어진다. */
 void boss_view_draw(canvas_t *full, const boss_snap_t *b, const boss_view_t *v);
+
+/* 초파리가 지금 떠 있는 높이(칸). 두 그리는 쪽이 같이 쓴다. 한 프레임에 한 번 부른다 */
+float boss_view_fly_lift(const boss_snap_t *b);
 
 /* 같은 화면을 픽셀 그림에 그린다(boss_view_hd.c). 화면을 Sixel 그림으로 보낼 때 쓴다. 색을 마음대로 쓸 수 있어서
  * 벽과 바닥에 무늬와 명암을 넣고 가장자리를 부드럽게 그린다. 그림의 크기는 240x134의 정수배여야 한다.

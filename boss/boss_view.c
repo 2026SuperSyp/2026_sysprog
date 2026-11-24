@@ -73,6 +73,30 @@ static void px_view(canvas_t *c, int x, int y, color_t col)
 
 static float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); }
 
+/* 초파리가 떠 있는 높이(칸). 초파리는 평소에 낮게 떠서 날아다닌다. 계산부는 평면에서만 계산하므로 높이는 그리는
+ * 쪽이 상태에서 정한다: 붙었거나 막혀서 멈췄으면(쓰러졌을 때도) 바닥에 내려앉고, 돌진할 때는 낮게 깔려 달려들고,
+ * 달아날 때(도약)는 높이 솟았다가 돌아온다. 틱이 바뀔 때마다 목표 높이를 조금씩 따라가서 뚝뚝 끊기지 않는다.
+ * 떠 있는 동안은 위아래로 조금 흔들린다 */
+float boss_view_fly_lift(const boss_snap_t *b)
+{
+    static float shown = BOSS_VIEW_FLY_HOVER;
+    static int last_tick = -1, air_full;             /* air_full: 이번 도약의 처음 길이(남은 틱에서 알아낸다) */
+    int air = b->fly.air;
+    float want = BOSS_VIEW_FLY_HOVER;
+    air_full = air > air_full ? air : (air == 0 ? 0 : air_full);
+    if (b->fly.hp <= 0 || b->fly.stun) want = 0.0f;
+    else if (b->fly.charging) want = 0.12f;
+    else if (air > 0 && air_full > 0) {
+        float t = 1.0f - (float)air / (float)air_full;
+        want += 1.4f * 4.0f * t * (1.0f - t);
+    }
+    if ((int)b->tick != last_tick) {
+        shown = last_tick < 0 || (int)b->tick < last_tick ? want : shown + (want - shown) * 0.4f;     /* 새 판이면 바로 */
+        last_tick = (int)b->tick;
+    }
+    return shown + (want > 0.2f ? 0.06f * sinf((float)b->tick * 0.45f) : 0.0f);
+}
+
 /* ---- 벽 ---------------------------------------------------------------------------- */
 /* 거리에 따른 밝기 단계(0이 가장 밝다). 단계가 n개다 */
 static int shade_of(float d, int n)
@@ -171,11 +195,12 @@ static void draw_fly(canvas_t *c, const boss_snap_t *b, const thing_t *t, float 
     int half = (int)(0.6f * scale), cx = (int)((float)VW / 2.0f * (1.0f + t->side / t->depth));
     int floor_y = VY + VH / 2 + (int)(EZ * scale), cy = floor_y - (int)(0.55f * scale);
     if (half < 2) half = 2;
-    if (b->fly.air) {                                             /* 떠 있다: 바닥에 그림자를 남기고 위로 올린다 */
+    float lift = boss_view_fly_lift(b);
+    if (lift > 0.08f) {                                           /* 떠 있다: 바닥에 그림자를 남기고 위로 올린다 */
         int thick = (int)(UNIT / 52.0f) > 1 ? (int)(UNIT / 52.0f) : 1;
         for (int x = cx - half * 2 / 3; x <= cx + half * 2 / 3; x++)
             if (x >= 0 && x < VW && t->depth < zbuf[x]) ui_rect(c, x, floor_y - 1 > VY ? floor_y - 1 : VY, 1, thick, C_BLACK);
-        cy -= (int)(0.55f * scale);
+        cy -= (int)(lift * scale);
     }
     /* 초파리가 나를 보고 있는가, 등을 돌렸는가, 옆을 보는가 */
     float fa = (float)b->fly.ang * TWO_PI / 65536.0f, hx = cosf(fa), hy = sinf(fa);

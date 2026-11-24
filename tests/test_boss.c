@@ -307,7 +307,7 @@ static void test_takeoff(void)
     boss_cfg_t c = calm();
     float r[BRAIN_GROUP_COUNT] = { 0 };
     setup(&c, 1);
-    put_player(0, 20.0f, 20.0f, NORTH);
+    put_player(0, 16.0f, 16.0f, NORTH);
     put_fly(8.5f, 9.0f);
     S.fly.ang = 0.0f;                                             /* 오른쪽(+x)을 본다 */
     r[BR_ESCAPE] = c.takeoff_level - 0.01f;                       /* 기준에 못 미친다 */
@@ -334,7 +334,7 @@ static void test_takeoff(void)
     T_EQ_INT(count_ev(BOSS_EV_TAKEOFF), 1);
 
     setup(&c, 1);                                                 /* 왼쪽에서 다가왔다: 오른쪽 앞으로 뛴다 */
-    put_player(0, 20.0f, 20.0f, NORTH);
+    put_player(0, 16.0f, 16.0f, NORTH);
     put_fly(8.5f, 9.0f);
     S.fly.ang = 0.0f;
     memset(r, 0, sizeof r);
@@ -441,7 +441,7 @@ static void test_dead_input(void)
     boss_init(&S, &c, 5, 2, lives);
     put_fly(8.5f, 9.0f);
     put_player(0, 8.5f, 12.0f, NORTH);
-    put_player(1, 20.0f, 20.0f, NORTH);
+    put_player(1, 16.0f, 16.0f, NORTH);
     ticks(c.charge_windup + c.charge_ticks + 2, still);
     T_EQ_INT(S.p[0].alive, 0);
     T_EQ_INT(S.outcome, BOSS_GOING);

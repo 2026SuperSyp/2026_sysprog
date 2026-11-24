@@ -379,6 +379,7 @@ static void shadow(image_t *im, const thing_t *t, float cx, float fy, float rx, 
  * 작아서 원근을 넣지 않아도 어색하지 않다). 초파리가 향한 쪽과 내가 보는 쪽의 차이만큼 모형이 돌아가 있으므로 어느
  * 쪽에서 보든 이어진 모습이 나온다. 등과 날개가 보이도록 조금 위에서 내려다본다(FLY_TILT).
  * 좌표: 초파리의 앞이 +x, 오른쪽이 +y, 위가 +z이고 원점은 발밑이다. 단위는 칸.
+ * 초파리는 평소에 낮게 떠서 날아다닌다(높이는 boss_view_fly_lift). 떠 있을 때는 다리를 접고 날개를 빠르게 친다.
  * 가장자리: 픽셀마다 두 점을 떠 보고, 둘이 다른 것에 닿았을 때만 네 점을 떠서 섞는다. */
 #define FLY_TILT   0.20f             /* 같은 높이에서 볼 때 내려다보는 각도(라디안) */
 #define FLY_BOXES  14
@@ -619,17 +620,12 @@ static void fly_rows(int from, int to, void *arg)
 
 static void draw_fly(image_t *im, const boss_snap_t *b, const boss_view_t *v, const thing_t *t, float eye_x, float eye_y)
 {
-    static int air_full, stun_full;                  /* 이번 도약과 이번 멈춤의 처음 길이(남은 틱에서 알아낸다) */
+    static int stun_full;                            /* 이번 멈춤의 처음 길이(남은 틱에서 알아낸다) */
     float scale = UNIT / t->depth, cx = (float)VW * 0.5f * (1.0f + t->side / t->depth), fy = MID + EZ * scale;
-    int air = b->fly.air, stun = b->fly.stun, tick = b->tick;
-    air_full = air > air_full ? air : (air == 0 ? 0 : air_full);
+    int stun = b->fly.stun, tick = b->tick;
     stun_full = stun > stun_full ? stun : (stun == 0 ? 0 : stun_full);
-    /* 도약: 포물선으로 떠올랐다 내려앉는다 */
-    float lift = 0.0f;
-    if (air > 0 && air_full > 0) {
-        float at = 1.0f - (float)air / (float)air_full;
-        lift = 0.12f + 1.25f * 4.0f * at * (1.0f - at);
-    }
+    float lift = boss_view_fly_lift(b);              /* 떠 있는 높이 */
+    int flying = lift > 0.08f;
     shadow(im, t, cx, fy, scale * (0.62f - 0.12f * clamp01(lift)), 0.5f - 0.2f * clamp01(lift));
     if (stun > 0 && stun_full > 30)                  /* 끈끈이에 붙었다(막혀서 멈춘 것은 짧다) */
         blot(im, t, cx, fy, scale * 0.8f, (col_t){ 240, 140, 40 }, 0.9f);
@@ -665,7 +661,7 @@ static void draw_fly(image_t *im, const boss_snap_t *b, const boss_view_t *v, co
 
     /* 상자들. 몸통의 가운데는 높이 0.64에 있다(다리가 0.30) */
     const float bz = 0.64f, wig = stun ? 0.0f : 0.035f * sinf((float)tick * 0.9f);
-    float leg = air > 0 ? 0.14f : 0.30f;             /* 떠 있을 때는 다리를 접는다 */
+    float leg = flying ? 0.14f : 0.30f;              /* 떠 있을 때는 다리를 접는다 */
     fly_box(&job, FK_BODY, 0, (float[3]){ 0.0f, 0.0f, bz }, (float[3]){ 0.50f, 0.40f, 0.34f }, 0.0f, rv, up, dir);
     for (int s = -1; s <= 1; s += 2)
         fly_box(&job, FK_EYE, s, (float[3]){ 0.47f, (float)s * 0.27f, bz + 0.09f }, (float[3]){ 0.07f, 0.15f, 0.16f }, 0.0f, rv, up, dir);
@@ -676,8 +672,8 @@ static void draw_fly(image_t *im, const boss_snap_t *b, const boss_view_t *v, co
         float lx = 0.30f - 0.30f * (float)(k / 2) + ((k / 2 + k) & 1 ? wig : -wig), ly = (k & 1) ? 0.31f : -0.31f;
         fly_box(&job, FK_LEG, 0, (float[3]){ lx, ly, bz - 0.34f - leg * 0.5f }, (float[3]){ 0.045f, 0.045f, leg * 0.5f }, 0.0f, rv, up, dir);
     }
-    /* 날개: 등의 양옆에 붙어 바깥으로 뻗는다. 평소에는 조금 들려 있고, 떠 있을 때와 돌진하려 할 때는 빠르게 친다 */
-    float rise = air > 0 ? ((tick & 1) ? 0.85f : 0.10f) : (charging ? ((tick & 1) ? 0.70f : 0.40f) : (stun ? 0.05f : 0.24f + 0.07f * sinf((float)tick * 0.5f)));
+    /* 날개: 등의 양옆에 붙어 바깥으로 뻗는다. 떠 있을 때는 빠르게 치고(틱마다 올렸다 내렸다), 내려앉으면 접는다 */
+    float rise = stun ? 0.05f : (charging ? ((tick & 1) ? 0.70f : 0.40f) : (flying ? ((tick & 1) ? 0.85f : 0.10f) : 0.24f));
     for (int s = -1; s <= 1; s += 2) {
         float roll = (float)s * rise, cr = cosf(roll), sr = sinf(roll), oy = (float)s * 0.22f;
         const float hinge[3] = { -0.07f, (float)s * 0.17f, bz + 0.34f + 0.014f };
@@ -900,7 +896,7 @@ static float draw_brain(image_t *im, const boss_snap_t *b, const boss_view_t *v)
 /* 작은 지도: 오른쪽 위. my_ang은 내가 보는 방향이다(me가 0 이상일 때). 왼쪽 끝(U)을 돌려준다 */
 static float draw_minimap(image_t *im, const boss_snap_t *b, int me, float my_ang)
 {
-    const float cell = 3.2f, size = BOSS_MAP * cell, x = HW - size - 14.0f, y = 30.0f;
+    const float cell = 76.8f / BOSS_MAP, size = BOSS_MAP * cell, x = HW - size - 14.0f, y = 30.0f;
     plate(im, x - 4.0f, y - 4.0f, size + 8.0f, size + 8.0f, 0.72f);
     for (int cy = 0; cy < BOSS_MAP; cy++)
         for (int cx = 0; cx < BOSS_MAP; cx++) {
