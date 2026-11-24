@@ -28,6 +28,8 @@ static int parse_mouse(const uint8_t *buf, size_t n, in_event_t *ev, size_t *use
             } else if ((v[0] & 3) == 0 && ch == 'M') {
                 ev->flags = IN_F_PRESSED;
                 if (!(v[0] & 32)) ev->flags |= IN_F_CLICK;      /* 움직임이 아니면 방금 누른 것이다 */
+            } else if ((v[0] & 3) == 2 && ch == 'M' && !(v[0] & 32)) {
+                ev->flags = IN_F_RCLICK;
             }
             return 1;
         } else {

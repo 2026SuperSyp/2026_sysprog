@@ -93,6 +93,7 @@ static struct {
     float boss_stim[BRAIN_GROUP_COUNT], boss_rate[BRAIN_GROUP_COUNT], boss_takeoff;
     frame_map_t boss_fm;
     int64_t boss_hit_at, boss_hurt_at, boss_wave_at;     /* 내 공격이 맞은 때, 내가 맞은 때, 날갯짓이 있던 때(ms) */
+    int64_t boss_block_at;           /* 내가 돌진을 막은 때 */
     int watch;                       /* 오른쪽 위에 볼 칸. WATCH_FLY이면 키보드 치는 초파리 */
     int dirty, quit;
     char why[96];                    /* 끝난 이유 */
@@ -162,7 +163,7 @@ static void *recv_main(void *arg)
                 if (S.ph.phase != PH_PLAY) S.have_frame = 0;
                 if (S.ph.phase != PH_BOSS) {
                     S.have_boss = S.have_look = S.have_boss_brain = S.look_shown_ok = 0;
-                    S.boss_hit_at = S.boss_hurt_at = S.boss_wave_at = 0;
+                    S.boss_hit_at = S.boss_hurt_at = S.boss_wave_at = S.boss_block_at = 0;
                 }
                 S.boss_help = 0;
                 if (S.ph.phase == PH_CARD) S.watch = -1;         /* 새 라운드: 볼 칸을 다시 고른다 */
@@ -206,6 +207,7 @@ static void *recv_main(void *arg)
                 int kind = S.boss.ev[k].kind, who = S.boss.ev[k].who;
                 if ((kind == BOSS_EV_SWAT_HIT || kind == BOSS_EV_SPRAY_HIT) && who == me) S.boss_hit_at = now_ms();
                 if (kind == BOSS_EV_HIT_PLAYER && who == me) S.boss_hurt_at = now_ms();
+                if (kind == BOSS_EV_BLOCK && who == me) S.boss_block_at = now_ms();
                 if (kind == BOSS_EV_WAVE) S.boss_wave_at = now_ms();
             }
             S.dirty = 1;
@@ -262,6 +264,15 @@ static int picture_cols(void)
     return (SCREEN_W * atomic_load(&hd_n) + cw - 1) / cw;
 }
 
+/* 그림(240n x 134n)에서 캔버스 화면(240x134)을 놓는 자리. 그림을 꽉 채우면 글자와 그림이 너무 커서, 60%의 배율로
+ * 가운데에 놓는다(2400x1340에서 글자 한 줄이 72픽셀). k는 캔버스의 픽셀 하나가 몇 픽셀인가 */
+static void canvas_place(int n, int *k, int *ox, int *oy)
+{
+    *k = (n * 6 + 5) / 10 > 0 ? (n * 6 + 5) / 10 : 1;
+    *ox = (SCREEN_W * n - SCREEN_W * *k) / 2;
+    *oy = (SCREEN_H * n - SCREEN_H * *k) / 2;
+}
+
 /* 터미널 글자 칸을 전체 화면(240x134)의 픽셀로 바꾼다. 화면 밖이면 0 */
 static int cell_to_screen(int cols, int rows, int cell_x, int cell_y, int *sx, int *sy)
 {
@@ -270,8 +281,11 @@ static int cell_to_screen(int cols, int rows, int cell_x, int cell_y, int *sx, i
     image_t size = { SCREEN_W * n, SCREEN_H * n, NULL };
     const term_caps_t *tc = term_caps();
     if (!sixel_cell_to_pixel(&size, cols, rows, tc->cell_w, tc->cell_h, cell_x, cell_y, &px, &py)) return 0;
-    *sx = px / n;
-    *sy = py / n;
+    int k, ox, oy;
+    canvas_place(n, &k, &ox, &oy);
+    if (px < ox || py < oy || px >= ox + SCREEN_W * k || py >= oy + SCREEN_H * k) return 0;
+    *sx = (px - ox) / k;
+    *sy = (py - oy) / k;
     return 1;
 }
 
@@ -370,7 +384,7 @@ static void *input_main(void *arg)
             if (ev.kind == IN_KEY && (ev.code == 'h' || ev.code == 'H') && toggle_boss_help()) continue;
             if (boss && ev.kind == IN_POINTER) {
                 /* 보스전의 마우스는 서버로 올리지 않고 여기서 쓴다. 가로로 움직인 칸 수가 시선이 도는 양이고,
-                 * 왼쪽 버튼은 무기 쓰기(스페이스), 휠은 다음 무기(F)다 */
+                 * 왼쪽 버튼은 무기 쓰기(스페이스), 오른쪽 버튼은 막기(E), 휠은 다음 무기(F)다 */
                 int cols = 0, rows = 0;
                 term_size(&cols, &rows);
                 int cw = picture_cols(), x = ev.x - (cols - cw) / 2, zone = (int)((double)cw * LOOK_EDGE);
@@ -382,6 +396,7 @@ static void *input_main(void *arg)
                 if (edge != look.edge) { look.edge = edge; look.edge_at = now_ms(); }
                 int bad = 0;
                 if (ev.flags & IN_F_CLICK) bad = send_boss_key(' ');
+                else if (ev.flags & IN_F_RCLICK) bad = send_boss_key('e');
                 else if (ev.flags & (IN_F_WHEEL_UP | IN_F_WHEEL_DOWN)) bad = send_boss_key('f');
                 if (bad != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
                 continue;
@@ -441,7 +456,8 @@ static boss_view_t boss_view(const phase_msg_t *ph)
 {
     boss_view_t v = { .me = (ph->me >= 0 && ph->me < PROTO_SEATS) ? ph->pane_of[ph->me] : -1,
                       .hit_ms = ms_since(S.boss_hit_at), .hurt_ms = ms_since(S.boss_hurt_at),
-                      .wave_ms = ms_since(S.boss_wave_at), .watch = S.boss_watch, .help = S.boss_help,
+                      .wave_ms = ms_since(S.boss_wave_at), .block_ms = ms_since(S.boss_block_at),
+                      .watch = S.boss_watch, .help = S.boss_help,
                       .age_ms = (int)(now_ms() - S.phase_at),
                       .look_on = S.have_look, .look_ang = S.have_look ? shown_look() : 0 };
     if (S.have_boss_brain) {
@@ -698,12 +714,15 @@ static int hd_prepare(void)
     return 1;
 }
 
-/* 240x134 캔버스에 그린 화면을 그림으로 옮긴다. 캔버스는 그대로 키우고, 받아 둔 것(글자, 시프봇, 말풍선)은 실제
+/* 240x134 캔버스에 그린 화면을 그림으로 옮긴다. 캔버스는 그대로 키우고, 받아 둔 것(글자, 말풍선 상자)은 실제
  * 해상도로 다시 그린다 */
 static void hd_from_canvas(const canvas_t *full, const ui_text_item_t *items, int n_items)
 {
-    hd_upscale(hd_img, full);
-    hd_items(hd_img, items, n_items, hd_img->w / SCREEN_W);
+    int k, ox, oy;
+    canvas_place(hd_img->w / SCREEN_W, &k, &ox, &oy);
+    hd_fill(hd_img, hd_color(C_BG));
+    hd_canvas(hd_img, ox, oy, full, k);
+    hd_items(hd_img, items, n_items, k, ox, oy);
 }
 
 static void show_hd(void)

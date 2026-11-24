@@ -41,13 +41,12 @@ void ui_palette_rgb(color_t c, uint8_t rgb[3]);
 int    ui_text_h(const char *s);                             /* 한 줄의 높이. 한글이 섞였으면 12, 아니면 8 */
 /* 받아 두기. 화면을 픽셀 그림으로 보낼 때(ui/hd.h) 글자와 몇 가지 그림은 캔버스에 그린 것을 키우지 않고 실제
  * 해상도로 다시 그린다(ui/hd_art.c). begin과 end 사이에 target 캔버스에 ui_text로 그리는 글자는 캔버스에 그려지지
- * 않고 목록에 쌓인다. 진행자 시프봇의 그림(ui_sprite), 말풍선, 카운트다운도 그린 쪽이 ui_capture_note로 알려 두고
- * 캔버스에는 그리지 않는다. end는 쌓인 개수를 돌려주고 목록을 items에 준다(다음 begin까지 유효하다).
+ * 않고 목록에 쌓인다. 말풍선의 상자도 그린 쪽이 ui_capture_note로 알려 두고 캔버스에는 그리지 않는다.
+ * 그림(.spr)은 받아 두지 않는다(그린 사람의 그림 그대로 캔버스에 그린다).
+ * end는 쌓인 개수를 돌려주고 목록을 items에 준다(다음 begin까지 유효하다).
  * 목록에는 그린 순서대로 쌓인다. 목록이 차면 그 뒤의 것은 그냥 캔버스에 그려진다. */
 enum { UI_HD_TEXT = 0,           /* 글자: s를 (x, y)에 col로 */
-       UI_HD_SPRITE,             /* 그림: 이름이 s인 그림(w x h)의 a번째 장을 (x, y)에 */
-       UI_HD_BUBBLE,             /* 말풍선 상자: (x, y)에 w x h. 꼬리의 자리가 a(없으면 -1) */
-       UI_HD_COUNT };            /* 카운트다운: a가 0, 1, 2이면 3, 2, 1이고 3이면 GO */
+       UI_HD_BUBBLE };           /* 말풍선 상자: (x, y)에 w x h. 꼬리의 자리가 a(없으면 -1) */
 typedef struct { uint8_t kind; color_t col; int16_t x, y, w, h, a; char s[128]; } ui_text_item_t;
 void   ui_text_capture_begin(const canvas_t *target);
 int    ui_text_capture_end(const ui_text_item_t **items);
@@ -134,7 +133,8 @@ enum { IN_F_PRESSED = 1,         /* 포인터: 왼쪽 버튼이 눌려 있다 */
        IN_F_SHIFT = 2,           /* 키: Shift와 함께 눌렀다(대문자, Shift+방향키). 보스전에서 그 걸음을 살금살금 걷는 데 쓴다 */
        IN_F_CLICK = 4,           /* 포인터: 왼쪽 버튼을 방금 눌렀다(누른 채 움직이는 동안에는 없다) */
        IN_F_WHEEL_UP = 8,        /* 포인터: 휠을 위로 굴렸다. 버튼이 눌린 것으로 치지 않는다 */
-       IN_F_WHEEL_DOWN = 16 };
+       IN_F_WHEEL_DOWN = 16,
+       IN_F_RCLICK = 32 };       /* 포인터: 오른쪽 버튼을 방금 눌렀다 */
 enum { IN_K_UP = 0x101, IN_K_DOWN, IN_K_RIGHT, IN_K_LEFT };   /* 그 밖의 키는 글자 코드 그대로 */
 typedef struct {
     uint8_t  kind;               /* IN_KEY 또는 IN_POINTER */

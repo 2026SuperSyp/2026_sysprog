@@ -43,7 +43,9 @@ void boss_cfg_default(boss_cfg_t *c)
     c->turn_deg_s = 200.0f;
     c->accel_ticks = 2;
     c->speed_scale = 0.22f; c->turn_scale = 1.0f;
-    c->takeoff_level = 0.5f; c->takeoff_mm_s = 480.0f; c->air_ticks = 4; c->air_rest_ticks = 20;
+    c->takeoff_level = 0.5f; c->takeoff_mm_s = 480.0f; c->air_ticks = 10; c->air_rest_ticks = 20;
+    c->takeoff_scale = 0.055f;
+    c->guard_ticks = 10; c->guard_cooldown = 50; c->guard_stun = 24;
     c->swat_range = 1.2f;  c->swat_damage = 10.0f; c->swat_cooldown = 8;
     c->spray_range = 5.0f; c->spray_damage = 3.0f; c->spray_ammo = 20; c->spray_cooldown = 8;
     c->trap_speed = 0.6f;  c->trap_range = 8.0f;  c->trap_count = 2; c->stun_ticks = 60;
@@ -63,7 +65,8 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
 #define I(k) c->k = (int)cfg_get(#k, (float)c->k)
     I(ticks); F(fly_hp_per_player); F(fly_radius); F(player_radius); F(step); F(slow_step); I(step_ticks);
     F(body_mm); F(walk_mm_s); F(run_mm_s); F(back_mm_s); F(turn_deg_s); I(accel_ticks); F(speed_scale); F(turn_scale);
-    F(takeoff_level); F(takeoff_mm_s); I(air_ticks); I(air_rest_ticks);
+    F(takeoff_level); F(takeoff_mm_s); I(air_ticks); I(air_rest_ticks); F(takeoff_scale);
+    I(guard_ticks); I(guard_cooldown); I(guard_stun);
     F(swat_range); F(swat_damage); I(swat_cooldown);
     F(spray_range); F(spray_damage); I(spray_ammo); I(spray_cooldown);
     F(trap_speed); F(trap_range); I(trap_count); I(stun_ticks);
@@ -176,6 +179,10 @@ void boss_input(boss_state_t *s, int player, int key)
     boss_player_t *p = &s->p[player];
     if (!p->alive) return;                           /* 쓰러진 사람의 키는 쓰지 않는다 */
     if (key == BOSS_SNEAK) { p->sneak = !p->sneak; return; }
+    if (key == BOSS_GUARD) {                         /* 막기: 쉬는 중이 아니면 막는 자세를 시작한다 */
+        if (p->guard_cool == 0) { p->guard = s->cfg.guard_ticks; p->guard_cool = s->cfg.guard_cooldown; }
+        return;
+    }
     int slow = (key & BOSS_SLOW) != 0, strafe = (key & BOSS_STRAFE) != 0;
     switch (key & ~(BOSS_SLOW | BOSS_STRAFE)) {
     case SK_UP:    p->move = 1;  p->slow = slow; break;
@@ -331,6 +338,8 @@ static void players_act(boss_state_t *s)
     for (int i = 0; i < s->n_players; i++) {
         boss_player_t *p = &s->p[i];
         if (p->cool > 0) p->cool--;
+        if (p->guard > 0) p->guard--;
+        if (p->guard_cool > 0) p->guard_cool--;
         p->closing = 0.0f;
         if (!p->alive) { p->move = p->strafe = p->turn = p->use = p->pick = p->has_look = p->step_left = 0; continue; }
         if (p->has_look) p->ang = p->look;               /* 마우스로 정한 방향 */
@@ -433,7 +442,9 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
 
     /* 떠 있는 동안: 뛰어오른 방향으로 곧게 간다. 빨라서 벽을 건너뛰지 않게 잘게 나눠 움직인다 */
     if (f->air > 0) {
-        float len = c->takeoff_mm_s * 2.0f * c->fly_radius / c->body_mm * c->speed_scale / 20.0f;
+        /* 도약의 빠르기에는 전체 배율(speed_scale)이 아니라 따로 둔 배율을 곱한다. 전체 배율을 그대로 쓰면 0.2초에
+         * 10칸을 날아가서 순간이동처럼 보였다. 지금은 0.5초에 6칸쯤 날아가므로 날아가는 것이 눈에 보인다 */
+        float len = c->takeoff_mm_s * 2.0f * c->fly_radius / c->body_mm * c->takeoff_scale / 20.0f;
         int n = (int)(len / 0.2f) + 1;
         for (int k = 0; k < n; k++)
             slide(s, &f->x, &f->y, f->air_dx * len / (float)n, f->air_dy * len / (float)n, c->fly_radius);
@@ -487,7 +498,14 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
         f->charging--;
         for (int i = 0; i < s->n_players; i++) {
             if (s->p[i].alive && dist(s->p[i].x, s->p[i].y, f->x, f->y) <= c->fly_radius + c->player_radius + 0.05f) {
-                hurt_player(s, i, f->x, f->y);
+                if (s->p[i].guard > 0) {             /* 막았다: 다치지 않고, 초파리가 튕겨 나가 잠깐 멈춘다 */
+                    s->p[i].guard = 0;
+                    event(s, BOSS_EV_BLOCK, i, s->p[i].x, s->p[i].y);
+                    f->stun = c->guard_stun;
+                    for (int k = 0; k < 4; k++) slide(s, &f->x, &f->y, -cosf(f->ang) * 0.2f, -sinf(f->ang) * 0.2f, c->fly_radius);
+                } else {
+                    hurt_player(s, i, f->x, f->y);
+                }
                 f->charging = 0;
                 break;
             }
@@ -578,6 +596,8 @@ void boss_snapshot(const boss_state_t *s, boss_snap_t *o)
         o->p[i].y = (int16_t)(p->y * BOSS_FIX);
         o->p[i].ang = (uint16_t)(lroundf(p->ang / (2.0f * PI_F) * 65536.0f) & 0xffff);
         o->p[i].sneak = (uint8_t)p->sneak;
+        o->p[i].guard = (uint8_t)p->guard;
+        o->p[i].guard_cool = (uint8_t)(p->guard_cool > 255 ? 255 : p->guard_cool);
         o->p[i].hp = (uint8_t)p->hp;
         o->p[i].alive = (uint8_t)p->alive;
         o->p[i].item = (uint8_t)p->item;

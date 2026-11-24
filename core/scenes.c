@@ -123,7 +123,6 @@ void scene_count(canvas_t *full, int tick)
     int w = ui_sprite_w(id), h = ui_sprite_h(id);
 
     ui_clear(full, C_BG);
-    if (ui_capture_note(full, UI_HD_COUNT, 0, 0, SCREEN_W, SCREEN_H, k, NULL)) return;   /* 픽셀 그림으로 보낼 때는 다시 그린다 */
     if (!small || small->w != w || small->h != h) {
         canvas_free(small);
         small = canvas_new(w, h);

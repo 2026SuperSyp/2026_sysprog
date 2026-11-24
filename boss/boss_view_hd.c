@@ -1,7 +1,7 @@
 /* 보스전 그리기(픽셀 그림). 화면을 Sixel 그림으로 보낼 때 쓴다. 글자 칸으로 보낼 때는 boss_view.c가 그린다.
  *
- * 그리는 것과 배치는 boss_view.c와 같다(위 상태 줄, 3D 화면, 아래 상태 줄. 그 위에 지도, 뇌 표시, 키 안내).
- * 다른 점은 색을 마음대로 쓸 수 있다는 것이다. 그래서
+ * 그리는 것은 boss_view.c와 같다. 다른 점은 색과 해상도가 넉넉하다는 것이다. 그래서
+ *   - 3D 화면이 그림 전체를 쓰고, 상태 표시는 그 위에 작게 띄운다(둠 같은 1인칭 게임의 배치).
  *   - 벽과 바닥에 무늬를 넣고(돌, 널빤지, 타일), 멀수록 어둠에 묻히게 한다. 무늬는 그림 파일이 아니라 식으로 만든다.
  *     돌과 나무와 타일에는 결(자리마다 정해진 무늬를 여러 크기로 겹친 것), 깨진 금, 모서리의 입체감(위와 왼쪽은
  *     밝게, 아래와 오른쪽은 어둡게)을 넣는다. 무늬는 벽과 바닥의 자리에 붙어 있어서 움직여도 따라 움직인다.
@@ -10,7 +10,7 @@
  *   - 가장자리는 픽셀이 덮인 만큼만 칠한다. 벽의 위아래 끝, 초파리와 참가자의 윤곽, 상태 표시의 도형이 모두 그렇다.
  *   - 초파리는 타원과 선분 몇 개로 된 모양에 빛을 입힌다. 식으로 그리므로 가까이 가도 계단이 생기지 않는다.
  *   - 글자는 큰 글꼴로 그린다(ui/hd.c).
- * 상태 표시의 자리는 화면 너비를 480으로 나눈 단위(U)로 적는다. 배율 10(2400x1340)에서 한 단위가 5픽셀이다.
+ * 상태 표시의 자리는 화면을 960x536으로 본 단위(U)로 적는다. 배율 10(2400x1340)에서 한 단위가 2.5픽셀이다.
  * 바닥의 줄들, 벽의 세로줄들, 초파리의 줄들은 서로 무관해서 여러 스레드에 나눠 그린다(par_for). */
 #include "boss/boss_view.h"
 #include "brain.h"
@@ -23,8 +23,6 @@
 #define PLANE       0.66f            /* 시야의 넓이(약 66도) */
 #define TWO_PI      6.2831853f
 #define UNIT_PER_W  (104.0f / 240.0f)    /* 거리 1에 있는 벽의 높이 = 화면 너비 x 이 값(boss_view.c와 같다) */
-#define BAR_TOP     14.0f            /* 위, 아래 상태 줄의 높이(U) */
-#define BAR_BOT     16.0f
 #define CELL        12.0f            /* 글자 한 칸의 크기(U) */
 #define FOG_K       0.075f           /* 멀수록 어둠에 묻히는 빠르기 */
 
@@ -38,8 +36,9 @@ static const rgb_t PCOL[BOSS_PLAYERS] = { { 70, 200, 220 }, { 60, 180, 75 }, { 2
 static uint8_t wall[BOSS_MAP][BOSS_MAP];
 static int     have_map;
 static float   zbuf[SCREEN_W * HD_MAX_SCALE];
-/* 지금 그리는 그림에서: 한 단위의 픽셀 수, 3D 화면의 위쪽 끝과 높이, 지평선의 높이, 거리 1에 있는 벽의 높이 */
-static float   U;
+/* 지금 그리는 그림에서: 상태 표시의 한 단위의 픽셀 수(U), 무기의 한 단위의 픽셀 수(G), 3D 화면의 위쪽 끝과 높이,
+ * 지평선의 높이, 거리 1에 있는 벽의 높이 */
+static float   U, G;
 static int     VY, VH, VW;
 static float   MID, UNIT;
 
@@ -157,7 +156,9 @@ static void ground_rows(int from, int to, void *arg)
         for (int x = 0; x < VW; x++, wx += sx, wy += sy, o += 3) {
             col_t c;
             if (floor_row) {
-                float gx = floorf(wx), gy = floorf(wy), fx = wx - gx, fy = wy - gy;
+                /* 돌판의 줄은 칸의 경계가 아니라 칸의 가운데를 지난다. 참가자는 칸의 경계에 서서 시작하는데, 줄이 바로
+                 * 발밑으로 지나가면 화면 가운데에 굵은 쐐기로 보인다 */
+                float tx = wx + 0.5f, ty = wy + 0.5f, gx = floorf(tx), gy = floorf(ty), fx = tx - gx, fy = ty - gy;
                 int ix = (int)gx, iy = (int)gy;
                 float tone = 0.84f + 0.3f * hash2(ix * 7 + 3, iy * 13 + 1);
                 float g = grain(wx * 7.0f, wy * 7.0f, 3);
@@ -174,13 +175,13 @@ static void ground_rows(int from, int to, void *arg)
                 c = cmul(c, 1.0f + 0.2f * lit_edge - 0.26f * dark_edge);
                 c = cmix(c, grout, clamp01(0.5f + (0.014f - e) * ppu) * (0.4f + 0.6f * detail));
             } else {
-                float hx = wx * 0.5f, hy = wy * 0.5f, fx = hx - floorf(hx), fy = hy - floorf(hy);
+                float hx = (wx + 1.0f) * 0.5f, hy = (wy + 1.0f) * 0.5f, fx = hx - floorf(hx), fy = hy - floorf(hy);
                 float g = grain(wx * 5.0f, wy * 5.0f, 21);
                 c = cmul(panel, 1.0f + (g - 0.5f) * 0.4f * detail);
                 float e = minf(minf(fx, 1.0f - fx), minf(fy, 1.0f - fy)) * 2.0f;
                 c = cmix(c, gap, clamp01(0.5f + (0.02f - e) * ppu) * (0.4f + 0.6f * detail));
                 /* 들보: 네 칸마다 한 줄, 나무결 */
-                float bx = wy * 0.25f, fb = bx - floorf(bx), be = fabsf(fb - 0.5f) * 4.0f;
+                float bx = (wy + 1.0f) * 0.25f, fb = bx - floorf(bx), be = fabsf(fb - 0.5f) * 4.0f;
                 float on = clamp01(0.5f + (0.16f - be) * ppu);
                 if (on > 0.0f) {
                     float wood = grain(wx * 2.0f, wy * 26.0f, 33);
@@ -604,36 +605,37 @@ static void draw_things(image_t *im, const boss_snap_t *b, const boss_view_t *v,
 }
 
 /* ---- 손에 든 무기 --------------------------------------------------------------------- */
+/* 무기는 3D 화면의 일부라서 크게 그린다. 자리는 화면 너비를 480으로 나눈 단위(G)로 적는다 */
 static void draw_weapon(image_t *im, const boss_snap_t *b, int me)
 {
     int item = b->p[me].item, used = b->p[me].cool >= 6;         /* 방금 썼다 */
-    float bx = (float)VW * 0.5f + 92.0f * U, by = (float)(VY + VH) + 2.0f * U;      /* 손이 있는 자리(화면 아래 오른쪽) */
+    float bx = (float)VW * 0.5f + 92.0f * G, by = (float)(VY + VH) + 2.0f * G;      /* 손이 있는 자리(화면 아래 오른쪽) */
     if (item == BOSS_SWATTER) {
-        float tx = bx - (used ? 46.0f : 16.0f) * U, ty = by - (used ? 96.0f : 62.0f) * U;         /* 채의 가운데 */
-        float w = (used ? 54.0f : 46.0f) * U, h = (used ? 58.0f : 50.0f) * U;
-        hd_line(im, bx + 6.0f * U, by + 6.0f * U, tx, ty + h * 0.45f, 6.5f * U, hd_rgb(70, 44, 26), 1.0f);
-        hd_line(im, bx + 6.0f * U, by + 6.0f * U, tx, ty + h * 0.45f, 4.0f * U, hd_rgb(150, 100, 62), 1.0f);
-        hd_rrect(im, tx - w * 0.5f, ty - h * 0.5f, w, h, 7.0f * U, hd_rgb(96, 102, 120), 1.0f);
-        hd_rrect(im, tx - w * 0.5f + 2.0f * U, ty - h * 0.5f + 2.0f * U, w - 4.0f * U, h - 4.0f * U, 5.5f * U, hd_rgb(186, 192, 206), 0.9f);
-        for (int k = 1; k < 7; k++) {                             /* 그물 */
-            float gx = tx - w * 0.5f + w * (float)k / 7.0f, gy = ty - h * 0.5f + h * (float)k / 7.0f;
-            hd_line(im, gx, ty - h * 0.5f + 3.0f * U, gx, ty + h * 0.5f - 3.0f * U, 0.9f * U, hd_rgb(110, 116, 134), 0.9f);
-            hd_line(im, tx - w * 0.5f + 3.0f * U, gy, tx + w * 0.5f - 3.0f * U, gy, 0.9f * U, hd_rgb(110, 116, 134), 0.9f);
+        float tx = bx - (used ? 46.0f : 16.0f) * G, ty = by - (used ? 96.0f : 62.0f) * G;         /* 채의 가운데 */
+        float w = (used ? 54.0f : 46.0f) * G, h = (used ? 58.0f : 50.0f) * G;
+        hd_line(im, bx + 6.0f * G, by + 6.0f * G, tx, ty + h * 0.45f, 6.5f * G, hd_rgb(70, 44, 26), 1.0f);
+        hd_line(im, bx + 6.0f * G, by + 6.0f * G, tx, ty + h * 0.45f, 4.0f * G, hd_rgb(150, 100, 62), 1.0f);
+        hd_rrect(im, tx - w * 0.5f, ty - h * 0.5f, w, h, 7.0f * G, hd_rgb(96, 102, 120), 1.0f);
+        hd_rrect(im, tx - w * 0.5f + 2.0f * G, ty - h * 0.5f + 2.0f * G, w - 4.0f * G, h - 4.0f * G, 5.5f * G, hd_rgb(186, 192, 206), 0.9f);
+        for (int k = 1; k < 9; k++) {                             /* 그물 */
+            float gx = tx - w * 0.5f + w * (float)k / 9.0f, gy = ty - h * 0.5f + h * (float)k / 9.0f;
+            hd_line(im, gx, ty - h * 0.5f + 3.0f * G, gx, ty + h * 0.5f - 3.0f * G, 0.7f * G, hd_rgb(104, 110, 128), 0.9f);
+            hd_line(im, tx - w * 0.5f + 3.0f * G, gy, tx + w * 0.5f - 3.0f * G, gy, 0.7f * G, hd_rgb(104, 110, 128), 0.9f);
         }
     } else if (item == BOSS_SPRAY) {
-        float x = bx - 22.0f * U, y = by - (used ? 62.0f : 54.0f) * U;
-        hd_vgrad(im, x, y + 10.0f * U, 26.0f * U, 60.0f * U, 5.0f * U, hd_rgb(84, 212, 232), hd_rgb(36, 128, 160), 1.0f);
-        hd_rrect(im, x + 3.0f * U, y + 26.0f * U, 20.0f * U, 13.0f * U, 2.0f * U, hd_rgb(236, 240, 244), 0.92f);
-        hd_rrect(im, x + 6.0f * U, y + 1.0f * U, 14.0f * U, 11.0f * U, 3.0f * U, hd_rgb(226, 230, 236), 1.0f);
-        hd_rrect(im, x + 2.0f * U, y + 3.0f * U, 6.0f * U, 4.0f * U, 1.5f * U, hd_rgb(60, 64, 78), 1.0f);
+        float x = bx - 22.0f * G, y = by - (used ? 62.0f : 54.0f) * G;
+        hd_vgrad(im, x, y + 10.0f * G, 26.0f * G, 60.0f * G, 5.0f * G, hd_rgb(84, 212, 232), hd_rgb(36, 128, 160), 1.0f);
+        hd_rrect(im, x + 3.0f * G, y + 26.0f * G, 20.0f * G, 13.0f * G, 2.0f * G, hd_rgb(236, 240, 244), 0.92f);
+        hd_rrect(im, x + 6.0f * G, y + 1.0f * G, 14.0f * G, 11.0f * G, 3.0f * G, hd_rgb(226, 230, 236), 1.0f);
+        hd_rrect(im, x + 2.0f * G, y + 3.0f * G, 6.0f * G, 4.0f * G, 1.5f * G, hd_rgb(60, 64, 78), 1.0f);
         if (used)                                                 /* 뿜는 물줄기: 화면 가운데 쪽으로 퍼진다 */
             for (int k = 0; k < 12; k++) {
                 float t = (float)k / 11.0f;
-                hd_ellipse(im, x - t * 70.0f * U, y + 4.0f * U - t * 42.0f * U, (3.0f + 11.0f * t) * U, (2.5f + 8.0f * t) * U,
+                hd_ellipse(im, x - t * 70.0f * G, y + 4.0f * G - t * 42.0f * G, (3.0f + 11.0f * t) * G, (2.5f + 8.0f * t) * G,
                            hd_rgb(220, 244, 250), 0.42f * (1.0f - t * 0.7f));
             }
     } else {
-        float x = bx - 14.0f * U, y = by - (used ? 46.0f : 32.0f) * U, r = 17.0f * U;
+        float x = bx - 14.0f * G, y = by - (used ? 46.0f : 32.0f) * G, r = 17.0f * G;
         hd_ellipse(im, x, y, r, r * 0.9f, hd_rgb(180, 92, 20), 1.0f);
         hd_ellipse(im, x - r * 0.08f, y - r * 0.1f, r * 0.9f, r * 0.8f, hd_rgb(240, 140, 40), 1.0f);
         hd_ellipse(im, x - r * 0.35f, y - r * 0.4f, r * 0.3f, r * 0.2f, hd_rgb(255, 226, 170), 0.8f);
@@ -641,64 +643,73 @@ static void draw_weapon(image_t *im, const boss_snap_t *b, int me)
 }
 
 /* ---- 상태 표시 ------------------------------------------------------------------------ */
-/* 글자. 자리와 돌려주는 폭은 U 단위다 */
-static float text(image_t *im, float x, float y, const char *s, rgb_t c)
+/* 상태 표시는 3D 화면 위에 작게 띄운다(화면을 가리는 띠를 두지 않는다). 둠 같은 1인칭 게임의 배치를 따랐다:
+ * 맨 위 가운데에 상대의 체력, 왼쪽 아래에 내 체력, 오른쪽 아래에 무기와 남은 수, 가운데에 조준 표시.
+ * 자리는 화면을 960x536으로 본 단위(U)로 적는다. 글자 한 줄이 화면 높이의 2%쯤이다(2400x1340에서 30픽셀). */
+#define HW 960.0f
+#define HH 536.0f
+
+/* 글자. 자리는 U 단위, k는 글자 크기의 배율(1이면 12U), a는 진하기. 폭(U)을 돌려준다 */
+static float text(image_t *im, float x, float y, const char *s, rgb_t c, float k, float a)
 {
-    hd_text(im, x * U, y * U, s, c, CELL * U, 1.0f);
-    return (float)ui_text_w(s);
+    hd_text(im, x * U, y * U, s, c, CELL * k * U, a);
+    return (float)ui_text_w(s) * k;
 }
 
-static void panel(image_t *im, float x, float y, float w, float h, float a)
+static void plate(image_t *im, float x, float y, float w, float h, float a)
 {
-    hd_rrect(im, x * U, y * U, w * U, h * U, 4.0f * U, hd_rgb(6, 7, 14), a);
+    hd_rrect(im, x * U, y * U, w * U, h * U, 5.0f * U, hd_rgb(8, 10, 18), a);
 }
 
-/* 이름과 막대 하나. 값(0~1)만큼 차고, mark가 0보다 크면 그 자리에 세로줄(기준)을 긋는다 */
-static void gauge(image_t *im, float x, float y, float w, const char *label, float v, float mark, rgb_t c)
+/* 막대 하나. 값(0~1)만큼 차고, mark가 0보다 크면 그 자리에 세로줄(기준)을 긋는다 */
+static void bar(image_t *im, float x, float y, float w, float h, float v, float mark, rgb_t c)
 {
-    float lw = text(im, x, y, label, DIM) + 4.0f, bw = w - lw;
-    hd_rrect(im, (x + lw) * U, (y + 3.5f) * U, bw * U, 6.0f * U, 3.0f * U, hd_rgb(44, 48, 64), 1.0f);
-    if (v > 0.01f) hd_rrect(im, (x + lw) * U, (y + 3.5f) * U, maxf(bw * clamp01(v), 6.0f) * U, 6.0f * U, 3.0f * U, c, 1.0f);
-    if (mark > 0.0f) hd_rrect(im, (x + lw + bw * clamp01(mark) - 0.6f) * U, (y + 1.5f) * U, 1.2f * U, 10.0f * U, 0.6f * U, hd_rgb(255, 255, 255), 1.0f);
+    hd_rrect(im, x * U, y * U, w * U, h * U, h * 0.5f * U, hd_rgb(40, 44, 60), 0.9f);
+    if (v > 0.01f) hd_rrect(im, x * U, y * U, maxf(w * clamp01(v), h) * U, h * U, h * 0.5f * U, c, 1.0f);
+    if (mark > 0.0f) hd_rrect(im, (x + w * clamp01(mark) - 0.5f) * U, (y - 2.0f) * U, 1.0f * U, (h + 4.0f) * U, 0.5f * U, hd_rgb(255, 255, 255), 1.0f);
 }
 
-/* 초파리 뇌: 왼쪽 위. 그림은 미니게임 화면의 뇌 표시(ui/compose.c)를 그대로 키워 쓰고, 그 안의 글자는 큰 글꼴로
- * 다시 그린다. 아래의 "자극"은 참가자가 다가가서 초파리에게 주는 다가옴 자극이고 "도약"은 뇌의 달아남 반응이다.
- * 도약 막대가 세로줄(뛰는 기준)을 넘으면 초파리가 뛰어올라 달아난다. 차지한 자리의 오른쪽 끝(U)을 돌려준다 */
+/* 초파리 뇌: 왼쪽 위. 그림은 미니게임 화면의 뇌 표시(ui/compose.c)를 그대로 쓰고 그 안의 글자만 다시 그린다.
+ * "자극"은 참가자가 다가가서 초파리에게 주는 다가옴 자극이고 "도약"은 뇌의 달아남 반응이다. 도약 막대가 세로줄
+ * (뛰는 기준)을 넘으면 초파리가 뛰어올라 달아난다. 차지한 자리의 오른쪽 끝(U)을 돌려준다 */
 static float draw_brain(image_t *im, const boss_snap_t *b, const boss_view_t *v)
 {
     static canvas_t *small;
     static const float zero[BRAIN_GROUP_COUNT];
     const float *stim = v->brain_stim ? v->brain_stim : zero, *rate = v->brain_rate;
-    const float x = 4.0f, y = BAR_TOP + 4.0f, w = (float)(BRAIN_PANEL_W + 2) * 2.0f + 8.0f, ph = (float)(BRAIN_PANEL_H + 2) * 2.0f;
     if (!rate) return 0.0f;
     if (!small) small = canvas_new(BRAIN_PANEL_W + 2, BRAIN_PANEL_H + 2);
     if (!small) return 0.0f;
-    panel(im, x, y, w, 15.0f + ph + 30.0f, 0.78f);
-    text(im, x + 4.0f, y + 2.0f, "초파리 뇌", SKY);
+    int n = im->w / SCREEN_W / 2 > 0 ? im->w / SCREEN_W / 2 : 1;                 /* 그림의 픽셀 하나가 몇 픽셀인가 */
+    float pw = (float)((BRAIN_PANEL_W + 2) * n) / U, ph = (float)((BRAIN_PANEL_H + 2) * n) / U, x = 10.0f, y = 10.0f, w = pw + 10.0f;
+    plate(im, x, y, w, 13.0f + ph + 27.0f, 0.72f);
+    text(im, x + 5.0f, y + 3.0f, "초파리 뇌", SKY, 0.8f, 1.0f);
 
     const ui_text_item_t *items;
-    int n = im->w / SCREEN_W, ox = (int)((x + 4.0f) * U), oy = (int)((y + 15.0f) * U);
+    int ox = (int)((x + 5.0f) * U), oy = (int)((y + 13.0f) * U);
     ui_clear(small, C_BLACK);
     ui_text_capture_begin(small);
     compose_brain_panel(small, 1, 1, stim, rate, v->brain_map, b->tick / 2);
     int k = ui_text_capture_end(&items);
     hd_canvas(im, ox, oy, small, n);
     for (int i = 0; i < k; i++)
-        hd_text(im, (float)(ox + items[i].x * n), (float)(oy + items[i].y * n), items[i].s, hd_color(items[i].col), (float)(UI_KFONT_H * n), 1.0f);
+        if (items[i].kind == UI_HD_TEXT)
+            hd_text(im, (float)(ox + items[i].x * n), (float)(oy + items[i].y * n), items[i].s, hd_color(items[i].col), (float)(UI_KFONT_H * n), 1.0f);
 
-    float gy = y + 15.0f + ph + 2.0f, loom = stim[BR_LOOM_L] > stim[BR_LOOM_R] ? stim[BR_LOOM_L] : stim[BR_LOOM_R];
+    float gy = y + 13.0f + ph + 3.0f, loom = stim[BR_LOOM_L] > stim[BR_LOOM_R] ? stim[BR_LOOM_L] : stim[BR_LOOM_R];
     int jump = v->takeoff > 0.0f && rate[BR_ESCAPE] >= v->takeoff;
-    gauge(im, x + 4.0f, gy, w - 8.0f, "자극", loom, 0.0f, SKY);
-    gauge(im, x + 4.0f, gy + 13.0f, w - 8.0f, "도약", rate[BR_ESCAPE], v->takeoff, jump ? hd_rgb(245, 190, 60) : SKY);
+    float lw = text(im, x + 5.0f, gy, "자극", DIM, 0.75f, 1.0f) + 5.0f;
+    bar(im, x + 5.0f + lw, gy + 3.0f, w - 10.0f - lw, 4.0f, loom, 0.0f, SKY);
+    text(im, x + 5.0f, gy + 11.0f, "도약", DIM, 0.75f, 1.0f);
+    bar(im, x + 5.0f + lw, gy + 14.0f, w - 10.0f - lw, 4.0f, rate[BR_ESCAPE], v->takeoff, jump ? hd_rgb(245, 190, 60) : SKY);
     return x + w;
 }
 
 /* 작은 지도: 오른쪽 위. my_ang은 내가 보는 방향이다(me가 0 이상일 때). 왼쪽 끝(U)을 돌려준다 */
 static float draw_minimap(image_t *im, const boss_snap_t *b, int me, float my_ang)
 {
-    const float cell = 4.0f, size = BOSS_MAP * cell, x = 480.0f - size - 8.0f, y = BAR_TOP + 4.0f;
-    panel(im, x - 3.0f, y - 3.0f, size + 6.0f, size + 6.0f, 0.78f);
+    const float cell = 3.2f, size = BOSS_MAP * cell, x = HW - size - 14.0f, y = 30.0f;
+    plate(im, x - 4.0f, y - 4.0f, size + 8.0f, size + 8.0f, 0.72f);
     for (int cy = 0; cy < BOSS_MAP; cy++)
         for (int cx = 0; cx < BOSS_MAP; cx++) {
             if (!wall[cy][cx]) continue;
@@ -708,8 +719,8 @@ static float draw_minimap(image_t *im, const boss_snap_t *b, int me, float my_an
         }
     float fx = (x + (float)b->fly.x * cell / BOSS_FIX) * U, fy = (y + (float)b->fly.y * cell / BOSS_FIX) * U;
     rgb_t fc = b->fly.stun ? hd_rgb(240, 140, 40) : (b->fly.air ? hd_rgb(250, 220, 70) : hd_rgb(232, 60, 54));
-    if (b->fly.windup || b->fly.charging) hd_ring(im, fx, fy, (5.0f + (float)(b->tick % 6)) * U, 1.0f * U, fc, 0.7f);
-    hd_ellipse(im, fx, fy, 3.2f * U, 3.2f * U, fc, 1.0f);
+    if (b->fly.windup || b->fly.charging) hd_ring(im, fx, fy, (4.0f + (float)(b->tick % 6)) * U, 0.9f * U, fc, 0.7f);
+    hd_ellipse(im, fx, fy, 2.6f * U, 2.6f * U, fc, 1.0f);
     for (int i = 0; i < b->n_players && i < BOSS_PLAYERS; i++) {
         if (!b->p[i].alive) continue;
         float pxx = (x + (float)b->p[i].x * cell / BOSS_FIX) * U, pyy = (y + (float)b->p[i].y * cell / BOSS_FIX) * U;
@@ -717,34 +728,12 @@ static float draw_minimap(image_t *im, const boss_snap_t *b, int me, float my_an
         rgb_t c = i == me ? hd_rgb(255, 255, 255) : PCOL[i];
         if (i == me)                                              /* 내가 보는 범위 */
             for (int s = -1; s <= 1; s += 2)
-                hd_line(im, pxx, pyy, pxx + cosf(a + (float)s * 0.58f) * 14.0f * U, pyy + sinf(a + (float)s * 0.58f) * 14.0f * U,
-                        0.8f * U, c, 0.35f);
-        hd_line(im, pxx, pyy, pxx + cosf(a) * 5.0f * U, pyy + sinf(a) * 5.0f * U, 1.6f * U, c, 1.0f);
-        hd_ellipse(im, pxx, pyy, 2.6f * U, 2.6f * U, c, 1.0f);
+                hd_line(im, pxx, pyy, pxx + cosf(a + (float)s * 0.58f) * 12.0f * U, pyy + sinf(a + (float)s * 0.58f) * 12.0f * U,
+                        0.7f * U, c, 0.35f);
+        hd_line(im, pxx, pyy, pxx + cosf(a) * 4.2f * U, pyy + sinf(a) * 4.2f * U, 1.4f * U, c, 1.0f);
+        hd_ellipse(im, pxx, pyy, 2.1f * U, 2.1f * U, c, 1.0f);
     }
-    return x - 3.0f;
-}
-
-typedef struct { const char *key, *what; } key_hint_t;
-
-/* 키는 노랗게, 설명은 흰색으로 한 줄에 이어 놓는다. hi번째 항목의 설명은 켜져 있다는 뜻으로 하늘색이다 */
-static void hints(image_t *im, float x, float y, const key_hint_t *h, int hi)
-{
-    for (int i = 0; h->key; h++, i++) {
-        x += text(im, x, y, h->key, KEY) + 4.0f;
-        x += text(im, x, y, h->what, i == hi ? SKY : INK) + 8.0f;
-    }
-}
-
-/* 조작이 바뀌면 boss_view.c의 draw_guide, draw_legend와 docs/guide.md의 "보스전 조작"을 같이 고친다 */
-static void draw_legend(image_t *im, int sneak)
-{
-    static const key_hint_t a[] = { { "WASD", "이동" }, { "마우스", "시선" }, { NULL, NULL } };
-    static const key_hint_t b[] = { { "클릭", "쓰기" }, { "C", "살금살금" }, { "H", "안내" }, { NULL, NULL } };
-    float y = 268.0f - BAR_BOT - 33.0f;
-    panel(im, 4.0f, y, 168.0f, 29.0f, 0.72f);
-    hints(im, 8.0f, y + 2.0f, a, -1);
-    hints(im, 8.0f, y + 15.0f, b, sneak ? 1 : -1);
+    return x - 4.0f;
 }
 
 /* 하트 하나. (cx, cy)는 가운데, s는 반 너비(픽셀). 식 (x^2 + y^2 - 1)^3 < x^2 y^3 의 안쪽을 아홉 군데 떠서 칠한다 */
@@ -763,45 +752,86 @@ static void heart(image_t *im, float cx, float cy, float s, rgb_t c)
         }
 }
 
-static void draw_bars(image_t *im, const boss_snap_t *b, const boss_view_t *v, int eye)
+/* 맨 위 가운데: 초파리의 체력. 오른쪽 위 구석: 남은 시간 */
+static void draw_boss_bar(image_t *im, const boss_snap_t *b)
+{
+    char line[32];
+    const float w = 360.0f, x = (HW - w) * 0.5f, y = 14.0f;
+    plate(im, x - 62.0f, y - 6.0f, w + 124.0f, 19.0f, 0.6f);
+    text(im, x - 54.0f, y - 3.0f, "초파리", INK, 0.9f, 1.0f);
+    hd_rrect(im, x * U, y * U, w * U, 7.0f * U, 3.5f * U, hd_rgb(44, 48, 64), 1.0f);
+    if (b->fly.hp > 0 && b->fly.hp_max > 0)
+        hd_vgrad(im, x * U, y * U, maxf(w * (float)b->fly.hp / (float)b->fly.hp_max, 7.0f) * U, 7.0f * U, 3.5f * U,
+                 hd_rgb(244, 92, 76), hd_rgb(176, 34, 36), 1.0f);
+    snprintf(line, sizeof line, "%d/%d", b->fly.hp, b->fly.hp_max);
+    text(im, x + w + 8.0f, y - 1.5f, line, INK, 0.85f, 1.0f);
+    int sec = b->ticks_left / 20;
+    snprintf(line, sizeof line, "%d:%02d", sec / 60, sec % 60);
+    float tw = (float)ui_text_w(line) * 1.1f;
+    plate(im, HW - tw - 24.0f, 8.0f, tw + 14.0f, 17.0f, 0.6f);
+    text(im, HW - tw - 17.0f, 11.0f, line, sec < 30 ? hd_rgb(245, 190, 60) : INK, 1.1f, 1.0f);
+}
+
+/* 왼쪽 아래: 내 체력과 막기. 오른쪽 아래: 고른 무기와 남은 수, 그 아래에 무기 셋과 고르는 숫자 키 */
+static void draw_status(image_t *im, const boss_snap_t *b, const boss_view_t *v, int eye)
 {
     static const char *item_name[BOSS_ITEMS] = { "파리채", "스프레이", "끈끈이" };
     char line[64];
-    const float W = 480.0f, H = 268.0f, bar_x = 46.0f, bar_w = W - bar_x - 82.0f;
-    hd_vgrad(im, 0.0f, 0.0f, (float)im->w, BAR_TOP * U, 0.0f, hd_rgb(14, 16, 28), hd_rgb(6, 7, 14), 1.0f);
-    hd_vgrad(im, 0.0f, (H - BAR_BOT) * U, (float)im->w, (float)im->h - (H - BAR_BOT) * U, 0.0f, hd_rgb(6, 7, 14), hd_rgb(14, 16, 28), 1.0f);
-    text(im, 4.0f, 1.0f, "초파리", INK);
-    hd_rrect(im, bar_x * U, 4.0f * U, bar_w * U, 6.5f * U, 3.2f * U, hd_rgb(46, 50, 66), 1.0f);
-    if (b->fly.hp > 0 && b->fly.hp_max > 0)
-        hd_vgrad(im, bar_x * U, 4.0f * U, maxf(bar_w * (float)b->fly.hp / (float)b->fly.hp_max, 6.5f) * U, 6.5f * U, 3.2f * U,
-                 hd_rgb(240, 84, 70), hd_rgb(176, 34, 36), 1.0f);
-    snprintf(line, sizeof line, "%d/%d", b->fly.hp, b->fly.hp_max);
-    text(im, bar_x + bar_w + 5.0f, 1.0f, line, INK);
-    snprintf(line, sizeof line, "%d", b->ticks_left / 20);
-    text(im, W - 4.0f - (float)ui_text_w(line), 1.0f, line, b->ticks_left < 600 ? hd_rgb(245, 190, 60) : INK);
-
-    float y = H - BAR_BOT + 2.0f, x = 4.0f;
-    if (eye < 0) { text(im, x, y, "모두 쓰러졌다", DIM); return; }
-    if (eye != v->me) {
-        snprintf(line, sizeof line, "관전 %.10s   TAB 다른 사람", v->name[eye] ? v->name[eye] : "");
-        text(im, x, y, line, PCOL[eye]);
+    const float y = HH - 46.0f;
+    if (eye < 0) {
+        plate(im, 12.0f, y + 14.0f, 120.0f, 20.0f, 0.65f);
+        text(im, 20.0f, y + 18.0f, "모두 쓰러졌다", DIM, 1.0f, 1.0f);
         return;
     }
-    /* 체력(하트), 그리고 무기 셋. 이름 앞의 숫자가 그 무기를 고르는 키다. 고른 무기는 밝은 띠로 표시한다 */
-    int hp = b->p[eye].hp < 5 ? b->p[eye].hp : 5;
+    if (eye != v->me) {
+        snprintf(line, sizeof line, "관전 %.10s   TAB 다른 사람", v->name[eye] ? v->name[eye] : "");
+        plate(im, 12.0f, y + 14.0f, (float)ui_text_w(line) + 16.0f, 20.0f, 0.65f);
+        text(im, 20.0f, y + 18.0f, line, PCOL[eye], 1.0f, 1.0f);
+        return;
+    }
+    /* 체력(하트)과 막기. 막기는 쉬는 동안 막대가 차오르고, 다 차면 다시 쓸 수 있다 */
+    int hp = b->p[eye].hp < 5 ? b->p[eye].hp : 5, cool = b->p[eye].guard_cool;
+    plate(im, 12.0f, y, 132.0f, 34.0f, 0.65f);
     for (int k = 0; k < 3 || k < hp; k++)
-        heart(im, (x + 5.0f + (float)k * 11.0f) * U, (y + 6.2f) * U, 4.6f * U, k < hp ? hd_rgb(236, 72, 80) : hd_rgb(56, 58, 74));
-    x += (float)(hp > 3 ? hp : 3) * 11.0f + 8.0f;
+        heart(im, (26.0f + (float)k * 17.0f) * U, (y + 11.0f) * U, 6.6f * U, k < hp ? hd_rgb(236, 72, 80) : hd_rgb(56, 58, 74));
+    float lw = text(im, 20.0f, y + 21.0f, "E", KEY, 0.75f, 1.0f) + 3.0f;
+    lw += text(im, 20.0f + lw, y + 21.0f, "막기", cool ? DIM : INK, 0.75f, 1.0f) + 6.0f;
+    bar(im, 20.0f + lw, y + 24.5f, 112.0f - lw, 3.6f, 1.0f - (float)cool / 50.0f, 0.0f, cool ? hd_rgb(110, 115, 130) : SKY);
+    if (b->p[eye].sneak) {
+        plate(im, 150.0f, y + 16.0f, 62.0f, 18.0f, 0.65f);
+        text(im, 157.0f, y + 20.0f, "살금살금", SKY, 0.8f, 1.0f);
+    }
+
+    /* 무기 */
+    int item = b->p[eye].item;
+    const float rw = 196.0f, rx = HW - rw - 12.0f;
+    plate(im, rx, y, rw, 34.0f, 0.65f);
+    text(im, rx + 9.0f, y + 4.0f, item_name[item], KEY, 1.05f, 1.0f);
+    if (item != BOSS_SWATTER) {
+        snprintf(line, sizeof line, "%d", item == BOSS_SPRAY ? b->p[eye].ammo : b->p[eye].traps);
+        float nw = (float)ui_text_w(line) * 1.5f;
+        text(im, rx + rw - nw - 10.0f, y + 2.5f, line, INK, 1.5f, 1.0f);
+    }
+    float sx = rx + 9.0f;
     for (int k = 0; k < BOSS_ITEMS; k++) {
         const char key[2] = { (char)('1' + k), '\0' };               /* 무기 k를 고르는 키는 SK_1 + k다 */
-        int on = k == b->p[eye].item;
-        if (k == BOSS_SPRAY) snprintf(line, sizeof line, "%s %d", item_name[k], b->p[eye].ammo);
-        else if (k == BOSS_TRAP) snprintf(line, sizeof line, "%s %d", item_name[k], b->p[eye].traps);
-        else snprintf(line, sizeof line, "%s", item_name[k]);
-        float w = 6.0f + 4.0f + (float)ui_text_w(line);
-        if (on) hd_rrect(im, (x - 4.0f) * U, (y - 0.5f) * U, (w + 8.0f) * U, 13.0f * U, 6.5f * U, hd_rgb(250, 220, 70), 0.16f);
-        x += text(im, x, y, key, on ? hd_rgb(255, 255, 255) : DIM) + 4.0f;
-        x += text(im, x, y, line, on ? KEY : hd_rgb(110, 115, 130)) + 12.0f;
+        sx += text(im, sx, y + 21.0f, key, k == item ? KEY : DIM, 0.75f, 1.0f) + 2.0f;
+        sx += text(im, sx, y + 21.0f, item_name[k], k == item ? INK : hd_rgb(110, 115, 130), 0.75f, 1.0f) + 8.0f;
+    }
+}
+
+/* 아래 가운데에 작게 한 줄: 키 안내. 조작이 바뀌면 boss_view.c의 draw_guide, draw_legend와 docs/guide.md를 같이 고친다 */
+static void draw_hint(image_t *im)
+{
+    static const char *const part[][2] = { { "WASD", "이동" }, { "마우스", "시선" }, { "클릭", "쓰기" }, { "E", "막기" },
+                                           { "C", "살금살금" }, { "H", "안내" } };
+    const int n = (int)(sizeof part / sizeof part[0]);
+    float w = 0.0f, k = 0.7f;
+    for (int i = 0; i < n; i++) w += (float)(ui_text_w(part[i][0]) + ui_text_w(part[i][1])) * k + 3.0f + (i + 1 < n ? 10.0f : 0.0f);
+    float x = (HW - w) * 0.5f, y = HH - 12.0f;
+    for (int i = 0; i < n; i++) {
+        x += text(im, x, y, part[i][0], KEY, k, 0.8f) + 3.0f;
+        x += text(im, x, y, part[i][1], INK, k, 0.7f) + 10.0f;
     }
 }
 
@@ -814,12 +844,12 @@ static void draw_outcome(image_t *im, const boss_snap_t *b)
     const char *head = win ? "초파리를 잡았다!" : (alive ? "시간이 다 됐다" : "모두 쓰러졌다");
     const char *sub  = win ? "살아남은 사람은 점수를 더 받아요" : "초파리가 이겼어요";
     rgb_t col = win ? hd_rgb(85, 200, 120) : hd_rgb(230, 80, 80);
-    float hw = (float)ui_text_w(head) * 1.5f, sw = (float)ui_text_w(sub);
-    float bw = maxf(hw, sw) + 36.0f, bh = 52.0f, bx = (480.0f - bw) * 0.5f, by = 134.0f + 8.0f;
-    hd_rrect(im, (bx - 1.5f) * U, (by - 1.5f) * U, (bw + 3.0f) * U, (bh + 3.0f) * U, 8.0f * U, col, 1.0f);
-    hd_rrect(im, bx * U, by * U, bw * U, bh * U, 7.0f * U, hd_rgb(8, 9, 16), 1.0f);
-    hd_text(im, (480.0f - hw) * 0.5f * U, (by + 8.0f) * U, head, col, CELL * 1.5f * U, 1.0f);
-    text(im, (480.0f - sw) * 0.5f, by + 32.0f, sub, INK);
+    float hw = (float)ui_text_w(head) * 2.2f, sw = (float)ui_text_w(sub);
+    float bw = maxf(hw, sw) + 48.0f, bh = 66.0f, bx = (HW - bw) * 0.5f, by = HH * 0.5f + 18.0f;
+    hd_rrect(im, (bx - 1.5f) * U, (by - 1.5f) * U, (bw + 3.0f) * U, (bh + 3.0f) * U, 9.0f * U, col, 1.0f);
+    hd_rrect(im, bx * U, by * U, bw * U, bh * U, 8.0f * U, hd_rgb(8, 9, 16), 1.0f);
+    text(im, (HW - hw) * 0.5f, by + 10.0f, head, col, 2.2f, 1.0f);
+    text(im, (HW - sw) * 0.5f, by + 44.0f, sub, INK, 1.0f, 1.0f);
 }
 
 static void draw_hud(image_t *im, const boss_snap_t *b, const boss_view_t *v, int eye, float eye_ang)
@@ -831,18 +861,26 @@ static void draw_hud(image_t *im, const boss_snap_t *b, const boss_view_t *v, in
         rgb_t c = hit ? hd_rgb(255, 80, 70) : (b->p[eye].sneak ? SKY : hd_rgb(255, 255, 255));
         draw_weapon(im, b, eye);
         for (int k = 0; k < 4; k++) {
-            float ax = (k == 0) - (k == 1), ay = (k == 2) - (k == 3);
-            hd_line(im, mid_x + ax * 3.5f * U, MID + ay * 3.5f * U, mid_x + ax * 8.0f * U, MID + ay * 8.0f * U, 1.3f * U, c, 0.95f);
+            float ax = (float)((k == 0) - (k == 1)), ay = (float)((k == 2) - (k == 3));
+            hd_line(im, mid_x + ax * 5.0f * U, MID + ay * 5.0f * U, mid_x + ax * 11.0f * U, MID + ay * 11.0f * U, 1.6f * U, c, 0.95f);
         }
-        hd_ellipse(im, mid_x, MID, 0.9f * U, 0.9f * U, c, 0.95f);
-        if (hit) hd_ring(im, mid_x, MID, (6.0f + (float)v->hit_ms * 0.05f) * U, 1.2f * U, c, 1.0f - (float)v->hit_ms / 250.0f);
+        hd_ellipse(im, mid_x, MID, 1.2f * U, 1.2f * U, c, 0.95f);
+        if (hit) hd_ring(im, mid_x, MID, (9.0f + (float)v->hit_ms * 0.07f) * U, 1.6f * U, c, 1.0f - (float)v->hit_ms / 250.0f);
+        /* 막는 자세: 가운데에 방패 고리. 막아 냈으면 고리가 하얗게 퍼진다 */
+        if (b->p[eye].guard > 0) {
+            hd_ring(im, mid_x, MID, 56.0f * U, 5.0f * U, SKY, 0.75f);
+            hd_ring(im, mid_x, MID, 62.0f * U, 1.2f * U, hd_rgb(255, 255, 255), 0.8f);
+        }
+        if (v->block_ms >= 0 && v->block_ms < 400)
+            hd_ring(im, mid_x, MID, (56.0f + (float)v->block_ms * 0.3f) * U, 4.0f * U, hd_rgb(255, 255, 255), 1.0f - (float)v->block_ms / 400.0f);
     }
     float right = draw_minimap(im, b, eye, eye_ang), left = draw_brain(im, b, v);
-    if (eye >= 0 && eye == v->me && b->outcome == BOSS_GOING) draw_legend(im, b->p[eye].sneak);
+    (void)right;
+    (void)left;
 
     /* 알림: 내가 맞았다(가장자리가 붉어진다), 돌진이 나를 겨눈다, 날갯짓, 끈끈이에 붙었다 */
     if (v->hurt_ms >= 0 && v->hurt_ms < 300) {
-        float a = 0.55f * (1.0f - (float)v->hurt_ms / 300.0f), t = 26.0f * U;
+        float a = 0.55f * (1.0f - (float)v->hurt_ms / 300.0f), t = 52.0f * U;
         int band = (int)t;
         for (int y = VY; y < VY + VH; y++) {
             int inner = y - VY >= band && VY + VH - 1 - y >= band;       /* 가운데 줄들은 양 끝만 칠한다 */
@@ -855,18 +893,19 @@ static void draw_hud(image_t *im, const boss_snap_t *b, const boss_view_t *v, in
     }
     const char *note = NULL;
     rgb_t note_col = hd_rgb(245, 190, 60);
-    if (eye >= 0 && b->fly.windup && b->fly.target == eye) { note = "돌진이 온다!"; note_col = hd_rgb(255, 90, 80); }
+    if (eye >= 0 && b->fly.windup && b->fly.target == eye) { note = "돌진이 온다!  E 막기"; note_col = hd_rgb(255, 90, 80); }
+    else if (v->block_ms >= 0 && v->block_ms < 700) { note = "막았다!"; note_col = hd_rgb(85, 200, 120); }
     else if (v->wave_ms >= 0 && v->wave_ms < 500) note = "날갯짓!";
-    else if (b->fly.stun) note = "붙었다! 지금이다";
-    else if (b->fly.air) note = "달아났다! C 살금살금";
-    if (note && eye >= 0 && b->outcome == BOSS_GOING) {          /* 가운데에 놓되, 왼쪽의 뇌 표시와 오른쪽의 작은 지도를 피한다 */
-        float w = (float)ui_text_w(note), x = (480.0f - w) * 0.5f;
-        if (x + w + 8.0f > right) x = right - w - 8.0f;
-        if (x < left + 8.0f) x = left + 8.0f;
-        hd_rrect(im, (x - 7.0f) * U, (BAR_TOP + 5.0f) * U, (w + 14.0f) * U, 16.0f * U, 8.0f * U, hd_rgb(6, 7, 14), 0.8f);
-        text(im, x, BAR_TOP + 7.0f, note, note_col);
+    else if (b->fly.stun) note = "멈췄다! 지금이다";
+    else if (b->fly.air) note = "달아난다!  C 살금살금";
+    if (note && eye >= 0 && b->outcome == BOSS_GOING) {
+        float w = (float)ui_text_w(note) * 1.1f, x = (HW - w) * 0.5f;
+        plate(im, x - 10.0f, 38.0f, w + 20.0f, 19.0f, 0.7f);
+        text(im, x, 41.0f, note, note_col, 1.1f, 1.0f);
     }
-    draw_bars(im, b, v, eye);
+    draw_boss_bar(im, b);
+    draw_status(im, b, v, eye);
+    if (eye >= 0 && eye == v->me && b->outcome == BOSS_GOING) draw_hint(im);
     draw_outcome(im, b);
 }
 
@@ -875,11 +914,12 @@ void boss_view_draw_hd(image_t *im, const boss_snap_t *b, const boss_view_t *v)
     int eye = -1;
     if (!im || im->w < SCREEN_W || im->w > SCREEN_W * HD_MAX_SCALE) return;
     if (!have_map) load_map();
-    U = (float)im->w / 480.0f;
+    U = (float)im->w / HW;
+    G = (float)im->w / 480.0f;
     VW = im->w;
-    VY = (int)(BAR_TOP * U);
-    VH = im->h - VY - (int)(BAR_BOT * U);
-    MID = (float)VY + (float)VH * 0.5f;
+    VY = 0;                                          /* 3D 화면이 그림 전체를 쓴다. 상태 표시는 그 위에 띄운다 */
+    VH = im->h;
+    MID = (float)VH * 0.5f;
     UNIT = (float)im->w * UNIT_PER_W;
 
     if (v->me >= 0 && v->me < b->n_players && b->p[v->me].alive) eye = v->me;

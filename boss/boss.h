@@ -19,6 +19,8 @@
  *   SK_LEFT / SK_RIGHT 에 BOSS_STRAFE를 더하면   시선은 그대로 두고 왼쪽 / 오른쪽으로 한 걸음(옆걸음)
  *   이동 키에 BOSS_SLOW를 더하면                 그 걸음은 살금살금이다(걸음이 짧다, slow_step)
  *   BOSS_SNEAK           살금살금을 켜고 끈다. 켜져 있으면 모든 걸음이 살금살금이다
+ *   BOSS_GUARD           막기. 잠깐(guard_ticks) 막는 자세를 한다. 그동안 돌진에 닿으면 다치지 않고 초파리가 잠깐 멈춘다.
+ *                        한 번 쓰면 guard_cooldown 동안 다시 못 쓴다
  *   SK_LEFT / SK_RIGHT   한 칸(22.5도) 왼쪽 / 오른쪽으로 돈다(마우스가 없을 때와 봇이 쓴다)
  *   SK_1, SK_2, SK_3     파리채 / 스프레이 / 끈끈이를 고른다
  *   SK_SUB               다음 무기로 바꾼다
@@ -43,6 +45,7 @@
 #define BOSS_SLOW       0x100    /* boss_input의 이동 키에 더한다: 이 걸음은 살금살금 */
 #define BOSS_STRAFE     0x200    /* boss_input의 SK_LEFT, SK_RIGHT에 더한다: 돌지 않고 옆으로 걷는다 */
 #define BOSS_SNEAK      0x400    /* boss_input의 키 하나: 살금살금을 켜고 끈다 */
+#define BOSS_GUARD      0x800    /* boss_input의 키 하나: 막기 */
 
 enum { BOSS_SWATTER = 0, BOSS_SPRAY, BOSS_TRAP, BOSS_ITEMS };
 enum { BOSS_GOING = 0, BOSS_PLAYERS_WIN, BOSS_FLY_WINS };
@@ -59,7 +62,8 @@ enum {
     BOSS_EV_DEATH,                               /* 참가자가 쓰러졌다 */
     BOSS_EV_FLY_DOWN,                            /* 초파리가 쓰러졌다 */
     BOSS_EV_TAKEOFF,                             /* 초파리가 뛰어올랐다(x, y는 뛴 곳) */
-    BOSS_EV_LAND                                 /* 내려앉았다 */
+    BOSS_EV_LAND,                                /* 내려앉았다 */
+    BOSS_EV_BLOCK                                /* 돌진을 막았다(who가 막은 참가자) */
 };
 
 typedef struct {
@@ -76,6 +80,8 @@ typedef struct {
     float speed_scale, turn_scale;               /* 게임용 배율. 실제 비율 그대로면 사람이 따라갈 수 없어서 전체를 줄인다 */
     /* 도약. 뇌의 달아남 출력(거대 섬유 뉴런)이 takeoff_level 이상이면 뛰어오른다 */
     float takeoff_level, takeoff_mm_s;           /* 뛰는 기준(반응), 뛰어오른 직후의 빠르기(잰 값) */
+    float takeoff_scale;                         /* 도약에만 곱하는 게임용 배율(speed_scale 대신) */
+    int   guard_ticks, guard_cooldown, guard_stun;   /* 막는 자세의 길이, 다시 쓸 때까지, 막힌 초파리가 멈추는 시간 */
     int   air_ticks, air_rest_ticks;             /* 떠 있는 시간, 내려앉은 뒤 다시 뛰지 못하는 시간(둘 다 게임 규칙) */
     float swat_range, swat_damage; int swat_cooldown;
     float spray_range, spray_damage; int spray_ammo, spray_cooldown;
@@ -98,6 +104,7 @@ typedef struct {
     int   hp, alive, item, ammo, traps, cool;
     int   move, strafe, turn, use, pick;         /* 다음 틱에 할 일. move는 앞(1)/뒤(-1), strafe는 오른쪽(1)/왼쪽(-1) */
     int   slow, sneak;           /* 다음 걸음이 살금살금인가(키에 BOSS_SLOW), 살금살금을 켜 두었는가(BOSS_SNEAK) */
+    int   guard, guard_cool;     /* 막는 자세가 남은 틱, 막기를 다시 쓸 때까지 남은 틱 */
     int   has_look;              /* boss_look이 왔다. 다음 틱에 look을 보는 방향으로 삼는다 */
     float look;
     int   step_left;             /* 걷고 있는 걸음의 남은 틱. 0이어야 새 걸음을 뗀다 */
@@ -142,7 +149,8 @@ typedef struct {
     struct {
         int16_t  x, y;
         uint16_t ang;            /* 보는 방향. 0..65535가 한 바퀴 */
-        uint8_t  hp, alive, item, ammo, traps, cool, sneak, pad;
+        uint8_t  hp, alive, item, ammo, traps, cool, sneak, guard;   /* guard: 막는 자세가 남은 틱 */
+        uint8_t  guard_cool, pad;                                    /* 막기를 다시 쓸 때까지 남은 틱(255에서 자른다) */
     } p[BOSS_PLAYERS];
     struct {
         int16_t  x, y;

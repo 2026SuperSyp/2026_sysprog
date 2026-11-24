@@ -385,7 +385,7 @@ static void draw_guide(canvas_t *c, int intro, int age_ms)
     static sprite_id_t cat = SPR_MISSING;
     static const key_hint_t rows[][4] = {
         { { "W S", "앞뒤" }, { "A D", "옆걸음" }, { "마우스", "시선" }, { NULL, NULL } },
-        { { "클릭/SPACE", "무기 쓰기" }, { "C", "살금살금" }, { NULL, NULL } },
+        { { "클릭/SPACE", "쓰기" }, { "E", "막기" }, { "C", "살금살금" }, { NULL, NULL } },
         { { "1", "파리채" }, { "2", "스프레이" }, { "3", "끈끈이" }, { NULL, NULL } },
         { { "F/휠", "다음 무기" }, { "H", "이 안내" }, { "Q", "나가기" }, { NULL, NULL } },
         { { "TAB", "쓰러진 뒤 다른 사람 보기" }, { NULL, NULL } },
@@ -412,8 +412,8 @@ static void draw_guide(canvas_t *c, int intro, int age_ms)
  * 살금살금이 켜져 있으면 그 글자가 하늘색이 된다. 오른쪽 끝(166)은 손에 든 무기의 왼쪽 끝보다 안쪽이어야 한다 */
 static void draw_legend(canvas_t *c, int sneak)
 {
-    static const key_hint_t a[] = { { "WASD", "이동" }, { "마우스", "시선" }, { NULL, NULL } };
-    static const key_hint_t b[] = { { "클릭", "쓰기" }, { "C", "살금살금" }, { "H", "안내" }, { NULL, NULL } };
+    static const key_hint_t a[] = { { "WASD", "이동" }, { "클릭", "쓰기" }, { NULL, NULL } };
+    static const key_hint_t b[] = { { "E", "막기" }, { "C", "살금살금" }, { "H", "안내" }, { NULL, NULL } };
     ui_rect(c, 0, VY + VH - 29, 166, 29, C_BLACK);
     put_hints(c, 3, VY + VH - 27, a, 8, -1);
     put_hints(c, 3, VY + VH - 14, b, 8, sneak ? 1 : -1);
@@ -507,7 +507,8 @@ static void draw_overlay(canvas_t *c, const boss_snap_t *b, const boss_view_t *v
     }
     const char *note = NULL;
     color_t note_col = C_WARN;
-    if (b->fly.windup && b->fly.target == eye) { note = "돌진이 온다!"; note_col = C_RED; }
+    if (b->fly.windup && b->fly.target == eye) { note = "돌진이 온다! E 막기"; note_col = C_RED; }
+    else if (v->block_ms >= 0 && v->block_ms < 700) { note = "막았다!"; note_col = C_GOOD; }
     else if (v->wave_ms >= 0 && v->wave_ms < 500) note = "날갯짓!";
     else if (b->fly.stun) note = "붙었다! 지금이다";
     else if (b->fly.air) note = "달아났다! C 살금살금";

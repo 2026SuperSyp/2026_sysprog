@@ -456,6 +456,35 @@ static void test_dead_input(void)
     T_EQ_INT(S.p[0].traps, traps);
 }
 
+/* 막기: 막는 자세일 때 돌진에 닿으면 다치지 않고 초파리가 멈춘다. 한 번 쓰면 한동안 못 쓴다 */
+static void test_guard(void)
+{
+    boss_cfg_t c;
+    boss_cfg_default(&c);
+    c.wave_period = 1000000;
+    setup(&c, 1);
+    put_fly(8.5f, 9.0f);
+    put_player(0, 8.5f, 12.0f, NORTH);
+    boss_tick(&S, still);
+    T_EQ_INT(count_ev(BOSS_EV_CHARGE), 1);
+    ticks(c.charge_windup, still);                                /* 겨누기가 끝나고 달려오기 시작한다 */
+    boss_input(&S, 0, BOSS_GUARD);
+    T_EQ_INT(S.p[0].guard, c.guard_ticks);
+    int blocked = 0;
+    for (int k = 0; k < c.guard_ticks && !blocked; k++) { boss_tick(&S, still); blocked += count_ev(BOSS_EV_BLOCK); }
+    T_EQ_INT(blocked, 1);
+    T_EQ_INT(S.p[0].hp, 3);                                       /* 다치지 않았다 */
+    T_CHECK(S.fly.stun > 0 && S.fly.charging == 0);
+    boss_input(&S, 0, BOSS_GUARD);                                /* 쉬는 중에는 다시 못 쓴다 */
+    T_EQ_INT(S.p[0].guard, 0);
+    ticks(c.guard_cooldown, still);
+    T_EQ_INT(S.p[0].guard_cool, 0);
+    boss_snap_t snap;
+    boss_input(&S, 0, BOSS_GUARD);
+    boss_snapshot(&S, &snap);
+    T_EQ_INT(snap.p[0].guard, c.guard_ticks);
+}
+
 /* 옆걸음, 마우스로 정하는 시선, 살금살금 켜고 끄기 */
 static void test_look_strafe(void)
 {
@@ -520,6 +549,7 @@ int main(void)
     test_takeoff();
     test_sneak();
     test_look_strafe();
+    test_guard();
     printf("  스냅숏 %zu바이트\n", sizeof(boss_snap_t));
     T_DONE();
 }
