@@ -1,6 +1,10 @@
 """배선 파일을 C가 읽는 바이너리로 바꾼다. 한 번만 돌리면 된다.
 
     python3 tools/brain_convert.py <받은 파일 폴더> <결과 폴더> [--shuffle=씨앗]
+    python3 tools/brain_convert.py <받은 파일 폴더> <결과 폴더> --groups-only [--if-stale]
+
+--groups-only는 뉴런 집단 목록(brain_groups.txt)만 다시 만든다. 몇 초면 되고 numpy와 pyarrow가 없어도 된다.
+코드를 받은 뒤 집단이 늘었을 때 쓴다(make brain-groups). --if-stale을 붙이면 목록이 옛것일 때만 다시 만든다.
 
 받은 파일 폴더에 있어야 하는 것
     Connectivity_783.parquet   뉴런 사이의 연결 (FlyWire v783, Shiu 등 2024의 공개 자료)
@@ -20,8 +24,6 @@ import csv
 import struct
 import sys
 
-import numpy as np
-import pyarrow.parquet as pq
 
 # 집단마다 (세포 유형 표의 어느 칸, 값들, 쪽). 쪽이 None이면 좌우를 모두 넣는다.
 GROUPS = {
@@ -48,7 +50,48 @@ GROUPS = {
 }
 
 
+def write_groups(dst, rows, index_of):
+    """게임이 쓰는 뉴런 집단을 세포 유형 표에서 골라 brain_groups.txt에 적는다."""
+    with open(f"{dst}/brain_groups.txt", "w") as f:
+        for name, (column, values, side) in GROUPS.items():
+            members = []
+            for r in rows:
+                if column == "type":
+                    hit = r["cell_type"] in values or r["hemibrain_type"] in values
+                else:
+                    hit = r["cell_class"] == "gustatory" and r["cell_sub_class"] in values
+                if hit and (side is None or r["side"] == side) and int(r["root_id"]) in index_of:
+                    members.append(index_of[int(r["root_id"])])
+            members = sorted(set(members))
+            f.write(" ".join([name, str(len(members))] + [str(m) for m in members]) + "\n")
+            print(f"{name:12s} {len(members)}개")
+
+
+def groups_only(src, dst, if_stale):
+    """집단 목록만 다시 만든다. if_stale이면 지금 목록에 빠진 집단이 있을 때만 한다. 만들었으면 True."""
+    import os
+    path = f"{dst}/brain_groups.txt"
+    have = {line.split(" ", 1)[0] for line in open(path)} if os.path.exists(path) else set()
+    missing = [name for name in GROUPS if name not in have]
+    if if_stale and not missing:
+        return False
+    for need in ("Completeness_783.csv", "annotations.tsv"):
+        if not os.path.exists(f"{src}/{need}"):
+            sys.exit(f"{src}/{need} 이 없습니다. 먼저 make brain-data 로 자료를 받아야 합니다(약 135MB)")
+    if missing:
+        print(f"뇌 자료의 뉴런 집단 목록이 옛것입니다(빠진 집단 {len(missing)}개: {', '.join(missing[:3])} 등). 다시 만듭니다")
+    ids = [int(line.split(",")[0]) for line in open(f"{src}/Completeness_783.csv").read().split("\n")[1:] if line]
+    index_of = {root: i for i, root in enumerate(ids)}
+    rows = list(csv.DictReader(open(f"{src}/annotations.tsv"), delimiter="\t"))
+    write_groups(dst, rows, index_of)
+    print(f"{path} 를 다시 만들었습니다")
+    return True
+
+
 def main(src, dst):
+    import numpy as np
+    import pyarrow.parquet as pq
+
     ids = [int(line.split(",")[0]) for line in open(f"{src}/Completeness_783.csv").read().split("\n")[1:] if line]
     index_of = {root: i for i, root in enumerate(ids)}
     n = len(ids)
@@ -91,27 +134,18 @@ def main(src, dst):
     pos.tofile(f"{dst}/brain_map.bin")
     print(f"위치를 아는 뉴런 {int(known.sum())}개, 세로 최댓값 {int(pos[known, 1].max())}")
 
-    with open(f"{dst}/brain_groups.txt", "w") as f:
-        for name, (column, values, side) in GROUPS.items():
-            members = []
-            for r in rows:
-                if column == "type":
-                    hit = r["cell_type"] in values or r["hemibrain_type"] in values
-                else:
-                    hit = r["cell_class"] == "gustatory" and r["cell_sub_class"] in values
-                if hit and (side is None or r["side"] == side) and int(r["root_id"]) in index_of:
-                    members.append(index_of[int(r["root_id"])])
-            members = sorted(set(members))
-            f.write(" ".join([name, str(len(members))] + [str(m) for m in members]) + "\n")
-            print(f"{name:12s} {len(members)}개")
+    write_groups(dst, rows, index_of)
     print(f"뉴런 {n}개, 연결 {len(pre)}개")
 
 
 if __name__ == "__main__":
     paths = [a for a in sys.argv[1:] if not a.startswith("--")]
     options = [a for a in sys.argv[1:] if a.startswith("--")]
-    if len(paths) != 2 or any(not a.startswith("--shuffle") for a in options):
+    if len(paths) != 2 or any(not a.startswith(("--shuffle", "--groups-only", "--if-stale")) for a in options):
         sys.exit(__doc__)
+    if "--groups-only" in options:
+        groups_only(paths[0], paths[1], "--if-stale" in options)
+        sys.exit(0)
     main(paths[0], paths[1])
     if options:
         sys.dont_write_bytecode = True

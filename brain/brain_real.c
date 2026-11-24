@@ -108,13 +108,20 @@ int brain_real_open(const char *dir)
     for (int i = 0; i < N_INPUTS; i++)  inputs[i].n  = lif_group(brain, inputs[i].name,  &inputs[i].idx);
     for (int i = 0; i < N_OUTPUTS; i++) {
         outputs[i].n = lif_group(brain, outputs[i].name, &outputs[i].idx);
-        /* 집단이 없으면 그 반응은 늘 0이다. 자료를 만든 뒤에 집단이 늘었으면(보스전의 걷기 명령 뉴런) 다시 만들어야 한다 */
-        if (outputs[i].n == 0)
-            fprintf(stderr, "경고: 뇌 자료에 %s 집단이 없습니다. data/brain_groups.txt가 옛것입니다(tools/brain_convert.py를 다시 돌리세요)\n",
-                    outputs[i].name);
         if (outputs[i].n > OUT_MAX) outputs[i].n = OUT_MAX;
     }
     load_map(dir);
+    /* 집단이 없으면 그 자극은 들어가지 않고 그 반응은 늘 0이다. 자료를 만든 뒤에 게임이 쓰는 집단이 늘었으면
+     * 집단 목록을 다시 만들어야 한다. 무엇을 치면 되는지까지 알려 준다 */
+    int missing = 0;
+    const char *first = NULL;
+    for (int i = 0; i < N_INPUTS; i++)  if (inputs[i].n == 0)  { missing++; if (!first) first = inputs[i].name; }
+    for (int i = 0; i < N_OUTPUTS; i++) if (outputs[i].n == 0) { missing++; if (!first) first = outputs[i].name; }
+    if (missing)
+        fprintf(stderr, "\n뇌 자료가 옛것입니다: %s/brain_groups.txt 에 뉴런 집단 %d개가 없습니다(%s 등).\n"
+                        "  그 집단을 쓰는 반응은 늘 0입니다. 보스전의 초파리가 걷지 않습니다.\n"
+                        "  고치는 법: 서버를 끄고, 저장소 맨 위 폴더에서  make brain-groups  를 돌린 뒤(몇 초) 다시 켭니다.\n\n",
+                dir, missing, first);
     return 0;
 }
 

@@ -12,6 +12,7 @@
 #   make client                  서버에 접속 (HOST=, PORT=, NAME=)
 #   make demo-local              한 컴퓨터에서 서버, 봇 2명, 사람 1명으로 한 판
 #   make brain-data              진짜 뇌에 필요한 자료를 받아 data/ 에 준비 (한 번만)
+#   make brain-groups            뇌 자료 가운데 뉴런 집단 목록만 다시 만듦 (몇 초. 서버가 "뇌 자료가 옛것"이라고 할 때)
 #   make brainprobe              진짜 뇌에 자극을 넣어 보고 반응과 계산 시간을 표로 봄
 #   make test-stage STAGE=이름   그 스테이지가 서버에서도 도는지 봄(서버 + 봇 2명으로 2라운드). BRAIN=real도 됨
 #   make brain-table [BRAIN=real] 자극의 세기별로 뇌의 반응을 표로 봄(스테이지 수치를 정할 때)
@@ -97,7 +98,7 @@ endif
 
 ALL_SRC := $(KIT_SRC) $(HOST_SRC) $(NET_SRC) $(SCREEN_SRC) $(TEST_SRC) $(STAGE_SRC) $(wildcard tools/*.c)
 
-.PHONY: test-stage brain-table bossbot all test run bot screen log termbench brain-data brainprobe server client demo-local clean need-stage need-screen test-fail release
+.PHONY: test-stage brain-table bossbot all test run bot screen log termbench brain-data brain-groups brain-check brainprobe server client demo-local clean need-stage need-screen test-fail release
 all: $(KIT_OBJ) $(STAGE_BIN) $(TOOL_BIN)
 
 # 발표용 빌드를 한 번에 만든다.
@@ -200,14 +201,14 @@ termbench:
 	@$(B)/termbench; st=$$?; $(RESTORE); exit $$st
 
 # 서버는 스테이지 실행 파일을 직접 띄우므로 먼저 전부 빌드한다.
-server: all
+server: all brain-check
 	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example) --brain=$(or $(BRAIN),fast)
 
 client: all
 	@$(B)/client --host=$(or $(HOST),127.0.0.1) --port=$(or $(PORT),4620) --name=$(or $(NAME),PLAYER); \
 	 st=$$?; $(RESTORE); exit $$st
 
-demo-local: all
+demo-local: all brain-check
 	@mkdir -p build/logs
 	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example) --brain=$(or $(BRAIN),fast) \
 	    > build/logs/server.log 2>&1 & sv=$$!; sleep 0.5; \
@@ -222,6 +223,15 @@ test-fail: all
 
 brain-data:
 	@sh tools/brain_data.sh
+
+# 뉴런 집단 목록(data/brain_groups.txt)만 다시 만든다. 받아 둔 자료(data/raw)에서 만들므로 새로 받는 것은 없다.
+# 코드를 받은 뒤 게임이 쓰는 뉴런 집단이 늘었으면 이것을 돌린다
+brain-groups:
+	@python3 tools/brain_convert.py data/raw data --groups-only
+
+# 진짜 뇌로 띄우기 전에: 집단 목록이 옛것이면 알아서 다시 만든다. 자료가 아예 없으면 건드리지 않는다(서버가 알려 준다)
+brain-check:
+	@if [ "$(BRAIN)" = real ] && [ -f data/brain.bin ]; then python3 tools/brain_convert.py data/raw data --groups-only --if-stale; fi
 
 # 그 스테이지가 서버에서도 도는지 본다. 포트 4670을 쓴다.
 test-stage: need-stage all
