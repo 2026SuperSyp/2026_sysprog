@@ -32,11 +32,13 @@ typedef struct {
 static side_t pl[STAGE_MAX_PLAYERS];   /* 유저별 상태 */
 static side_t fly;                     /* 초파리 상태 */
 static int    rock_x[MAX_ROCKS];       /* 문제: 돌이 떨어지는 자리. 모두에게 같다 */
+static float  rock_v[MAX_ROCKS];       /* 문제: 그 돌이 한 틱에 떨어지는 픽셀 수 */
+static float  rock_from[MAX_ROCKS];    /* 문제: 그 돌이 나타나는 높이. 낮게 나타날수록 빨리 닿는다 */
 static int    n_players, tick_no;
 static sprite_id_t spr_rock;
 
 /* config.ini에서 읽는 숫자들 */
-static float rock_speed, step, loom_gain, fly_hop, score_per_dodge, wall_gain, wall_range;
+static float rock_speed_min, rock_speed_max, rock_start_max, step, loom_gain, fly_hop, score_per_dodge, wall_gain, wall_range;
 static int   move_gap, hop_cooldown;
 
 static const stage_info_t info = {
@@ -53,7 +55,9 @@ void stage_start(const stage_ctx_t *ctx)
 {
     n_players = ctx->n_players;
 
-    rock_speed      = cfg_get("rock_speed", 3.0f);
+    rock_speed_min  = cfg_get("rock_speed_min", 4.0f);
+    rock_speed_max  = cfg_get("rock_speed_max", 7.5f);
+    rock_start_max  = cfg_get("rock_start_max", 30.0f);
     step            = cfg_get("step", 8.0f);
     move_gap        = (int)cfg_get("move_gap_ticks", 2.0f);
     loom_gain       = cfg_get("loom_gain", 1.3f);
@@ -66,12 +70,15 @@ void stage_start(const stage_ctx_t *ctx)
     /* 문제는 씨앗에서만 만든다. 미리 다 만들어 두면 진행 속도가 달라도 같은 문제를 받는다. */
     stage_rng_t rng;
     stage_rng_seed(&rng, ctx->seed);
-    for (int i = 0; i < MAX_ROCKS; i++)
+    for (int i = 0; i < MAX_ROCKS; i++) {
         rock_x[i] = stage_rng_range(&rng, ROCK_W / 2, PANE_W - ROCK_W / 2);
+        rock_v[i] = rock_speed_min + (rock_speed_max - rock_speed_min) * stage_rng_float(&rng);
+        rock_from[i] = rock_start_max * stage_rng_float(&rng);
+    }
 
     for (int p = 0; p < STAGE_MAX_PLAYERS; p++)
-        pl[p] = (side_t){ .x = PANE_W / 2.0f, .last_move = -100 };
-    fly = (side_t){ .x = PANE_W / 2.0f, .last_move = -100 };
+        pl[p] = (side_t){ .x = PANE_W / 2.0f, .rock_y = rock_from[0], .last_move = -100 };
+    fly = (side_t){ .x = PANE_W / 2.0f, .rock_y = rock_from[0], .last_move = -100 };
 
     spr_rock = ui_sprite_load("rock");
 }
@@ -101,7 +108,7 @@ void stage_pointer(int player, int x, int y, int pressed)
 /* 돌을 한 틱 떨어뜨린다. pane은 이펙트를 걸 칸 번호다. */
 static void fall(side_t *s, int pane)
 {
-    s->rock_y += rock_speed;
+    s->rock_y += rock_v[s->rock % MAX_ROCKS];
     if (s->rock_y < FLOOR_Y) return;
 
     float dx = rock_x[s->rock % MAX_ROCKS] - s->x;
@@ -115,7 +122,7 @@ static void fall(side_t *s, int pane)
         fx_shockwave(pane, rock_x[s->rock % MAX_ROCKS], FLOOR_Y);
     }
     s->rock++;
-    s->rock_y = 0;
+    s->rock_y = rock_from[s->rock % MAX_ROCKS];
 }
 
 /* 초파리: 다가오는 것을 자극으로 주고, 뇌의 반응대로 움직인다.
