@@ -13,7 +13,9 @@
  *   - 벽이 높다(6칸). 눈높이는 0.5칸이고 뛰어오르면 그만큼 올라가서 바닥이 멀어지고 벽이 내려간다.
  *   - 글자는 큰 글꼴로 그린다(ui/hd.c).
  * 상태 표시의 자리는 화면을 960x536으로 본 단위(U)로 적는다. 배율 10(2400x1340)에서 한 단위가 2.5픽셀이다.
- * 바닥의 줄들, 벽의 세로줄들, 초파리의 줄들은 서로 무관해서 여러 스레드에 나눠 그린다(par_for). */
+ * 바닥의 줄들, 벽의 세로줄들, 초파리의 줄들은 서로 무관해서 여러 스레드에 나눠 그린다(par_for).
+ * 배경(바닥, 천장, 벽)은 눈이 움직이는 동안에는 절반 해상도로 그려 두 배로 키우고, 눈이 멈추면 제 해상도로 한 번
+ * 그려 두었다가 다시 쓴다(draw_background). 초파리와 상태 표시는 늘 제 해상도로 그린다. */
 #include "boss/boss_view.h"
 #include "brain.h"
 #include "ui/hd.h"
@@ -21,6 +23,7 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #define PLANE       0.66f            /* 시야의 넓이(약 66도) */
 #define TWO_PI      6.2831853f
@@ -28,6 +31,7 @@
 #define CELL        12.0f            /* 글자 한 칸의 크기(U) */
 #define FOG_K       0.075f           /* 멀수록 어둠에 묻히는 빠르기 */
 #define WALL_H      BOSS_VIEW_WALL_H /* 벽의 높이(칸) */
+#define STILL_MS    120              /* 눈이 이만큼 멈춰 있으면 배경을 제 해상도로 그린다 */
 #define COURSES     18               /* 바깥 벽의 돌이 쌓인 줄 수. 한 줄의 높이가 1/3칸이다(WALL_H x 3) */
 
 typedef struct { float r, g, b; } col_t;
@@ -311,6 +315,78 @@ static void wall_columns(int from, int to, void *arg)
             col_t c = pillar ? plank(&h, v, along_u) : stone(&h, v, along_u);
             px_mix(im, x, y, cmix(FOG, cmul(c, shade), vis), cov);
         }
+    }
+}
+
+/* ---- 배경을 빨리 그리기 ---------------------------------------------------------------- */
+/* 배경을 dst의 크기에 맞춰 그린다. 그리는 함수들이 보는 전역 값(화면의 크기, 지평선, 거리 1의 높이)을 dst에 맞췄다가
+ * 되돌린다. zbuf에는 dst의 세로줄마다 벽까지의 거리가 남는다 */
+static void render_background(image_t *dst, float px, float py, float dx, float dy)
+{
+    int vw = VW, vh = VH;
+    float mid = MID, unit = UNIT;
+    view_job_t job = { dst, px, py, dx, dy };
+    VW = dst->w; VH = dst->h; MID = (float)dst->h * 0.5f; UNIT = (float)dst->w * UNIT_PER_W;
+    par_for(VH, 8, ground_rows, &job);
+    par_for(VW, 16, wall_columns, &job);
+    VW = vw; VH = vh; MID = mid; UNIT = unit;
+}
+
+typedef struct { image_t *dst; const image_t *src; } double_job_t;
+
+/* src의 줄들을 가로세로 두 배로 dst에 옮긴다 */
+static void double_rows(int from, int to, void *arg)
+{
+    const double_job_t *j = arg;
+    int w = j->src->w;
+    for (int y = from; y < to; y++) {
+        const uint8_t *s = j->src->px + (size_t)y * (size_t)w * 3;
+        uint8_t *d = j->dst->px + (size_t)y * 2 * (size_t)j->dst->w * 3;
+        for (int x = 0; x < w; x++, s += 3, d += 6) { d[0] = d[3] = s[0]; d[1] = d[4] = s[1]; d[2] = d[5] = s[2]; }
+        d -= (size_t)w * 6;
+        memcpy(d + (size_t)j->dst->w * 3, d, (size_t)w * 6);
+    }
+}
+
+/* 배경을 im에 채운다. 배경은 눈의 자리, 방향, 높이로만 정해진다.
+ *   눈이 지난 프레임과 달라졌다(움직이는 중) -> 절반 해상도로 그려 두 배로 키운다. 그릴 픽셀이 1/4이라 빠르고,
+ *                                            같은 색이 두 픽셀씩 이어져서 보낼 양도 준다. 움직이는 동안은 거친 것이 보이지 않는다
+ *   같은 눈으로 STILL_MS가 지났다(멈췄다)  -> 제 해상도로 그려서 따로 적어 둔다. 그 전까지는 절반 해상도의 것을 다시 쓴다
+ *                                            (걷는 동안에도 틱 사이에는 눈이 같아서, 곧바로 제 해상도로 그리면 안 된다)
+ *   적어 둔 것과 같다                      -> 적어 둔 것을 그대로 옮긴다(초파리만 움직일 때)
+ * 적어 둘 그림을 못 만들면 늘 제 해상도로 그린다 */
+static void draw_background(image_t *im, float px, float py, float ang, float dx, float dy)
+{
+    static image_t *kept, *half;
+    static float k_px, k_py, k_ang, k_ez;
+    static int k_ok, k_full;
+    static double k_at;                              /* 눈이 마지막으로 달라진 때(ms) */
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    double now = (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+    size_t bytes = (size_t)im->w * (size_t)im->h * 3;
+    if (kept && (kept->w != im->w || kept->h != im->h)) { image_free(kept); image_free(half); kept = half = NULL; k_ok = 0; }
+    if (!kept) kept = image_new(im->w, im->h);
+    if (!half) half = image_new(im->w / 2, im->h / 2);
+    if (!kept || !half || (im->w & 1) || (im->h & 1)) { render_background(im, px, py, dx, dy); return; }
+    int same = k_ok && k_px == px && k_py == py && k_ang == ang && k_ez == EZ;
+    if (same && k_full) {
+        memcpy(im->px, kept->px, bytes);             /* zbuf도 그때 것 그대로다 */
+    } else if (same && now - k_at >= STILL_MS) {
+        render_background(im, px, py, dx, dy);
+        memcpy(kept->px, im->px, bytes);
+        k_full = 1;
+    } else {
+        double_job_t job = { im, half };
+        if (!same) {
+            render_background(half, px, py, dx, dy);
+            for (int x = im->w - 1; x >= 0; x--) zbuf[x] = zbuf[x / 2];
+            k_px = px; k_py = py; k_ang = ang; k_ez = EZ;
+            k_at = now;
+            k_ok = 1;
+            k_full = 0;
+        }
+        par_for(half->h, 16, double_rows, &job);
     }
 }
 
@@ -1126,9 +1202,7 @@ void boss_view_draw_hd(image_t *im, const boss_snap_t *b, const boss_view_t *v)
         eye_ang = (float)(eye == v->me && v->look_on ? v->look_ang : b->p[eye].ang) * TWO_PI / 65536.0f;
         EZ += (float)b->p[eye].z / 100.0f;           /* 뛰어오른 만큼 눈이 올라간다 */
         float dx = cosf(eye_ang), dy = sinf(eye_ang);
-        view_job_t job = { im, px, py, dx, dy };
-        par_for(VH, 8, ground_rows, &job);
-        par_for(VW, 16, wall_columns, &job);
+        draw_background(im, px, py, eye_ang, dx, dy);
         draw_things(im, b, v, eye, px, py, dx, dy);
     } else {
         hd_fill(im, hd_rgb(14, 16, 28));                 /* 볼 사람이 없다 */
