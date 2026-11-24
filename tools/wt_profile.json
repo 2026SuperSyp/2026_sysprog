@@ -6,11 +6,11 @@
       "commandline": "wsl.exe --cd ~",
       "font": {
         "face": "Cascadia Mono",
-        "size": 24,
-        "cellWidth": "21px",
-        "cellHeight": "42px"
+        "size": 11,
+        "cellWidth": "10px",
+        "cellHeight": "20px"
       },
-      "padding": "20, 12, 20, 0",
+      "padding": "0",
       "background": "#000000",
       "scrollbarState": "hidden",
       "adjustIndistinguishableColors": "never",
