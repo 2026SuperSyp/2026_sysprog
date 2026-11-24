@@ -70,6 +70,7 @@
 #define EVQ_KEEP      64         /* 사건 큐에서 입력이 쓰지 못하게 남겨 두는 칸 */
 #define SCORE_MAX     1000000    /* 한 라운드 점수로 받아 주는 한도 */
 #define BOSS_WIN_BONUS 100       /* 보스전에서 이기고 살아남은 사람에게 더하는 점수 */
+#define BOSS_START_HP  3         /* 보스전에 들어간 사람의 체력. 미니게임에서 남은 기회와 무관하게 모두 같다 */
 #define BOSS_END_MS    3000      /* 보스전이 끝난 뒤 결과(이겼다, 졌다)를 보여 주는 시간. 그 뒤에 랭킹으로 간다 */
 
 /* ---- 옵션 ------------------------------------------------------------------ */
@@ -769,7 +770,9 @@ static void start_boss(void)
         seats[s].pane = -1;
         if (seats[s].used && seats[s].connected && seats[s].lives > 0 && n < BOSS_PLAYERS) {
             seats[s].pane = n;
-            lives[n++] = seats[s].lives;
+            /* 남은 기회를 그대로 체력으로 주면 한두 판 진 사람들로는 이길 수 없었다(봇으로 3명이 2개씩일 때 승률 2.5%,
+             * 3개씩일 때 55%). 그래서 기회는 누가 보스전에 가는지만 정하고 체력은 모두 같게 준다 */
+            lives[n++] = BOSS_START_HP;
         }
     }
     if (n == 0) { finish_game(); return; }

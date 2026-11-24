@@ -147,7 +147,7 @@ typedef struct {
 void boss_cfg_default(boss_cfg_t *c);
 void boss_cfg_load(boss_cfg_t *c, const char *path);    /* 기본값에서 시작해 파일에 있는 것만 바꾼다 */
 
-/* lives[i]는 미니게임에서 남은 목숨(1~3). 그것이 보스전의 체력이 된다 */
+/* lives[i]는 참가자 i의 시작 체력(1 이상)이다. 서버는 모두에게 3을 준다(미니게임에서 남은 기회와 무관하다) */
 void boss_init(boss_state_t *s, const boss_cfg_t *c, uint32_t seed, int n_players, const int lives[]);
 void boss_input(boss_state_t *s, int player, int key);
 void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT]);
