@@ -316,6 +316,7 @@ static void test_takeoff(void)
 
     put_fly(8.5f, 9.0f);
     S.fly.v = 0.0f;
+    S.fly.ang = 0.0f;                                             /* 위에서 한 틱 걸으며 몸이 조금 돌았을 수 있다 */
     r[BR_ESCAPE] = 1.0f;
     r[BR_BACKWARD] = 1.0f;                                        /* 앞에서 다가왔다: 뒤(-x)로 뛴다 */
     boss_tick(&S, r);

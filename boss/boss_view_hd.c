@@ -455,7 +455,8 @@ static void shadow(image_t *im, const thing_t *t, float cx, float fy, float rx, 
  * 작아서 원근을 넣지 않아도 어색하지 않다). 초파리가 향한 쪽과 내가 보는 쪽의 차이만큼 모형이 돌아가 있으므로 어느
  * 쪽에서 보든 이어진 모습이 나온다. 등과 날개가 보이도록 조금 위에서 내려다본다(FLY_TILT).
  * 좌표: 초파리의 앞이 +x, 오른쪽이 +y, 위가 +z이고 원점은 발밑이다. 단위는 칸.
- * 초파리는 평소에 낮게 떠서 날아다닌다(높이는 boss_view_fly_lift). 떠 있을 때는 다리를 접고 날개를 빠르게 친다.
+ * 초파리는 평소에 땅에서 걷는다. 다리는 서버의 몸(boss/body.c)이 보낸 걸음대로 딛는다.
+ * 돌진하거나 뛰어올라 떠 있을 때는(높이는 boss_view_fly_lift) 다리를 접고 날개를 빠르게 친다.
  * 가장자리: 픽셀마다 두 점을 떠 보고, 둘이 다른 것에 닿았을 때만 네 점을 떠서 섞는다. */
 #define FLY_TILT   0.20f             /* 같은 높이에서 볼 때 내려다보는 각도(라디안) */
 #define FLY_BOXES  14
@@ -736,17 +737,23 @@ static void draw_fly(image_t *im, const boss_snap_t *b, const boss_view_t *v, co
     job.lamp = lamp((int)cx < 0 ? 0 : ((int)cx >= VW ? VW - 1 : (int)cx));
 
     /* 상자들. 몸통의 가운데는 높이 0.64에 있다(다리가 0.30) */
-    const float bz = 0.64f, wig = stun ? 0.0f : 0.035f * sinf((float)tick * 0.9f);
-    float leg = flying ? 0.14f : 0.30f;              /* 떠 있을 때는 다리를 접는다 */
+    const float bz = 0.64f;
+    static body_cfg_t bc;                            /* 발의 자리를 구하는 수치. 계산부의 기본값과 같다 */
+    static int have_bc;
+    if (!have_bc) { boss_cfg_t dc; boss_cfg_default(&dc); boss_body_cfg(&dc, &bc); have_bc = 1; }
     fly_box(&job, FK_BODY, 0, (float[3]){ 0.0f, 0.0f, bz }, (float[3]){ 0.50f, 0.40f, 0.34f }, 0.0f, rv, up, dir);
     for (int s = -1; s <= 1; s += 2)
         fly_box(&job, FK_EYE, s, (float[3]){ 0.47f, (float)s * 0.27f, bz + 0.09f }, (float[3]){ 0.07f, 0.15f, 0.16f }, 0.0f, rv, up, dir);
     fly_box(&job, FK_MOUTH, 0, (float[3]){ 0.52f, 0.0f, bz - 0.18f }, (float[3]){ 0.03f, 0.07f, 0.055f }, 0.0f, rv, up, dir);
     for (int s = -1; s <= 1; s += 2)
         fly_box(&job, FK_FEELER, s, (float[3]){ 0.44f, (float)s * 0.11f, bz + 0.34f + 0.07f }, (float[3]){ 0.016f, 0.016f, 0.07f }, 0.0f, rv, up, dir);
+    /* 다리: 걸음의 위상에서 발의 자리를 구해 거기에 세운다. 든 발은 든 만큼 짧다. 떠 있을 때는 접어서 몸 밑에 붙인다 */
     for (int k = 0; k < 6; k++) {
-        float lx = 0.30f - 0.30f * (float)(k / 2) + ((k / 2 + k) & 1 ? wig : -wig), ly = (k & 1) ? 0.31f : -0.31f;
-        fly_box(&job, FK_LEG, 0, (float[3]){ lx, ly, bz - 0.34f - leg * 0.5f }, (float[3]){ 0.045f, 0.045f, leg * 0.5f }, 0.0f, rv, up, dir);
+        int no = ((k & 1) ? 3 : 0) + k / 2;          /* 몸의 다리 번호: 왼쪽 앞, 가운데, 뒤, 오른쪽 앞, 가운데, 뒤 */
+        float foot[3] = { 0.30f - 0.30f * (float)(k / 2), (k & 1) ? 0.31f : -0.31f, 0.0f };
+        if (!flying) body_foot(&bc, no, (float)b->fly.leg[no] * TWO_PI / 256.0f, (float)b->fly.leg_mag[no] / 127.0f, foot);
+        float top = bz - 0.34f, len = flying ? 0.14f : top - foot[2];
+        fly_box(&job, FK_LEG, 0, (float[3]){ foot[0], foot[1], top - len * 0.5f }, (float[3]){ 0.045f, 0.045f, len * 0.5f }, 0.0f, rv, up, dir);
     }
     /* 날개: 등의 양옆에 붙어 바깥으로 뻗는다. 떠 있을 때는 빠르게 치고(틱마다 올렸다 내렸다), 내려앉으면 접는다 */
     float rise = stun ? 0.05f : (charging ? ((tick & 1) ? 0.70f : 0.40f) : (flying ? ((tick & 1) ? 0.85f : 0.10f) : 0.24f));

@@ -11,7 +11,8 @@
 
 #include <stdint.h>
 
-#define PROTO_VERSION    4             /* 4: 보스전의 먹이(boss_snap_t에 놓인 먹이와 먹는 상태).
+#define PROTO_VERSION    5             /* 5: 보스전 초파리의 다리(boss_snap_t에 걸음의 위상과 크기).
+                                        * 4: 보스전의 먹이(boss_snap_t에 놓인 먹이와 먹는 상태).
                                         * 3: 보스전의 키(스페이스 뛰기, E 쓰기, R 막기), boss_snap_t의 막기와 높이.
                                         * 2: 보스전의 시선 입력(INPUT_LOOK), MSG_BOSS에 붙는 뇌 표시, boss_snap_t의 각도 */
 #define PROTO_PORT       4620

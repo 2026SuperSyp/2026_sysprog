@@ -47,7 +47,10 @@ void boss_cfg_default(boss_cfg_t *c)
     c->body_mm = 2.5f;
     c->walk_mm_s = 28.0f; c->run_mm_s = 44.7f; c->back_mm_s = 7.2f;
     c->turn_deg_s = 200.0f;
-    c->accel_ticks = 2;
+    c->step_hz = 4.5f; c->cpg_couple = 10.0f; c->cpg_converge = 20.0f;
+    c->swing_front = 2.37f; c->swing_mid = 2.23f; c->swing_hind = 1.95f;
+    c->foot_lift = 0.12f; c->foot_fore = 0.48f; c->foot_side = 0.45f;
+    c->body_spring_hz = 8.0f; c->body_damping = 0.7f; c->leg_grip = 60.0f; c->hit_push = 2.0f;
     c->speed_scale = 0.22f; c->turn_scale = 1.0f;
     c->takeoff_level = 0.5f; c->takeoff_mm_s = 480.0f; c->air_ticks = 10; c->air_rest_ticks = 20;
     c->takeoff_scale = 0.055f;
@@ -78,7 +81,9 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     c->fly_hp[1] = cfg_get("fly_hp_2", c->fly_hp[1]);
     c->fly_hp[2] = cfg_get("fly_hp_3", c->fly_hp[2]);
     I(ticks); F(fly_radius); F(player_radius); F(step); F(slow_step); I(step_ticks);
-    F(body_mm); F(walk_mm_s); F(run_mm_s); F(back_mm_s); F(turn_deg_s); I(accel_ticks); F(speed_scale); F(turn_scale);
+    F(body_mm); F(walk_mm_s); F(run_mm_s); F(back_mm_s); F(turn_deg_s); F(speed_scale); F(turn_scale);
+    F(step_hz); F(cpg_couple); F(cpg_converge); F(swing_front); F(swing_mid); F(swing_hind);
+    F(foot_lift); F(foot_fore); F(foot_side); F(body_spring_hz); F(body_damping); F(leg_grip); F(hit_push);
     F(takeoff_level); F(takeoff_mm_s); I(air_ticks); I(air_rest_ticks); F(takeoff_scale);
     I(guard_ticks); I(guard_cooldown); I(guard_stun);
     I(jump_ticks); I(jump_rest); I(jump_buffer); I(jump_carry); F(jump_height); F(jump_clear);
@@ -94,6 +99,28 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     F(loom_base); F(loom_gain); F(loom_speed); I(loom_avg_ticks);
 #undef F
 #undef I
+}
+
+/* 몸의 수치. 명령이 1일 때 딛고 있는 발이 몸 뒤로 가는 빠르기가 걷는 빠르기(walk_mm_s를 칸으로 옮기고 게임용
+ * 배율을 곱한 값)가 되게 다리마다 보폭을 정한다. 그래서 걷는 빠르기는 전과 같고, 그것이 걸음에서 나온다 */
+void boss_body_cfg(const boss_cfg_t *c, body_cfg_t *o)
+{
+    float v1 = c->walk_mm_s * 2.0f * c->fly_radius / c->body_mm * c->speed_scale;     /* 칸/초 */
+    float wn = 2.0f * PI_F * c->body_spring_hz;
+    memset(o, 0, sizeof *o);
+    o->step_hz = c->step_hz > 0.1f ? c->step_hz : 0.1f;
+    o->couple = c->cpg_couple;
+    o->converge = c->cpg_converge;
+    o->swing_end[0] = c->swing_front; o->swing_end[1] = c->swing_mid; o->swing_end[2] = c->swing_hind;
+    for (int k = 0; k < 3; k++) o->sweep[k] = v1 * (1.0f - o->swing_end[k] / (2.0f * PI_F)) / o->step_hz;
+    o->lift = c->foot_lift;
+    o->foot_x[0] = c->foot_fore; o->foot_x[1] = 0.0f; o->foot_x[2] = -c->foot_fore;
+    o->foot_y = c->foot_side;
+    o->mass = 1.0f;                                  /* 힘의 수치는 모두 이 질량에 대한 값이다 */
+    o->inertia = o->mass * (c->fly_radius * c->fly_radius + 0.16f) / 4.0f;            /* 긴 반지름 fly_radius, 짧은 반지름 0.4인 타원 */
+    o->stiff = o->mass * wn * wn / 3.0f;             /* 세 다리가 딛고 있을 때 몸이 body_spring_hz로 제자리를 찾는다 */
+    o->damp = 2.0f * c->body_damping * o->mass * wn / 3.0f;
+    o->grip = c->leg_grip;
 }
 
 /* ---- 맵과 기하 ------------------------------------------------------------------- */
@@ -191,6 +218,11 @@ void boss_init(boss_state_t *s, const boss_cfg_t *c, uint32_t seed, int n_player
     if (s->fly.hp_max < 1) s->fly.hp = s->fly.hp_max = 1;
     s->fly.wave_in = c->wave_period;
     s->fly.target = -1;
+    boss_body_cfg(c, &s->bcfg);
+    s->walk_v1 = c->walk_mm_s * 2.0f * c->fly_radius / c->body_mm * c->speed_scale;
+    /* 도는 명령이 1일 때 turn_deg_s로 돌게 한다: 좌우 발 사이가 2 x foot_side이므로 빠르기의 차이는 그 곱이다 */
+    s->turn_gain = c->turn_deg_s * (PI_F / 180.0f) * c->turn_scale * c->foot_side / (s->walk_v1 > 1e-4f ? s->walk_v1 : 1e-4f);
+    body_init(&s->fly.body, &s->bcfg, s->fly.x, s->fly.y, s->fly.ang);
 }
 
 /* 올라갈 때는 빨리 솟아 꼭대기에서 느려지고, 내려올 때는 올라갈 때보다 빨리 떨어진다(오르는 데 55%, 내리는 데 45%).
@@ -353,6 +385,9 @@ static void hurt_fly(boss_state_t *s, int who, int dmg)
     s->fly.hurt = s->cfg.hurt_ticks;
     s->fly.hurt_x = s->p[who].x;
     s->fly.hurt_y = s->p[who].y;
+    /* 맞으면 때린 쪽의 반대로 밀려난다. 다리가 버티면 제자리로 돌아오고, 못 버티면 발이 미끄러진다 */
+    float dx = s->fly.x - s->p[who].x, dy = s->fly.y - s->p[who].y, d = sqrtf(dx * dx + dy * dy);
+    if (d > 1e-4f) body_push(&s->fly.body, dx / d * s->cfg.hit_push * (float)dmg / 10.0f, dy / d * s->cfg.hit_push * (float)dmg / 10.0f);
 }
 
 static void use_item(boss_state_t *s, int i)
@@ -681,36 +716,47 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
         }
     }
 
-    /* 평소: 뇌의 반응으로 움직인다. 반응(0~1)에 실제 초파리의 빠르기를 곱한다. mm를 몸길이로 나눠 칸으로 옮기고
-     * (게임의 몸길이는 지름), 게임용 배율을 곱한다. 몸은 한 번에 빠르기를 바꾸지 못한다 */
-    float per_mm = 2.0f * c->fly_radius / c->body_mm * c->speed_scale / 20.0f;      /* mm/s -> 칸/틱 */
+    /* 평소: 뇌의 반응을 좌우 두 명령으로 합쳐 몸에 내려보낸다. 걷는 것은 몸(boss/body.c)이 한다. 명령이 다리 여섯의
+     * 걸음을 조절하고, 딛고 있는 다리가 몸을 민다. 명령이 1이면 걷는 빠르기(walk_mm_s)가 나오게 보폭을 정해 두었고,
+     * 도는 빠르기는 좌우 보폭의 차이에서 나온다. 달아남과 후진은 걷는 빠르기에 대한 비만큼 명령을 키우거나 줄인다 */
+    body_t *bd = &f->body;
+    if (bd->x != f->x || bd->y != f->y || bd->ang != f->ang) body_place(bd, &s->bcfg, f->x, f->y, f->ang);   /* 날거나 돌진해서 옮겨졌다 */
     /* 앞으로 걷기는 걷기 명령 뉴런(DNp09)의 반응이다. 좌우 가운데 센 쪽을 쓴다(한쪽만 켜져도 걷는다) */
     float walk = rate[BR_WALK_L] > rate[BR_WALK_R] ? rate[BR_WALK_L] : rate[BR_WALK_R];
-    float v_want = per_mm * (c->walk_mm_s * walk + c->run_mm_s * rate[BR_ESCAPE] - c->back_mm_s * rate[BR_BACKWARD]);
-    float turn = c->turn_deg_s * (PI_F / 180.0f) / 20.0f * c->turn_scale;        /* 반응 1일 때 한 틱에 도는 각도 */
+    float fwd = walk + c->run_mm_s / c->walk_mm_s * rate[BR_ESCAPE] - c->back_mm_s / c->walk_mm_s * rate[BR_BACKWARD];
     /* 도는 것은 방향 전환 명령 뉴런(DNa02)의 좌우 차이에, 걷기 명령의 좌우 차이(켜진 쪽으로 휘어 걷는다)를 더한다 */
-    float w_want = ((rate[BR_STEER_R] - rate[BR_STEER_L]) + (rate[BR_WALK_R] - rate[BR_WALK_L]) * c->pursue_turn) * turn;
+    float turn = (rate[BR_STEER_R] - rate[BR_STEER_L]) + (rate[BR_WALK_R] - rate[BR_WALK_L]) * c->pursue_turn;
     /* 벽 피하기(몸의 규칙): 앞쪽 30도 좌우로 벽을 더듬어 가까운 쪽의 반대로 돈다. 정면이면 오른쪽으로 돈다 */
     float dl = wall_dist(s, f->x, f->y, f->ang - PI_F / 6.0f, c->wall_sense + c->fly_radius) - c->fly_radius;
     float dr = wall_dist(s, f->x, f->y, f->ang + PI_F / 6.0f, c->wall_sense + c->fly_radius) - c->fly_radius;
     float wl = clamp01(1.0f - dl / c->wall_sense), wr = clamp01(1.0f - dr / c->wall_sense);
-    if (wl > 0.0f || wr > 0.0f) w_want += (wl >= wr ? wl : -wr) * turn * c->wall_turn;
-    int lag = c->accel_ticks > 1 ? c->accel_ticks : 1;
-    f->v += (v_want - f->v) / (float)lag;
-    f->w += (w_want - f->w) / (float)lag;
-    f->ang += f->w;
-    float v = f->v;
-    float ox = f->x, oy = f->y;
-    slide(s, &f->x, &f->y, cosf(f->ang) * v, sinf(f->ang) * v, c->fly_radius);
-    float moved = dist(ox, oy, f->x, f->y), want = fabsf(v);
-    if (want > 0.02f && moved < want * 0.25f) f->stuck_ticks++;
+    if (wl > 0.0f || wr > 0.0f) turn += (wl >= wr ? wl : -wr) * c->wall_turn;
+    /* 오른쪽으로 돌려면 왼쪽 다리가 더 크게 딛는다. 한쪽이 음수가 되면 그쪽 다리는 뒤로 딛는다(제자리에서 돈다) */
+    float left = fwd + s->turn_gain * turn, right = fwd - s->turn_gain * turn;
+    float ox = f->x, oy = f->y, oa = f->ang;
+    for (int k = 0; k < (int)(0.05f / BODY_DT + 0.5f); k++) {
+        float px = bd->x, py = bd->y;
+        body_step(bd, &s->bcfg, left, right);
+        if (blocked(s, bd->x, bd->y, c->fly_radius)) {              /* 벽에 닿았다: 그 방향으로는 가지 못한다 */
+            if (!blocked(s, bd->x, py, c->fly_radius)) { bd->y = py; bd->vy = 0.0f; }
+            else if (!blocked(s, px, bd->y, c->fly_radius)) { bd->x = px; bd->vx = 0.0f; }
+            else { bd->x = px; bd->y = py; bd->vx = bd->vy = 0.0f; }
+        }
+    }
+    if (bd->ang > PI_F) bd->ang -= 2.0f * PI_F;
+    if (bd->ang < -PI_F) bd->ang += 2.0f * PI_F;
+    f->x = bd->x; f->y = bd->y; f->ang = bd->ang;
+    f->v = dist(ox, oy, f->x, f->y);
+    f->w = f->ang - oa;
+    float want = fabsf(fwd) * s->walk_v1 / 20.0f;
+    if (want > 0.02f && f->v < want * 0.25f) f->stuck_ticks++;
     else f->stuck_ticks = 0;
     if (f->stuck_ticks >= 20) {                      /* 구석에 끼었다. 크게 돌아서 빠져나간다 */
         f->ang += (stage_rng_float(&s->rng) < 0.5f ? -1.0f : 1.0f) * (PI_F / 2.0f + stage_rng_float(&s->rng));
+        if (f->ang > PI_F) f->ang -= 2.0f * PI_F;
+        if (f->ang < -PI_F) f->ang += 2.0f * PI_F;
         f->stuck_ticks = 0;
     }
-    if (f->ang > PI_F) f->ang -= 2.0f * PI_F;
-    if (f->ang < -PI_F) f->ang += 2.0f * PI_F;
 }
 
 /* ---- 한 틱 ------------------------------------------------------------------------- */
@@ -775,6 +821,12 @@ void boss_snapshot(const boss_state_t *s, boss_snap_t *o)
     o->fly.target = (uint8_t)(f->target < 0 ? 255 : f->target);
     o->fly.feeding = (uint8_t)f->feeding;
     o->fly.lured = (uint8_t)f->lured;
+    for (int k = 0; k < BODY_LEGS; k++) {
+        float ph = fmodf(f->body.phase[k], 2.0f * PI_F), mg = f->body.mag[k] * 127.0f;
+        if (ph < 0.0f) ph += 2.0f * PI_F;
+        o->fly.leg[k] = (uint8_t)((int)(ph / (2.0f * PI_F) * 256.0f) & 0xff);
+        o->fly.leg_mag[k] = (uint8_t)(mg > 255.0f ? 255.0f : mg);
+    }
     for (int k = 0; k < BOSS_BAITS; k++) {
         if (!s->bait[k].on) continue;
         int left = s->cfg.bait_ticks > 0 ? s->bait[k].left * 255 / s->cfg.bait_ticks : 255;
