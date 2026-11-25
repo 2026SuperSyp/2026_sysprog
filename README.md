@@ -112,6 +112,7 @@ build/release/client --host=서버주소 --name=이름
 | 자원 사용량 | 판이 끝나면 쓴 CPU 시간과 메모리를 로그에 찍는다. `--nice`로 우선순위를 낮춘다 | `getrusage` `setpriority` |
 | 병렬 자가 대전 훈련 | `make boss-train`이 CPU 수만큼 프로세스를 띄워 보스전의 수치를 봇과의 대전으로 맞춘다 | `fork`, 파이프, `mmap(MAP_SHARED)`, `waitpid(WNOHANG)`, `sysconf` |
 | 마우스 장치 | `client --mouse-dev=/dev/input/eventN`은 마우스의 움직임을 장치 파일에서 직접 읽는다(리눅스로 부팅한 컴퓨터) | `/dev/input`의 `struct input_event`, `ioctl(EVIOCGNAME)` |
+| 에어팟 (머리 움직임) | `client --airpods=블루투스주소`는 에어팟 프로의 움직임 센서를 블루투스 소켓으로 직접 읽어, 고개를 돌린 만큼 보스전의 시선을 돌린다. 블루투스 라이브러리 없이 커널의 소켓만 쓴다. **실물로는 아직 확인하지 못했다**(패킷 구성과 계산은 검사로 확인) | `socket(AF_BLUETOOTH, SOCK_SEQPACKET, L2CAP)`, `setsockopt`(암호화 수준, 받는 크기 한도, 접속 한도 시간), `connect`, `poll` |
 
 **코드에서 찾는 곳**
 
@@ -132,6 +133,7 @@ build/release/client --host=서버주소 --name=이름
 | 관리 창구 (FIFO), 데몬, 자원 사용량 | `core/server.c`의 `ctl_main`, `daemonize`, `log_rusage` |
 | 병렬 훈련 | `tools/bossbot.c`의 `train` |
 | 마우스 장치 | `core/client.c`의 `mouse_open`, `mouse_read` |
+| 에어팟 | `ui/airpods.c`(통로 열기, 패킷, 고개가 돈 각도), `core/client.c`의 `pods_open`, `pods_read`, 검사는 `tests/test_airpods.c` |
 | 보스전의 규칙, 초파리의 몸 | `boss/boss.c`, `boss/body.c` |
 
 고장 상황은 `make test-fail`이 일부러 만들어 본다(스테이지 죽이기, 접속 끊기, 잘못된 메시지, 뇌 죽이기와 멈추기 등).

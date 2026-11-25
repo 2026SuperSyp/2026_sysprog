@@ -11,6 +11,9 @@
  *   build/dev/client --host=auto              같은 망에서 서버를 찾아(UDP 브로드캐스트) 접속한다
  *   build/dev/client --mouse-dev=/dev/input/eventN [--mouse-turn=N]   보스전의 시선을 마우스 장치에서 직접 읽는다
  *                    (리눅스로 부팅한 컴퓨터, 읽을 권한 필요. N은 한 바퀴 도는 데 드는 마우스 움직임, 기본 2400)
+ *   build/dev/client --airpods=블루투스주소 [--airpods-gain=N]   보스전의 시선을 에어팟 프로의 머리 움직임으로 돌린다
+ *                    (리눅스에 짝지어 접속해 둔 에어팟. N은 고개가 돈 각도에 곱하는 배율, 기본 3, 음수면 반대로)
+ *   build/dev/client --airpods=블루투스주소 --airpods-test       게임 없이 5초 동안 센서 값을 찍어 본다
  *   build/dev/client --bot [--wait=N] [...]   화면 없이 접속해 준비하고 무작위로 누른다(검사용).
  *                                             방장이면 참가자가 N명 이상일 때 시작한다
  *
@@ -33,6 +36,7 @@
 #include "protocol.h"
 #include "screen.h"
 #include "stage.h"
+#include "ui/airpods.h"
 #include "ui/hd.h"
 #include "ui/ui_internal.h"
 
@@ -524,6 +528,87 @@ static int mouse_read(int boss)
     return bad;
 }
 
+/* ---- 에어팟의 머리 움직임(--airpods=블루투스 주소) ---------------------------------------------
+ * 에어팟 프로의 센서를 블루투스 소켓(L2CAP)으로 직접 읽어(ui/airpods.c), 고개를 좌우로 돌린 만큼 보스전의 시선을
+ * 돌린다. 고개는 양쪽으로 60도쯤만 돌아가므로 배율을 곱한다(--airpods-gain=N, 기본 3: 60도를 돌리면 반 바퀴.
+ * 음수이면 방향이 뒤집힌다). 마우스와 같이 쓸 수 있다. 입력 스레드가 터미널, 마우스 장치와 같이 poll로 지켜본다.
+ * 귀에서 빼면 에어팟이 표본을 멈추고, 다시 꽂으면 이어서 온다 */
+static int pods_fd = -1;
+static double pods_gain = 3.0;
+static airpods_yaw_t pods_yaw;
+
+static void pods_close(void)
+{
+    if (pods_fd < 0) return;
+    airpods_stop(pods_fd);
+    close(pods_fd);
+    pods_fd = -1;
+}
+
+/* 통로를 열고 센서를 켠다. 터미널을 바꾸기 전에 불러서 안내가 보이게 한다. 못 열면 알리고 없는 채로 간다 */
+static void pods_open(const char *addr)
+{
+    char err[200];
+    printf("에어팟(%s)에 접속하는 중...\n", addr);
+    pods_fd = airpods_open(addr, err, sizeof err);
+    if (pods_fd >= 0 && airpods_start(pods_fd, 20000) != 0) {        /* 1초에 50번 */
+        snprintf(err, sizeof err, "센서를 켜는 요청을 보내지 못했습니다");
+        close(pods_fd);
+        pods_fd = -1;
+    }
+    if (pods_fd < 0) { printf("에어팟을 쓸 수 없습니다: %s. 마우스와 키보드로 합니다\n", err); return; }
+    printf("에어팟에 접속했습니다. 귀에 꽂고 고개를 돌리면 보스전의 시선이 돕니다\n");
+    atexit(pods_close);
+}
+
+/* 와 있는 패킷을 모두 읽어 고개가 돈 만큼 시선을 돌린다. 보스전이 아닐 때도 읽는다(쌓이지 않게, 그리고 앞 표본의
+ * 시각을 알고 있어야 하므로) */
+static void pods_read(int boss)
+{
+    uint8_t pkt[AIRPODS_MTU];
+    double deg = 0.0;
+    for (;;) {
+        ssize_t n = recv(pods_fd, pkt, sizeof pkt, 0);
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && errno == EAGAIN) break;
+        if (n <= 0) {                                    /* 접속이 끊겼다(케이스에 넣음, 멀어짐) */
+            close(pods_fd);
+            pods_fd = -1;
+            break;
+        }
+        airpods_sample_t s;
+        if (airpods_parse(pkt, (size_t)n, &s)) deg += airpods_yaw(&pods_yaw, &s);
+    }
+    if (boss && deg != 0.0) look_turn(deg * 65536.0 / 360.0 * pods_gain);
+}
+
+/* --airpods-test: 게임 없이 5초 동안 받은 것을 찍는다. 처음 연결했을 때 값이 오는지, 어느 쪽이 오른쪽인지 본다 */
+static int pods_test(void)
+{
+    uint8_t pkt[AIRPODS_MTU];
+    int packets = 0, samples = 0;
+    double total = 0.0;
+    if (pods_fd < 0) return 1;
+    printf("5초 동안 받습니다. 고개를 오른쪽으로 돌려 보세요(오른쪽이 양수여야 합니다)\n");
+    for (int64_t end = now_ms() + 5000; now_ms() < end;) {
+        struct pollfd pf = { pods_fd, POLLIN, 0 };
+        if (poll(&pf, 1, 100) <= 0) continue;
+        ssize_t n = recv(pods_fd, pkt, sizeof pkt, 0);
+        if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+        if (n <= 0) { printf("접속이 끊겼습니다\n"); break; }
+        packets++;
+        airpods_sample_t s;
+        if (!airpods_parse(pkt, (size_t)n, &s)) continue;
+        total += airpods_yaw(&pods_yaw, &s);
+        if (samples++ % 10 == 0)
+            printf("회전 %6d %6d %6d  중력 %6d %6d %6d  자세 %6d %6d %6d  돈 각도 %+7.1f도\n", s.gyro[0], s.gyro[1], s.gyro[2],
+                   s.grav[0], s.grav[1], s.grav[2], s.att[0], s.att[1], s.att[2], total);
+    }
+    printf("받은 패킷 %d개, 그중 움직임 표본 %d개, 오른쪽으로 돈 각도의 합 %+.1f도\n", packets, samples, total);
+    if (samples == 0) printf("표본이 없습니다. 에어팟을 귀에 꽂았는지 확인하세요\n");
+    return samples > 0 ? 0 : 1;
+}
+
 static void *input_main(void *arg)
 {
     uint8_t buf[512];
@@ -556,9 +641,11 @@ static void *input_main(void *arg)
             }
             if (look_send(0) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
         }
-        struct pollfd pfs[2] = { pf, { mouse_fd, POLLIN, 0 } };      /* 장치가 없으면 fd가 -1이라 poll이 건너뛴다 */
-        if (poll(pfs, 2, boss ? 15 : 100) <= 0) continue;
+        /* 장치가 없으면 fd가 -1이라 poll이 건너뛴다 */
+        struct pollfd pfs[3] = { pf, { mouse_fd, POLLIN, 0 }, { pods_fd, POLLIN, 0 } };
+        if (poll(pfs, 3, boss ? 15 : 100) <= 0) continue;
         if (mouse_fd >= 0 && pfs[1].revents) mouse_read(boss);
+        if (pods_fd >= 0 && pfs[2].revents) pods_read(boss);
         if (!(pfs[0].revents & POLLIN)) continue;
         ssize_t r = read(STDIN_FILENO, buf + len, sizeof buf - len);
         if (r <= 0) continue;
@@ -1273,7 +1360,8 @@ int main(int argc, char **argv)
 {
     const char *host = "127.0.0.1", *name = "PLAYER";
     int port = PROTO_PORT, bot = 0, wait_players = 1, no_title = 0, auto_scale = 0, scale_given = 0, drop_at = 0;
-    const char *gfx = "auto", *mouse_dev = NULL;
+    const char *gfx = "auto", *mouse_dev = NULL, *pods_addr = NULL;
+    int pods_try = 0;
     setvbuf(stdout, NULL, _IOLBF, 0);
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -1285,6 +1373,9 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--drop-at=", 10) == 0) drop_at = atoi(a + 10);
         else if (strncmp(a, "--mouse-dev=", 12) == 0) mouse_dev = a + 12;
         else if (strncmp(a, "--mouse-turn=", 13) == 0 && atof(a + 13) > 0.0) mouse_gain = 65536.0 / atof(a + 13);
+        else if (strncmp(a, "--airpods=", 10) == 0) pods_addr = a + 10;
+        else if (strncmp(a, "--airpods-gain=", 15) == 0 && atof(a + 15) != 0.0) pods_gain = atof(a + 15);
+        else if (strcmp(a, "--airpods-test") == 0) pods_try = 1;
         else if (strcmp(a, "--no-title") == 0)    no_title = 1;
         else if (strcmp(a, "--scale=auto") == 0)  auto_scale = 1;
         else if (strncmp(a, "--scale=", 8) == 0)  { view_scale = atoi(a + 8); scale_given = 1; }
@@ -1301,6 +1392,8 @@ int main(int argc, char **argv)
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
+    if (pods_addr && !bot) pods_open(pods_addr);
+    if (pods_try) return pods_addr ? pods_test() : (printf("--airpods=주소 를 같이 주세요\n"), 2);
 
     if (!bot) {
         /* 입장 화면부터 보여 준다. 여기서는 아직 서버에 붙지 않는다 */
