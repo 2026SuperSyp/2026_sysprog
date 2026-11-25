@@ -60,6 +60,7 @@ void boss_cfg_default(boss_cfg_t *c)
     c->speed_scale = 0.22f; c->turn_scale = 1.0f;
     c->takeoff_level = 0.5f; c->takeoff_mm_s = 480.0f; c->air_ticks = 12; c->air_rest_ticks = 20;
     c->takeoff_scale = 0.055f;
+    c->trap_loom = 1.0f; c->trap_see = 4.0f; c->stun_struggle = 1;
     c->air_turn_deg_s = 1000.0f; c->air_turn_scale = 0.3f; c->land_level = 0.5f; c->surface_gain = 0.07f;
     c->air_min_ticks = 4; c->air_land_ticks = 3;
     c->guard_ticks = 10; c->guard_cooldown = 50; c->guard_stun = 24;
@@ -93,6 +94,7 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     F(step_hz); F(cpg_couple); F(cpg_converge); F(swing_front); F(swing_mid); F(swing_hind);
     F(foot_lift); F(foot_fore); F(foot_side); F(body_spring_hz); F(body_damping); F(leg_grip); F(hit_push);
     F(takeoff_level); F(takeoff_mm_s); I(air_ticks); I(air_rest_ticks); F(takeoff_scale);
+    F(trap_loom); F(trap_see); I(stun_struggle);
     F(air_turn_deg_s); F(air_turn_scale); F(land_level); F(surface_gain); I(air_min_ticks); I(air_land_ticks);
     I(guard_ticks); I(guard_cooldown); I(guard_stun);
     I(jump_ticks); I(jump_rest); I(jump_buffer); I(jump_carry); F(jump_height); F(jump_clear);
@@ -362,6 +364,18 @@ void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT])
         float dx = f->hurt_x - f->x, dy = f->hurt_y - f->y, d = sqrtf(dx * dx + dy * dy);
         if (d > 1e-4f) add_side(&l, &r, 1.0f, side_of(hx, hy, dx, dy, d));
     }
+    /* 날아오는 끈끈이. 빠르게 다가오는 물체라서 사람이 다가올 때와 같은 다가옴 자극이 된다. 가까울수록 세다.
+     * 초파리를 비껴 갈 것과 멀어지는 것은 눈에서 커지지 않으므로 자극이 아니다. 뇌가 반응하는 데 두세 틱이 걸려서
+     * 멀리서 던진 것은 보고 뛰어오르고, 바로 앞에서 던진 것은 못 피한다 */
+    for (int k = 0; k < BOSS_PROJ; k++) {
+        const boss_proj_t *t = &s->proj[k];
+        float dx = t->x - f->x, dy = t->y - f->y, d = sqrtf(dx * dx + dy * dy), v = sqrtf(t->vx * t->vx + t->vy * t->vy);
+        if (!t->on || d < 1e-4f || v < 1e-4f || d - s->cfg.fly_radius >= s->cfg.trap_see) continue;
+        if (t->vx * dx + t->vy * dy >= 0.0f) continue;                       /* 멀어지고 있다 */
+        if (fabsf(dx * t->vy - dy * t->vx) / v > s->cfg.fly_radius + 0.3f) continue;   /* 비껴 간다 */
+        float gap = d - s->cfg.fly_radius;
+        add_side(&l, &r, s->cfg.trap_loom * (1.0f - (gap < 0.0f ? 0.0f : gap) / s->cfg.trap_see), side_of(hx, hy, dx, dy, d));
+    }
     stim[BR_LOOM_L] = l;
     stim[BR_LOOM_R] = r;
     /* 먹이에 닿아 있으면 단맛. 진짜 뇌에서는 단맛을 느끼는 뉴런들이고, 이것이 주둥이를 내미는 운동 뉴런(먹기)을 켠다 */
@@ -553,6 +567,7 @@ static void traps_fly(boss_state_t *s)
         t->left -= s->cfg.trap_speed;
         if (dist(t->x, t->y, f->x, f->y) <= s->cfg.fly_radius) {
             f->stun = s->cfg.stun_ticks;
+            f->air = 0;                               /* 날다가 붙으면 그 자리에 떨어진다 */
             f->windup = f->charging = 0;              /* 붙으면 돌진도 멈춘다 */
             f->target = -1;
             event(s, BOSS_EV_STUCK, t->owner, f->x, f->y);
@@ -622,7 +637,14 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
     if (f->wary > 0) f->wary--;
     if (f->charge_cool > 0) f->charge_cool--;
     if (f->hurt > 0) f->hurt--;
-    if (f->stun > 0) { f->stun--; return; }          /* 붙어 있는 동안은 움직이지도 공격하지도 않는다 */
+    /* 붙어 있는 동안은 움직이지도 공격하지도 않는다. 그동안에도 뇌는 반응한다: 달아남 출력(거대 섬유)이 발화 기준을
+     * 넘는 틱에는 뛰어오르려고 몸부림쳐서 끈끈이가 그만큼 빨리 떨어진다. 그래서 붙여 놓고 에워싸서 때리면 빨리 풀려나고,
+     * 멀리 떨어져 있으면 오래 붙어 있다 */
+    if (f->stun > 0) {
+        f->stun--;
+        if (rate[BR_ESCAPE] >= c->takeoff_level) f->stun = f->stun > c->stun_struggle ? f->stun - c->stun_struggle : 0;
+        return;
+    }
 
     /* 떠 있는 동안: 날아가는 방향으로 간다. 그 방향은 뇌의 꺾기 명령(DNp06)의 좌우 차이만큼 돈다. 몸도 같이 돈다.
      * 빨라서 벽을 건너뛰지 않게 잘게 나눠 움직인다 */

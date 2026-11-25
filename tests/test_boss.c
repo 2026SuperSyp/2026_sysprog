@@ -368,6 +368,62 @@ static void test_flight(void)
     T_EQ_INT(count_ev(BOSS_EV_DESCEND), 1);
 }
 
+/* 날아오는 끈끈이는 다가옴 자극이다. 비껴 가거나 멀어지는 것은 아니다. 붙어 있는 동안 뇌의 달아남 출력이 기준을
+ * 넘으면 끈끈이가 더 빨리 떨어진다. 날다가 붙으면 그 자리에 떨어진다 */
+static void test_trap_seen(void)
+{
+    boss_cfg_t c = calm();
+    float r[BRAIN_GROUP_COUNT] = { 0 }, stim[BRAIN_GROUP_COUNT];
+    setup(&c, 1);
+    put_player(0, 16.0f, 16.0f, NORTH);
+    put_fly(8.5f, 9.0f);
+    S.fly.ang = 0.0f;                                             /* 오른쪽(+x)을 본다 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_L] == 0.0f && stim[BR_LOOM_R] == 0.0f);
+
+    S.proj[0] = (boss_proj_t){ 1, 0, 8.5f, 9.0f - 2.0f, 0.0f, c.trap_speed, 5.0f };      /* 왼쪽 옆에서 날아온다 */
+    boss_stimulus(&S, stim);
+    float near = stim[BR_LOOM_L];
+    T_CHECK(near > 0.4f && stim[BR_LOOM_R] == 0.0f);
+    S.proj[0].y = 9.0f - 3.5f;                                    /* 멀면 약하다 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_L] > 0.0f && stim[BR_LOOM_L] < near);
+    S.proj[0].y = 9.0f - c.fly_radius - c.trap_see - 0.5f;        /* 보이는 거리 밖 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_L] == 0.0f);
+    S.proj[0] = (boss_proj_t){ 1, 0, 8.5f, 9.0f - 2.0f, 0.0f, -c.trap_speed, 5.0f };     /* 멀어진다 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_L] == 0.0f);
+    S.proj[0] = (boss_proj_t){ 1, 0, 8.5f + 1.5f, 9.0f - 2.0f, 0.0f, c.trap_speed, 5.0f }; /* 1.5칸 옆으로 비껴 간다 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_L] == 0.0f && stim[BR_LOOM_R] == 0.0f);
+    S.proj[0].on = 0;
+
+    S.fly.stun = 10;                                              /* 몸부림 */
+    boss_tick(&S, r);
+    T_EQ_INT(S.fly.stun, 9);
+    r[BR_ESCAPE] = c.takeoff_level;
+    boss_tick(&S, r);
+    T_EQ_INT(S.fly.stun, 9 - 1 - c.stun_struggle);
+    T_EQ_INT(count_ev(BOSS_EV_TAKEOFF), 0);                       /* 그래도 붙어 있는 동안은 뛰지 못한다 */
+    S.fly.stun = 1;
+    boss_tick(&S, r);
+    T_EQ_INT(S.fly.stun, 0);
+
+    setup(&c, 1);                                                 /* 날다가 붙으면 떨어진다 */
+    put_player(0, 16.0f, 16.0f, NORTH);
+    put_fly(8.5f, 9.0f);
+    S.fly.ang = 0.0f;
+    memset(r, 0, sizeof r);
+    r[BR_ESCAPE] = 1.0f;
+    boss_tick(&S, r);
+    T_CHECK(S.fly.air > 0);
+    S.proj[0] = (boss_proj_t){ 1, 0, S.fly.x + 1.0f, S.fly.y, -c.trap_speed, 0.0f, 5.0f };
+    ticks(2, still);
+    T_EQ_INT(S.fly.air, 0);
+    T_CHECK(S.fly.stun > 0);
+}
+
 /* 도약: 달아남 반응이 기준을 넘을 때만 뛴다. 방향은 뇌의 방향 반응을 따른다. 붙어 있으면 못 뛰고, 돌진도 끊는다 */
 static void test_takeoff(void)
 {
@@ -772,6 +828,7 @@ int main(void)
     test_hurt();
     test_takeoff();
     test_flight();
+    test_trap_seen();
     test_sneak();
     test_look_strafe();
     test_guard();

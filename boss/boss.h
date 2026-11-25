@@ -99,6 +99,8 @@ typedef struct {
     float takeoff_scale;                         /* 도약에만 곱하는 게임용 배율(speed_scale 대신) */
     /* 떠 있는 동안. 꺾는 것과 내려앉는 때는 뇌가 정한다(명령 뉴런 DNp06, DNp07) */
     float air_turn_deg_s, air_turn_scale;        /* 꺾기 명령이 1일 때 도는 빠르기(잰 값)와 게임용 배율 */
+    int   stun_struggle;                         /* 붙어 있을 때 뇌의 달아남 출력이 기준을 넘는 틱마다 더 줄어드는 틱 수 */
+    float trap_loom, trap_see;                   /* 날아오는 끈끈이가 주는 다가옴 자극의 세기, 그것이 보이기 시작하는 거리 */
     float land_level;                            /* 착지 명령의 반응이 이 이상이면 내려앉기 시작한다 */
     float surface_gain;                          /* 날아가는 쪽 면의 자극 = surface_gain x 빠르기 / 거리 */
     int   air_min_ticks, air_land_ticks;         /* 뛰어오른 뒤 내려앉지 않는 시간, 내려앉는 데 걸리는 시간(게임 규칙) */
