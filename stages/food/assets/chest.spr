@@ -1,0 +1,19 @@
+; 음식 골라 먹기: chest (새 그림판에서 변환, 16x16)
+size 16 16
+palette . C_NONE  a C_WARN  d C_BAD  e C_FLY_EYE  f C_FLY_BODY  n C_BROWN  o C_ORANGE  t C_TEXT  y C_YELLOW
+................
+................
+................
+................
+................
+..aanfffnnfnnoo.
+.tyoddddddddtyfo
+ayeddddddddeyffo
+atdedeeeeeeyyffo
+ooeeetyyeeeaaffo
+ayyaoynyyyyyadon
+oofffyyyfffooffo
+ayeeefffeeeaaffo
+ayeeeedddeeyaffo
+aaeeeeeeeeeoafoo
+oooooooooyooan..

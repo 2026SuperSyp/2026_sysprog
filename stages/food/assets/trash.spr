@@ -1,0 +1,15 @@
+; 음식 골라 먹기: 아래 줄의 "먹을 수 없는 것" 표시(쓰레기통)
+size 10 12
+palette . C_NONE  k C_GRAY2  l C_GRAY3  w C_WEB  d C_GRAY1
+...kkkk...
+...k..k...
+kkkkkkkkkk
+kwwwllllkk
+kkkkkkkkkk
+.kllllllk.
+.kwdwdwdk.
+.kwdwdwdk.
+.kwdwdwdk.
+.kwdwdwdk.
+.kllllllk.
+..kkkkkk..

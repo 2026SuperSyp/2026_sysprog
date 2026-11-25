@@ -1,0 +1,19 @@
+; 음식 골라 먹기: donut (새 그림판에서 변환, 16x16)
+size 16 16
+palette . C_NONE  2 C_GRAY2  3 C_GRAY3  a C_WARN  d C_BAD  e C_FLY_EYE  f C_FLY_BODY  n C_BROWN  o C_ORANGE  p C_PINK  t C_TEXT  v C_PURPLE  y C_YELLOW
+................
+................
+.....vvvvvv.....
+...nnppppppnn...
+..npptap2ppppn..
+.nptpppddpppapn.
+nntppddooodpp2en
+npp2doo.fooppadn
+npapeo.....dppdn
+npppdn.....dppdn
+napypdn...dpadon
+nadppppnnptppdon
+.nypdptp3pppdan.
+..dyyodppdoaan..
+...ooayyaaann...
+.....nnnnnn.....

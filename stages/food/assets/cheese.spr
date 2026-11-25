@@ -1,0 +1,19 @@
+; 음식 골라 먹기: cheese (새 그림판에서 변환, 16x16)
+size 16 16
+palette . C_NONE  a C_WARN  d C_BAD  o C_ORANGE  t C_TEXT  w C_WHITE  y C_YELLOW
+................
+........ooooo...
+......ooytyyyo..
+.....oyyyayyyyo.
+....oyyyyoyyyyyo
+..ooyyyyyyyyttyo
+.oyytytttyaaoaad
+owyyoaaaaaaaaaad
+oaaaaaaaddaaaddd
+oyaaaaaaoooaadad
+oyaddaaaaaaaaaad
+oydddaaaaaaaaaad
+oyydaaadaaaooaad
+oyaaaaaaaaaoddo.
+oaaaoooo........
+dood............

@@ -1,0 +1,19 @@
+; 음식 골라 먹기: dice (새 그림판에서 변환, 16x16)
+size 16 16
+palette . C_NONE  1 C_GRAY1  2 C_GRAY2  3 C_GRAY3  i C_WING  t C_TEXT  w C_WHITE
+.....33333......
+...33wtttw33....
+.33wttwttttti3..
+3wwtttt.ttttww3.
+tttwwttttttww33.
+ittttwwttww3323.
+tt.ttttwww33333.
+ttttttttt233333.
+ttttttttw333333.
+tttt.tttw231333.
+tt.tttttw333.33.
+3tttttttw333333.
+3tttt..tt2.332..
+..ttttttw23332..
+...13tttw232....
+......3332......
