@@ -301,7 +301,7 @@ static void test_hurt(void)
     T_CHECK(S.fly.windup > 0);
 }
 
-/* 떠 있는 동안: 뇌의 꺾기 명령만큼 날아가는 방향이 돌고, 착지 명령이 기준을 넘으면 일찍 내려앉는다.
+/* 떠 있는 동안: 뇌의 꺾기 명령만큼 날아가는 방향이 돌고, 착지 명령이 기준을 넘으면 그 벽으로 가서 붙는다.
  * 날아가는 쪽의 벽은 떠 있을 때만 면 자극으로 들어간다 */
 static void test_flight(void)
 {
@@ -344,16 +344,83 @@ static void test_flight(void)
     boss_tick(&S, r);
     T_EQ_INT(S.fly.air, left - 1);
     T_EQ_INT(count_ev(BOSS_EV_DESCEND), 0);
-    r[BR_LAND] = 1.0f;                                            /* 착지 명령: 내려앉기 시작한다 */
+    r[BR_LAND] = 1.0f;                                            /* 착지 명령: 다리를 뻗고 속도를 줄여 그 벽으로 간다 */
+    float before = S.fly.x;
     boss_tick(&S, r);
     T_EQ_INT(count_ev(BOSS_EV_DESCEND), 1);
-    T_EQ_INT(S.fly.air, c.air_land_ticks);
+    T_CHECK(S.fly.land_cmd && !S.fly.perch);
+    T_EQ_INT(S.fly.air, c.approach_ticks);
+    before = S.fly.x;
+    boss_tick(&S, r);
+    T_CHECK(S.fly.x - before < 0.45f);                             /* 느려졌다(보통은 한 틱에 0.63칸) */
     int landed = 0;
-    for (int k = 0; k < c.air_land_ticks; k++) { boss_tick(&S, r); landed += count_ev(BOSS_EV_LAND); }
+    for (int k = 0; k < c.approach_ticks && S.fly.air > 0; k++) { boss_tick(&S, r); landed += count_ev(BOSS_EV_LAND); }
     T_EQ_INT(landed, 1);
     T_EQ_INT(S.fly.air, 0);
+    T_CHECK(S.fly.perch);                                         /* 벽에 붙었다. 머리가 벽 쪽이고 몸이 벽에 닿아 있다 */
+    T_CHECK(fabsf(S.fly.ang) < 1e-3f);
+    T_CHECK(boss_solid(&S, (int)floorf(S.fly.x + c.fly_radius + 0.05f), (int)floorf(S.fly.y)));
+    T_CHECK(S.fly.z > 0.3f);
     boss_stimulus(&S, stim);
     T_CHECK(stim[BR_SURFACE_L] == 0.0f);
+
+    memset(r, 0, sizeof r);                                       /* 붙어 있는 동안은 걷기 명령이 있어도 한동안 머문다 */
+    r[BR_WALK_L] = r[BR_WALK_R] = 1.0f;
+    float px = S.fly.x, py = S.fly.y;
+    ticks(c.perch_min_ticks - 1, r);
+    T_CHECK(S.fly.perch && S.fly.x == px && S.fly.y == py);
+    T_CHECK(S.fly.pitch > 1.5f && fabsf(S.fly.z - c.perch_height) < 0.01f);    /* 머리가 위를 본다. 벽의 그 높이에 앉아 있다 */
+    boss_tick(&S, r);                                             /* 그 뒤에는 내려와서 방 쪽을 본다 */
+    T_CHECK(!S.fly.perch && cosf(S.fly.ang) < -0.9f);
+    ticks(10, r);
+    T_CHECK(S.fly.x < px - 0.3f && S.fly.z == 0.0f && fabsf(S.fly.pitch) < 0.05f);
+
+    setup(&c, 1);                                                 /* 벽에서 뛰어오르면 벽을 차고 방 쪽으로 나온다 */
+    put_player(0, 2.0f, 2.0f, NORTH);
+    put_fly(17.0f - c.fly_radius, 9.0f);
+    S.fly.ang = 0.0f;
+    S.fly.perch = 1;
+    S.fly.z = 1.0f;
+    memset(r, 0, sizeof r);
+    r[BR_ESCAPE] = 1.0f;
+    r[BR_TURN_R] = 1.0f;                                          /* 옆으로 피하는 쪽은 그대로다 */
+    boss_tick(&S, r);
+    T_EQ_INT(count_ev(BOSS_EV_TAKEOFF), 1);
+    T_CHECK(!S.fly.perch && S.fly.air_dx < -0.5f && S.fly.air_dy > 0.5f);
+
+    c.approach_ticks = 2;                                         /* 시간 안에 벽에 닿지 못하면 바닥에 내려앉는다 */
+    setup(&c, 1);
+    put_player(0, 16.0f, 16.0f, NORTH);
+    put_fly(3.0f, 9.0f);
+    S.fly.ang = 0.0f;
+    memset(r, 0, sizeof r);
+    r[BR_ESCAPE] = 1.0f;
+    r[BR_LAND] = 1.0f;
+    landed = 0;
+    for (int k = 0; k < 12 && (k == 0 || S.fly.air > 0); k++) { boss_tick(&S, r); landed += count_ev(BOSS_EV_LAND); r[BR_ESCAPE] = 0.0f; }
+    T_EQ_INT(landed, 1);
+    T_CHECK(!S.fly.perch && S.fly.air == 0 && S.fly.x < 12.0f);
+    c.approach_ticks = 14;
+
+    setup(&c, 1);                                                 /* 꺾는 동안은 도는 쪽으로 몸을 기울인다 */
+    put_player(0, 16.0f, 16.0f, NORTH);
+    put_fly(4.0f, 9.0f);
+    S.fly.ang = 0.0f;
+    memset(r, 0, sizeof r);
+    r[BR_ESCAPE] = 1.0f;
+    boss_tick(&S, r);
+    T_CHECK(S.fly.pitch > 0.1f && S.fly.z > 0.3f);                  /* 솟으면서 머리를 든다 */
+    r[BR_ESCAPE] = 0.0f;
+    r[BR_AIRTURN_R] = 1.0f;
+    ticks(3, r);
+    T_CHECK(S.fly.roll > 0.5f);
+    r[BR_AIRTURN_R] = 0.0f;
+    r[BR_AIRTURN_L] = 1.0f;
+    ticks(4, r);
+    T_CHECK(S.fly.roll < -0.5f);
+    boss_snap_t snap;
+    boss_snapshot(&S, &snap);
+    T_CHECK(snap.fly.roll < -40 && snap.fly.z > 50 && !(snap.fly.pose & BOSS_POSE_PERCH));
 
     setup(&c, 1);                                                 /* 뛰어오른 직후에는 착지 명령이 있어도 내려앉지 않는다 */
     put_player(0, 16.0f, 16.0f, NORTH);

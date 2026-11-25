@@ -75,29 +75,21 @@ static float clamp01(float v) { return v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v); 
 
 /* 초파리가 떠 있는 높이(칸). 초파리는 평소에 땅에서 다리로 걷는다(boss/body.c). 계산부는 평면에서만 계산하므로
  * 높이는 그리는 쪽이 상태에서 정한다: 걷거나 서 있을 때는 바닥에 있고, 돌진할 때는 낮게 떠서 달려들고,
- * 달아날 때(도약)는 높이 솟아 날아가다가 내려앉는다. 틱이 바뀔 때마다 목표 높이를 조금씩 따라가서 뚝뚝 끊기지 않는다.
+ * 달아날 때(도약)는 솟아서 날아가다가 바닥에 내려앉거나 벽에 붙는다(그 높이는 계산부가 보낸다). 틱이 바뀔 때마다 목표 높이를 조금씩 따라가서 뚝뚝 끊기지 않는다.
  * 떠 있는 동안은 위아래로 조금 흔들린다 */
 float boss_view_fly_lift(const boss_snap_t *b)
 {
     static float shown = 0.0f;
-    static int last_tick = -1, air_full;             /* air_full: 이번 도약의 처음 길이(남은 틱에서 알아낸다) */
-    int air = b->fly.air;
-    float want = 0.0f;
-    air_full = air > air_full ? air : (air == 0 ? 0 : air_full);
-    if (b->fly.hp <= 0 || b->fly.stun || b->fly.feeding) want = 0.0f;      /* 먹을 때는 먹이에 내려앉는다 */
-    else if (b->fly.charging) want = 0.12f;
-    else if (air > 0 && air_full > 0) {
-        /* 세 틱에 걸쳐 솟고, 날아가는 동안 그 높이로 가고, 마지막 세 틱(내려앉는 동안)에 내려온다. 언제 내려앉을지는
-         * 뇌의 착지 명령이 정하므로 미리 알 수 없다 */
-        float up = (float)(air_full - air + 1) / 3.0f, down = (float)air / (float)BOSS_VIEW_LAND_TICKS;
-        float t = up < down ? up : down;
-        want += 1.2f * (t > 1.0f ? 1.0f : t);
-    }
+    static int last_tick = -1;
+    int perch = b->fly.pose & BOSS_POSE_PERCH;
+    float want = (float)b->fly.z / 100.0f;           /* 날 때와 벽에 붙었을 때의 높이는 계산부가 정한다 */
+    if (b->fly.charging && want < 0.12f) want = 0.12f;
+    if (b->fly.hp <= 0 || b->fly.feeding || (b->fly.stun && !perch)) want = 0.0f;   /* 먹을 때는 먹이에 내려앉는다 */
     if ((int)b->tick != last_tick) {
         shown = last_tick < 0 || (int)b->tick < last_tick ? want : shown + (want - shown) * 0.4f;     /* 새 판이면 바로 */
         last_tick = (int)b->tick;
     }
-    return shown + (want > 0.2f ? 0.06f * sinf((float)b->tick * 0.45f) : 0.0f);
+    return shown + (want > 0.2f && !perch ? 0.06f * sinf((float)b->tick * 0.45f) : 0.0f);
 }
 
 /* ---- 벽 ---------------------------------------------------------------------------- */

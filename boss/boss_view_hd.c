@@ -487,6 +487,19 @@ typedef struct {
 
 /* 상자 하나를 놓는다. c는 가운데, h는 반 크기, roll은 x축을 따라 돌린 각도다(날개가 들리는 각도).
  * rv, up, dir은 모형의 좌표로 본 화면의 오른쪽, 위, 보는 방향이다 */
+#define FLY_BZ 0.64f                 /* 몸통 가운데의 높이(모형의 좌표) */
+
+/* 화면의 축 a(모형의 좌표)를, 머리를 pitch만큼 들고 오른쪽으로 roll만큼 기울인 몸의 좌표로 바꾼다.
+ * 모형의 좌표는 x가 앞, y가 오른쪽, z가 위다 */
+static void to_body(const float a[3], float pitch, float roll, float out[3])
+{
+    float cp = cosf(pitch), sp = sinf(pitch), cr = cosf(roll), sr = sinf(roll);
+    float x = cp * a[0] + sp * a[2], y = a[1], z = -sp * a[0] + cp * a[2];
+    out[0] = x;
+    out[1] = cr * y - sr * z;
+    out[2] = sr * y + cr * z;
+}
+
 static void fly_box(fly_job_t *j, int kind, int side, const float c[3], const float h[3], float roll,
                     const float rv[3], const float up[3], const float dir[3])
 {
@@ -702,9 +715,10 @@ static void draw_fly(image_t *im, const boss_snap_t *b, const boss_view_t *v, co
     int stun = b->fly.stun, tick = b->tick;
     stun_full = stun > stun_full ? stun : (stun == 0 ? 0 : stun_full);
     float lift = boss_view_fly_lift(b);              /* 떠 있는 높이 */
-    int flying = lift > 0.08f;
-    int landing = b->fly.air > 0 && b->fly.air <= BOSS_VIEW_LAND_TICKS;
-    shadow(im, t, cx, fy, scale * (0.62f - 0.12f * clamp01(lift)), 0.5f - 0.2f * clamp01(lift));
+    int perched = (b->fly.pose & BOSS_POSE_PERCH) != 0;
+    int flying = lift > 0.08f && !perched;
+    int landing = (b->fly.pose & BOSS_POSE_LANDING) != 0;
+    if (!perched) shadow(im, t, cx, fy, scale * (0.62f - 0.12f * clamp01(lift)), 0.5f - 0.2f * clamp01(lift));
     if (stun > 0 && stun_full > 30)                  /* 끈끈이에 붙었다(막혀서 멈춘 것은 짧다) */
         blot(im, t, cx, fy, scale * 0.8f, (col_t){ 240, 140, 40 }, 0.9f);
 
@@ -718,14 +732,21 @@ static void draw_fly(image_t *im, const boss_snap_t *b, const boss_view_t *v, co
     float tilt = FLY_TILT + atan2f(EZ - BOSS_VIEW_EYE_H - lift, t->depth);
     tilt = tilt < -0.7f ? -0.7f : (tilt > 0.9f ? 0.9f : tilt);
     float dvx = vx * hx + vy * hy, dvy = -vx * hy + vy * hx, cp = cosf(tilt), sp = sinf(tilt);
-    const float dir[3] = { dvx * cp, dvy * cp, -sp }, rv[3] = { -dvy, dvx, 0.0f }, up[3] = { dvx * sp, dvy * sp, cp };
+    /* 모형의 좌표로 본 화면의 축. 몸이 머리를 들거나(pitch) 옆으로 기울면(roll) 그 축들을 몸의 좌표로 돌린다.
+     * 도는 중심은 몸통의 가운데다 */
+    const float dir0[3] = { dvx * cp, dvy * cp, -sp }, rv0[3] = { -dvy, dvx, 0.0f }, up0[3] = { dvx * sp, dvy * sp, cp };
+    float dir[3], rv[3], up[3];
+    float pitch = (float)b->fly.pitch / 127.0f * (TWO_PI / 4.0f), roll_b = (float)b->fly.roll / 127.0f * (TWO_PI / 4.0f);
+    to_body(dir0, pitch, roll_b, dir);
+    to_body(rv0, pitch, roll_b, rv);
+    to_body(up0, pitch, roll_b, up);
 
     static fly_job_t job;
     int charging = b->fly.windup || b->fly.charging;
     job.im = im;
     job.depth = t->depth;
-    job.cx = cx;
-    job.fy = fy - lift * scale;
+    job.cx = cx + FLY_BZ * (rv0[2] - rv[2]) * scale;         /* 몸통의 가운데(높이 FLY_BZ)가 제자리에 있게 */
+    job.fy = fy - lift * scale - FLY_BZ * (up0[2] - up[2]) * scale;
     job.S = scale;
     job.n = 0;
     job.x0 = job.y0 = 1 << 30;
@@ -738,7 +759,7 @@ static void draw_fly(image_t *im, const boss_snap_t *b, const boss_view_t *v, co
     job.lamp = lamp((int)cx < 0 ? 0 : ((int)cx >= VW ? VW - 1 : (int)cx));
 
     /* 상자들. 몸통의 가운데는 높이 0.64에 있다(다리가 0.30) */
-    const float bz = 0.64f;
+    const float bz = FLY_BZ;
     static body_cfg_t bc;                            /* 발의 자리를 구하는 수치. 계산부의 기본값과 같다 */
     static int have_bc;
     if (!have_bc) { boss_cfg_t dc; boss_cfg_default(&dc); boss_body_cfg(&dc, &bc); have_bc = 1; }
@@ -1021,7 +1042,7 @@ static float draw_brain(image_t *im, const boss_snap_t *b, const boss_view_t *v)
     bar(im, x + 5.0f + lw, gy + 47.0f, w - 10.0f - lw, 4.0f, stim[BR_SUGAR], 0.0f, hd_rgb(250, 200, 60));
     text(im, x + 5.0f, gy + 55.0f, "먹기", DIM, 0.75f, 1.0f);
     bar(im, x + 5.0f + lw, gy + 58.0f, w - 10.0f - lw, 4.0f, rate[BR_FEED], 0.5f, b->fly.feeding ? hd_rgb(85, 200, 120) : SKY);
-    const char *doing = b->fly.hp <= 0 ? "쓰러짐" : (b->fly.stun ? "멈춤" : (b->fly.air ? (b->fly.air <= BOSS_VIEW_LAND_TICKS ? "내려앉음" : "날아감") : ((b->fly.windup || b->fly.charging) ? "돌진" :
+    const char *doing = b->fly.hp <= 0 ? "쓰러짐" : (b->fly.stun ? "멈춤" : ((b->fly.pose & BOSS_POSE_PERCH) ? "벽에 붙음" : b->fly.air ? ((b->fly.pose & BOSS_POSE_LANDING) ? "내려앉음" : "날아감") : ((b->fly.windup || b->fly.charging) ? "돌진" :
                         (b->fly.feeding ? "먹는 중" : (b->fly.lured ? "먹이로 감" : (loom > 0.1f ? "경계" : (walk > 0.15f ? "다가옴" : "가만히")))))));
     text(im, x + 5.0f, gy + 67.0f, "상태", DIM, 0.75f, 1.0f);
     text(im, x + 5.0f + lw, gy + 67.0f, doing, b->fly.feeding ? hd_rgb(85, 200, 120) : INK, 0.75f, 1.0f);

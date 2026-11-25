@@ -102,8 +102,16 @@ typedef struct {
     int   stun_struggle;                         /* 붙어 있을 때 뇌의 달아남 출력이 기준을 넘는 틱마다 더 줄어드는 틱 수 */
     float trap_loom, trap_see;                   /* 날아오는 끈끈이가 주는 다가옴 자극의 세기, 그것이 보이기 시작하는 거리 */
     float land_level;                            /* 착지 명령의 반응이 이 이상이면 내려앉기 시작한다 */
-    float surface_gain;                          /* 날아가는 쪽 면의 자극 = surface_gain x 빠르기 / 거리 */
+    float surface_gain, surface_max;             /* 날아가는 쪽 면의 자극 = surface_gain x 빠르기 / 거리, 그 상한 */
     int   air_min_ticks, air_land_ticks;         /* 뛰어오른 뒤 내려앉지 않는 시간, 내려앉는 데 걸리는 시간(게임 규칙) */
+    /* 착지 명령이 켜진 뒤: 속도를 줄여 그 면(벽)까지 가서 붙는다. 시간 안에 닿지 못하면 바닥에 내려앉는다 */
+    float approach_speed; int approach_ticks;    /* 줄인 빠르기의 배율, 면까지 가는 데 주는 시간 */
+    int   perch_rest_ticks;                      /* 벽에 붙은 뒤 다시 뛰지 못하는 시간(바닥의 air_rest_ticks에 해당) */
+    int   perch_min_ticks; float perch_walk;     /* 벽에 붙은 뒤 이만큼은 머문다, 걷기 명령이 이 이상이면 바닥으로 내려온다 */
+    /* 나는 자세. 높이와 각도는 화면에 보이는 것이고 맞고 안 맞고에는 쓰지 않는다 */
+    float air_height, perch_height;              /* 날아가는 높이, 벽에 붙어 있는 높이(칸) */
+    float pitch_climb_deg, pitch_cruise_deg, pitch_flare_deg;   /* 머리를 드는 각도: 솟을 때, 날아갈 때, 내려앉으려 속도를 줄일 때 */
+    float bank_deg;                              /* 꺾기 명령이 가장 셀 때 몸을 옆으로 기울이는 각도 */
     int   guard_ticks, guard_cooldown, guard_stun;   /* 막는 자세의 길이, 다시 쓸 때까지, 막힌 초파리가 멈추는 시간 */
     int   jump_ticks, jump_rest;                 /* 뛰어올라 떠 있는 시간, 내려선 뒤 다시 뛰지 못하는 시간 */
     int   jump_buffer;                           /* 뛸 수 없을 때 누른 키를 기억해 두는 시간. 그 안에 뛸 수 있게 되면 뛴다 */
@@ -165,6 +173,9 @@ typedef struct {
     int   hurt;                  /* 맞은 뒤 남은 틱 */
     int   air, air_rest;         /* 떠 있는 남은 틱(마지막 air_land_ticks는 내려앉는 중), 내려앉은 뒤 쉬는 남은 틱 */
     int   air_age;               /* 뛰어오른 뒤 지난 틱 */
+    int   land_cmd;              /* 뇌의 착지 명령이 켜졌다: 속도를 줄여 면으로 간다 */
+    int   perch, perch_age;      /* 벽에 붙어 있다(ang은 벽 쪽이다), 붙은 뒤 지난 틱 */
+    float z, pitch, roll;        /* 자세: 높이(칸), 머리를 든 각도, 오른쪽으로 기울인 각도(라디안). 벽에 붙으면 pitch가 90도다 */
     int   dodged;                /* 이번 돌진을 뛰어넘어 피한 참가자들(비트). 피한 사람은 그 돌진에 다시 맞지 않는다 */
     int   feeding, lured;        /* 이번 틱에 먹고 있다, 먹이 쪽으로 가고 있다 */
     int   bait;                  /* 그 먹이의 번호 */
@@ -194,6 +205,9 @@ typedef struct {
     int           dmg_dealt[BOSS_PLAYERS], dmg_taken[BOSS_PLAYERS];
 } boss_state_t;
 
+#define BOSS_POSE_PERCH   1          /* 벽에 붙어 있다 */
+#define BOSS_POSE_LANDING 2          /* 내려앉으려고 다리를 뻗었다 */
+
 /* 보낼 것. 그리는 데 필요한 것만 담은 고정 크기 구조체다. 좌표는 BOSS_FIX배 정수다. */
 typedef struct {
     uint16_t tick, ticks_left;
@@ -212,6 +226,8 @@ typedef struct {
         uint8_t  stun, windup, charging, wave_in;   /* stun, wave_in은 남은 틱(255에서 자른다) */
         uint8_t  air, target;                       /* 떠 있는 남은 틱, 돌진이 겨누는 참가자(없으면 255) */
         uint8_t  feeding, lured;                    /* 먹고 있다, 먹이 쪽으로 가고 있다 */
+        uint8_t  z, pose;                           /* 높이(칸의 1/100), 자세(BOSS_POSE_*의 합) */
+        int8_t   pitch, roll;                       /* 머리를 든 각도, 오른쪽으로 기울인 각도. 127이 90도 */
         uint8_t  leg[BODY_LEGS], leg_mag[BODY_LEGS];   /* 다리의 걸음: 위상(256이 한 바퀴)과 크기(127이 1). 발의 자리는 body_foot으로 구한다 */
     } fly;
     struct { int16_t x, y; } proj[BOSS_PROJ];

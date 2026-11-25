@@ -13,7 +13,7 @@
  * (좌우 회전, 후진)을 합친 것이다: 한쪽에서 다가오면 반대쪽 앞으로, 앞에서 다가오면 뒤로 뛴다. 빠르기는 잰 값이다.
  * 떠 있는 동안에도 뇌가 정한다. 다가옴 자극이 한쪽에서 계속 오면 날면서 피해 도는 명령 뉴런(DNp06, BR_AIRTURN_L/R)이
  * 켜지고 그쪽으로 꺾는다(Kim 외 2023). 날아가는 쪽에 벽이 다가오면 그 면을 자극(BR_SURFACE_L/R, 시각 뉴런 LPLC4)으로
- * 주고, 착지 명령 뉴런(DNp07, BR_LAND)의 반응이 land_level을 넘으면 내려앉기 시작한다(Ache 외 2019).
+ * 주고, 착지 명령 뉴런(DNp07, BR_LAND)의 반응이 land_level을 넘으면 다리를 뻗고 그 벽으로 가서 붙는다(Ache 외 2019).
  * 실제로 이 뉴런들은 날고 있을 때만 반응한다. 이 뇌 모델에는 그 조절이 없어서, 떠 있을 때만 그 자극을 주고
  * 그 반응을 읽는 것은 계산부가 한다. 가장 오래 떠 있는 시간, 내려앉는 데 걸리는 시간, 내려앉은 뒤 쉬는 시간은
  * 게임 규칙이다(실제 초파리는 그대로 날아가 버린다).
@@ -63,6 +63,10 @@ void boss_cfg_default(boss_cfg_t *c)
     c->trap_loom = 1.0f; c->trap_see = 4.0f; c->stun_struggle = 1;
     c->air_turn_deg_s = 1000.0f; c->air_turn_scale = 0.3f; c->land_level = 0.5f; c->surface_gain = 0.07f;
     c->air_min_ticks = 4; c->air_land_ticks = 3;
+    c->surface_max = 0.5f; c->perch_rest_ticks = 14;
+    c->approach_speed = 0.6f; c->approach_ticks = 14; c->perch_min_ticks = 20; c->perch_walk = 0.1f;
+    c->perch_height = 0.45f;
+    c->air_height = 1.1f; c->pitch_climb_deg = 40.0f; c->pitch_cruise_deg = 10.0f; c->pitch_flare_deg = 45.0f; c->bank_deg = 55.0f;
     c->guard_ticks = 10; c->guard_cooldown = 50; c->guard_stun = 24;
     c->jump_ticks = 10; c->jump_rest = 0; c->jump_buffer = 3; c->jump_carry = 4; c->jump_height = 1.0f; c->jump_clear = 0.35f;
     c->bait_count = 3; c->bait_ticks = 60; c->bait_wary = 100;
@@ -96,6 +100,9 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     F(takeoff_level); F(takeoff_mm_s); I(air_ticks); I(air_rest_ticks); F(takeoff_scale);
     F(trap_loom); F(trap_see); I(stun_struggle);
     F(air_turn_deg_s); F(air_turn_scale); F(land_level); F(surface_gain); I(air_min_ticks); I(air_land_ticks);
+    F(surface_max); I(perch_rest_ticks);
+    F(approach_speed); I(approach_ticks); I(perch_min_ticks); F(perch_walk);
+    F(perch_height); F(air_height); F(pitch_climb_deg); F(pitch_cruise_deg); F(pitch_flare_deg); F(bank_deg);
     I(guard_ticks); I(guard_cooldown); I(guard_stun);
     I(jump_ticks); I(jump_rest); I(jump_buffer); I(jump_carry); F(jump_height); F(jump_clear);
     I(bait_count); I(bait_ticks); I(bait_wary); F(bait_throw); F(bait_smell); F(bait_sugar); F(bait_heal);
@@ -403,11 +410,14 @@ void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT])
      * 시간의 역수에 비례한다. 걸을 때는 느려서 이 값이 0에 가깝고, 실제 착지 뉴런도 날 때만 반응하므로(Ache 외 2019)
      * 떠 있을 때만 준다. 왼쪽 앞과 오른쪽 앞을 따로 본다 */
     if (f->air > 0) {
-        float a = atan2f(f->air_dy, f->air_dx), v = air_speed(&s->cfg);
+        float a = atan2f(f->air_dy, f->air_dx), v = air_speed(&s->cfg) * (f->land_cmd ? s->cfg.approach_speed : 1.0f);
         float dl = wall_dist(s, f->x, f->y, a - SURFACE_ANGLE, 8.0f) - s->cfg.fly_radius;
         float dr = wall_dist(s, f->x, f->y, a + SURFACE_ANGLE, 8.0f) - s->cfg.fly_radius;
-        stim[BR_SURFACE_L] = clamp01(s->cfg.surface_gain * v / (dl < 0.1f ? 0.1f : dl));
-        stim[BR_SURFACE_R] = clamp01(s->cfg.surface_gain * v / (dr < 0.1f ? 0.1f : dr));
+        /* surface_max에서 자른다. 착지 뉴런은 그 세기에서 이미 충분히 발화하고, 벽 바로 앞에서 더 세게 주면 뇌 전체의
+         * 발화가 늘어 폭주할 수 있다 */
+        float sl = s->cfg.surface_gain * v / (dl < 0.1f ? 0.1f : dl), sr = s->cfg.surface_gain * v / (dr < 0.1f ? 0.1f : dr);
+        stim[BR_SURFACE_L] = sl > s->cfg.surface_max ? s->cfg.surface_max : sl;
+        stim[BR_SURFACE_R] = sr > s->cfg.surface_max ? s->cfg.surface_max : sr;
     }
 }
 
@@ -628,6 +638,56 @@ static int charge_target(const boss_state_t *s, float rushed)
     return best;
 }
 
+/* 날아가는 쪽 바로 앞이 벽인가. 맞으면 그 벽에 몸을 붙이고, 벽 쪽 방향을 *face에 넣는다. 비스듬히 닿았으면
+ * 더 정면인 쪽 벽에 붙는다 */
+static int wall_ahead(const boss_state_t *s, boss_fly_t *f, float *face)
+{
+    float r = s->cfg.fly_radius, reach = r + 0.25f, dx = f->air_dx, dy = f->air_dy;
+    int hx = fabsf(dx) > 0.2f && solid_at(s, f->x + (dx > 0.0f ? reach : -reach), f->y);
+    int hy = fabsf(dy) > 0.2f && solid_at(s, f->x, f->y + (dy > 0.0f ? reach : -reach));
+    if (hx && (!hy || fabsf(dx) >= fabsf(dy))) {
+        f->x = dx > 0.0f ? floorf(f->x + reach) - r - 0.001f : floorf(f->x - reach) + 1.0f + r + 0.001f;
+        *face = dx > 0.0f ? 0.0f : PI_F;
+        return 1;
+    }
+    if (hy) {
+        f->y = dy > 0.0f ? floorf(f->y + reach) - r - 0.001f : floorf(f->y - reach) + 1.0f + r + 0.001f;
+        *face = dy > 0.0f ? PI_F / 2.0f : -PI_F / 2.0f;
+        return 1;
+    }
+    return 0;
+}
+
+/* 몸의 자세(높이, 머리를 든 각도, 옆으로 기울인 각도)를 지금 하는 일에 맞춰 조금씩 옮긴다. 화면에 보이는 것이고
+ * 맞고 안 맞고에는 쓰지 않는다.
+ *   머리를 드는 각도: 초파리는 몸의 기울기로 나는 빠르기를 조절한다. 느릴 때는 몸을 세우고 빠를 때는 눕힌다.
+ *     그래서 솟을 때와 내려앉으려 속도를 줄일 때는 세우고, 날아갈 때는 눕힌다. 벽에 붙으면 머리가 위다
+ *   옆으로 기울이기: 날면서 꺾을 때는 도는 쪽으로 몸을 기울여 돈다(Muijres 외 2015). 꺾기 명령이 셀수록 많이 기울인다 */
+static void fly_attitude(boss_state_t *s)
+{
+    const boss_cfg_t *c = &s->cfg;
+    boss_fly_t *f = &s->fly;
+    const float deg = PI_F / 180.0f;
+    float z = 0.0f, pitch = 0.0f, roll = 0.0f;
+    if (f->hp <= 0) f->perch = 0;                                 /* 쓰러지면 벽에서 떨어진다 */
+    if (f->perch) {
+        z = c->perch_height;                                        /* 붙은 뒤 그 높이로 옮겨 앉는다 */
+        pitch = PI_F / 2.0f;
+    } else if (f->air > 0) {
+        int down = f->air <= c->air_land_ticks;                     /* 바닥으로 내려오는 중 */
+        z = down ? c->air_height * (float)(f->air - 1) / (float)(c->air_land_ticks > 0 ? c->air_land_ticks : 1) : c->air_height;
+        pitch = (f->land_cmd || down ? c->pitch_flare_deg : (f->air_age < 3 ? c->pitch_climb_deg : c->pitch_cruise_deg)) * deg;
+        float full = c->air_turn_deg_s * deg * c->air_turn_scale / 20.0f, lean = full > 1e-6f ? f->w / full : 0.0f;
+        roll = (lean < -1.0f ? -1.0f : (lean > 1.0f ? 1.0f : lean)) * c->bank_deg * deg;
+    } else if (f->charging > 0) {
+        pitch = -0.2f;                                              /* 머리를 숙이고 달려든다 */
+    }
+    f->z += (z - f->z) * 0.5f;
+    f->pitch += (pitch - f->pitch) * 0.45f;
+    f->roll += (roll - f->roll) * 0.5f;
+    if (f->z < 0.005f) f->z = 0.0f;
+}
+
 static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
 {
     const boss_cfg_t *c = &s->cfg;
@@ -657,19 +717,29 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
             f->ang = wrap_angle(f->ang + turn);
         }
         f->w = turn;
-        float len = air_speed(c) / 20.0f;
+        float len = air_speed(c) / 20.0f * (f->land_cmd ? c->approach_speed : 1.0f);
         int n = (int)(len / 0.2f) + 1;
         for (int k = 0; k < n; k++)
             slide(s, &f->x, &f->y, f->air_dx * len / (float)n, f->air_dy * len / (float)n, c->fly_radius);
         f->air_age++;
-        /* 착지: 뇌의 착지 명령(DNp07)이 기준을 넘으면 내려앉기 시작한다. 명령이 없어도 air_ticks가 지나면 내려앉는다
-         * (게임 규칙). 남은 틱의 마지막 air_land_ticks가 내려앉는 동안이다 */
-        if (f->air > c->air_land_ticks + 1 && f->air_age >= c->air_min_ticks && rate[BR_LAND] >= c->land_level) {
-            f->air = c->air_land_ticks + 1;
+        /* 착지: 뇌의 착지 명령(DNp07)이 기준을 넘으면 다리를 뻗고 속도를 줄여, 다가오던 그 면(벽)으로 간다. 닿으면
+         * 벽에 붙는다. approach_ticks 안에 닿지 못하면(날면서 꺾어 벽에서 멀어진 경우) 바닥에 내려앉는다.
+         * 명령이 없어도 air_ticks가 지나면 바닥에 내려앉는다(게임 규칙). 남은 틱의 마지막 air_land_ticks가 내려오는 동안이다 */
+        if (!f->land_cmd && f->air > c->air_land_ticks + 1 && f->air_age >= c->air_min_ticks && rate[BR_LAND] >= c->land_level) {
+            f->land_cmd = 1;
+            f->air = c->approach_ticks + 1;
             event(s, BOSS_EV_DESCEND, 255, f->x, f->y);
         }
+        float face;
+        if (f->land_cmd && wall_ahead(s, f, &face)) {
+            f->ang = face;
+            f->perch = 1;
+            f->perch_age = 0;
+            f->air = 1;
+        }
         if (--f->air == 0) {
-            f->air_rest = c->air_rest_ticks;
+            f->air_rest = f->perch ? c->perch_rest_ticks : c->air_rest_ticks;   /* 벽에서는 곧 다시 날 수 있다 */
+            f->land_cmd = 0;
             f->v = f->w = 0.0f;
             event(s, BOSS_EV_LAND, 255, f->x, f->y);
         }
@@ -680,15 +750,34 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
      * 방향은 몸 기준으로 앞뒤 = 1 - 2 x 후진, 좌우 = 오른쪽 회전 - 왼쪽 회전 */
     if (f->air_rest == 0 && c->air_ticks > 0 && rate[BR_ESCAPE] >= c->takeoff_level) {
         float a = f->ang + atan2f(rate[BR_TURN_R] - rate[BR_TURN_L], 1.0f - 2.0f * rate[BR_BACKWARD]);
+        if (f->perch) {
+            /* 벽에 붙어 있었다. 머리가 벽 쪽이라 뇌가 말한 방향을 벽면에 비춰서(벽으로 들어가는 몫만 뒤집어서) 뛴다:
+             * 옆으로 피하는 몫은 그대로이고, 벽을 차고 방 쪽으로 나온다. 몸도 그쪽을 본다 */
+            a = f->ang + PI_F - atan2f(rate[BR_TURN_R] - rate[BR_TURN_L], 1.0f);
+            f->ang = wrap_angle(a);
+            f->perch = 0;
+        }
         f->air_dx = cosf(a);
         f->air_dy = sinf(a);
         f->air = c->air_ticks;
         f->air_age = 0;
+        f->land_cmd = 0;
         if (f->windup > 0 || f->charging > 0) f->charge_cool = c->charge_cooldown;
         f->windup = f->charging = 0;
         f->target = -1;
         event(s, BOSS_EV_TAKEOFF, 255, f->x, f->y);
         return;
+    }
+
+    /* 벽에 붙어 있다. 걷지 않는다. 한동안 머문 뒤 뇌의 걷기 명령(보이는 사람이나 먹이)이 켜지면 바닥으로 내려와
+     * 방 쪽을 본다. 그 전에 다가옴이 세면 위에서 이미 날아올랐다. 날갯짓과 돌진은 붙은 채로도 한다 */
+    if (f->perch) {
+        float walk = rate[BR_WALK_L] > rate[BR_WALK_R] ? rate[BR_WALK_L] : rate[BR_WALK_R];
+        f->v = f->w = 0.0f;
+        if (++f->perch_age >= c->perch_min_ticks && walk >= c->perch_walk) {
+            f->perch = 0;
+            f->ang = wrap_angle(f->ang + PI_F);
+        }
     }
 
     /* 날갯짓: 가까운 참가자를 모두 밀어낸다 */
@@ -774,10 +863,13 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
             f->target = t;
             f->windup = c->charge_windup;
             f->dodged = 0;
+            f->perch = 0;                            /* 벽에서 떨어져 겨눈다 */
             event(s, BOSS_EV_CHARGE, t, f->x, f->y);
             return;
         }
     }
+
+    if (f->perch) return;
 
     /* 평소: 뇌의 반응을 좌우 두 명령으로 합쳐 몸에 내려보낸다. 걷는 것은 몸(boss/body.c)이 한다. 명령이 다리 여섯의
      * 걸음을 조절하고, 딛고 있는 다리가 몸을 민다. 명령이 1이면 걷는 빠르기(walk_mm_s)가 나오게 보폭을 정해 두었고,
@@ -830,6 +922,7 @@ void boss_tick(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
     players_act(s);
     traps_fly(s);
     if (s->fly.hp > 0) fly_act(s, rate);
+    fly_attitude(s);
     for (int i = 0; i < s->n_players; i++)
         s->p[i].approach += (s->p[i].closing - s->p[i].approach) / (float)(s->cfg.loom_avg_ticks > 1 ? s->cfg.loom_avg_ticks : 1);
     s->tick++;
@@ -884,6 +977,11 @@ void boss_snapshot(const boss_state_t *s, boss_snap_t *o)
     o->fly.target = (uint8_t)(f->target < 0 ? 255 : f->target);
     o->fly.feeding = (uint8_t)f->feeding;
     o->fly.lured = (uint8_t)f->lured;
+    o->fly.z = (uint8_t)(f->z * 100.0f > 255.0f ? 255.0f : f->z * 100.0f);
+    o->fly.pose = (uint8_t)((f->perch ? BOSS_POSE_PERCH : 0) |
+                            (f->air > 0 && (f->land_cmd || f->air <= s->cfg.air_land_ticks) ? BOSS_POSE_LANDING : 0));
+    o->fly.pitch = (int8_t)(f->pitch / (PI_F / 2.0f) * 127.0f);
+    o->fly.roll = (int8_t)(f->roll / (PI_F / 2.0f) * 127.0f);
     for (int k = 0; k < BODY_LEGS; k++) {
         float ph = fmodf(f->body.phase[k], 2.0f * PI_F), mg = f->body.mag[k] * 127.0f;
         if (ph < 0.0f) ph += 2.0f * PI_F;
