@@ -50,6 +50,14 @@ static float body_w, move_px, fly_speed;
 static float sense_range, level_min, level_max;
 static float steer_px, deadzone;
 
+/* Fly steering: how many ticks ahead its path is checked, how close to
+ * the chosen column it stops steering, and the column it is heading for
+ * (negative: none yet).
+ */
+#define LOOK_TICKS 45
+#define STEER_BAND 3.0f
+static float fly_goal;
+
 static const stage_info_t info = {
     .title = "거미줄 탈출",
     .rule = "거미줄을 피해 올라가요\n위쪽 출구에 도착하기",
@@ -221,6 +229,7 @@ void stage_start(const stage_ctx_t *ctx) {
         };
     }
 
+    fly_goal = -1.0f;
     fly = (actor_t){
         .x = 47.0f,
         .y = spawn_y,
@@ -253,28 +262,62 @@ void stage_input(int player, int key, double t) {
     a->last_move = tick_no;
 }
 
-/* Find a possible free direction in front of the fly.
+/* Walk the fly toward column x the way fly_tick moves it (sideways
+ * steer_px per tick until it is inside the steering band, climbing
+ * fly_speed per tick) and count the ticks before it would touch a web.
+ * LOOK_TICKS means the whole path is clear.
+ *
+ * The earlier version only sampled points straight above each column.
+ * It picked columns whose sideways path was still blocked by the web
+ * the fly was passing, so the fly lost every life at the first web.
+ */
+static int fly_clear_ticks(float x) {
+    float fx = fly.x, fy = fly.y;
+
+    for (int k = 0; k < LOOK_TICKS; k++) {
+        float off = x - fx;
+
+        if (absv(off) > STEER_BAND) {
+            fx += off > 0 ? steer_px : -steer_px;
+
+            if (hits_web(fx, fy))
+                return k;
+        }
+
+        fy = limit(fy - fly_speed, goal_y, spawn_y);
+
+        if (hits_web(fx, fy))
+            return k;
+
+        /* The top row only counts inside the exit. */
+        if (fy <= goal_y && (fx < 31.0f || fx > 63.0f))
+            return k;
+    }
+
+    return LOOK_TICKS;
+}
+
+/* Find a free column in front of the fly.
  * The fly brain still determines actual turning.
  */
 static float fly_target(void) {
+    /* Keep the chosen column while its path stays clear. Changing
+     * sides every tick would make the fly act on the turn the brain
+     * produced for the previous side.
+     */
+    if (fly_goal >= 0.0f &&
+        fly_clear_ticks(fly_goal) == LOOK_TICKS)
+        return fly_goal;
+
     float best_x = fly.x;
     float best_cost = 1.0e9f;
 
     for (int col = 9; col <= 85; col += 2) {
         float x = (float)col;
         float cost =
+            (float)(LOOK_TICKS - fly_clear_ticks(x)) * 10.0f +
             absv(x - fly.x) * 0.06f +
             absv(x - 47.0f) * 0.01f;
-
-        for (int k = 1; k <= 5; k++) {
-            float y = limit(
-                fly.y - (float)k * 9.0f,
-                goal_y, spawn_y
-            );
-
-            if (hits_web(x, y))
-                cost += 120.0f / (float)k;
-        }
 
         if (cost < best_cost) {
             best_cost = cost;
@@ -282,6 +325,7 @@ static float fly_target(void) {
         }
     }
 
+    fly_goal = best_x;
     return best_x;
 }
 
@@ -294,7 +338,7 @@ static void fly_tick(void) {
     float target = fly_target();
     float off = target - fly.x;
 
-    if (absv(off) > 3.0f) {
+    if (absv(off) > STEER_BAND) {
         float intensity = limit(
             absv(off) / sense_range,
             0.0f, 1.0f
