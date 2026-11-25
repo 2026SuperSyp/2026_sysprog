@@ -5,6 +5,10 @@
 - 언어는 C(gnu11)이고 외부 라이브러리 없이 리눅스 시스템 호출과 pthread만 쓴다. C 코드는 검사 포함 16,000줄쯤이다.
 - 초파리의 뇌는 공개된 실제 배선 자료(FlyWire v783, 뉴런 138,639개, 연결 약 1,509만 개) 위에서 논문의 식으로 발화를 계산한다. 코드는 전부 직접 썼고, 공개 자료에서는 데이터와 논문의 식만 가져왔다(출처는 아래).
 
+| 보스전: 날아가는 초파리 | 보스전: 벽에 붙은 초파리 |
+|---|---|
+| ![날아가는 초파리](docs/img/boss_fly.png) | ![벽에 붙은 초파리](docs/img/boss_wall.png) |
+
 ## 팀
 
 | 이름 | 맡은 것 |
@@ -47,6 +51,33 @@ build/release/client --host=서버주소 --name=이름
 
 판의 흐름: 로비 → 미니게임 여러 라운드(초파리보다 점수가 낮으면 기회가 하나 줄어든다) → 보스전 → 랭킹.
 
+## 구조
+
+프로세스는 넷으로 나뉘고, 서로 다른 통로로 이야기한다.
+
+```
+ 클라이언트 (사람마다 하나)                   서버
+ ┌────────────────────────┐   TCP    ┌──────────────────────────────────────────┐
+ │ 수신 스레드             │◄────────►│ 접속마다: 읽기 스레드, 쓰기 스레드          │
+ │ 입력 스레드(터미널, 마우스)│          │ 접속 받기 스레드                           │
+ │ 그리기, 내보내기 스레드   │   UDP    │ 시그널 스레드 (SIGCHLD, SIGALRM, SIGINT)   │
+ └────────────────────────┘◄ ─ ─ ─ ─►│ 서버 찾기 스레드                           │
+                             (찾기)   │ 관리 창구 스레드 ◄── 이름 있는 파이프        │
+                                      │ 뇌 감시 스레드                             │
+                                      │ 게임 마스터 (사건 큐 + poll 하나로 전부 진행) │
+                                      └───────┬──────────────────────┬───────────┘
+                                   파이프 두 개 │                      │ 공유 메모리 + 세마포어
+                                (틱·입력 ↓ 화면 ↑)│                      │ (자극 ↓ 반응 ↑)
+                                      ┌───────▼────────┐      ┌──────▼─────────┐
+                                      │ 스테이지 프로세스 │      │ 뇌 프로세스      │
+                                      │ (미니게임 하나)   │      │ (뉴런 138,639개) │
+                                      └────────────────┘      └────────────────┘
+```
+
+- **게임 마스터만 게임의 상태를 바꾼다.** 다른 스레드는 일어난 일(접속, 입력, 시그널, 관리 명령)을 사건 큐에 넣고 `eventfd`로 깨우기만 한다. 그래서 게임 상태에는 잠금이 필요 없다.
+- **스테이지와 뇌는 따로 도는 프로세스다.** 미니게임이 죽거나 뇌가 멈춰도 서버는 살아 있고, 그 라운드만 무효로 하거나 뇌를 다시 띄운다.
+- **시그널은 한 스레드만 받는다.** 스레드를 만들기 전에 모두 막아 두고(`pthread_sigmask`) 전담 스레드가 `sigwaitinfo`로 받는다.
+
 ## 기능과 쓴 시스템 프로그래밍 요소
 
 | 기능 | 내용 | 쓴 것 |
@@ -55,7 +86,7 @@ build/release/client --host=서버주소 --name=이름
 | 라운드 진행 | 미니게임 하나가 프로세스 하나다. 서버가 띄우고 파이프로 틱과 입력을 주고 화면을 받는다 | `fork` `execv` `pipe` `fcntl(O_NONBLOCK)` `waitpid` `kill`, `SIGCHLD`, 주기 타이머 `setitimer`와 `SIGALRM`, 시그널 전담 스레드(`sigwaitinfo`) |
 | 초파리 뇌와의 대결 | 뇌는 따로 도는 프로세스다. 자극과 반응을 공유 메모리로 주고받는다 | `shm_open` `mmap` `ftruncate`, 세마포어, seqlock(원자 연산) |
 | 장애 복구 | 뇌가 멈추거나 죽으면 감시 스레드가 알아채 다시 띄우고, 계속 실패하면 가짜 뇌로 바꾼다. 스테이지가 죽으면 그 라운드만 무효로 한다 | 감시 스레드, `kill`, `waitpid`, 시간 한도가 있는 세마포어 대기 |
-| 3D 보스전 | 클라이언트는 수신, 입력, 그리기 스레드 셋이다. 벽은 광선을 쏘아 그리고 터미널에 픽셀 그림(Sixel)이나 글자 칸으로 내보낸다 | pthread, mutex, `termios` 원시 입력, `ioctl(TIOCGWINSZ)`, `SIGWINCH`, `poll` |
+| 3D 보스전 | 클라이언트는 수신, 입력, 그리기 스레드와 터미널에 내보내는 스레드로 나뉜다. 벽은 광선을 쏘아 그리고 터미널에 픽셀 그림(Sixel)이나 글자 칸으로 내보낸다 | pthread, mutex, `termios` 원시 입력, `ioctl(TIOCGWINSZ)`, `SIGWINCH`, `poll` |
 | 랭킹 저장 | 여러 서버가 같은 파일에 써도 깨지지 않고, 전원이 나가도 남는다 | `open(O_APPEND)` `write` `fsync` `rename` `flock` `fstat` `ftruncate` |
 | 관전 | 늦게 온 사람은 관전자로 들어와 누구의 화면이든 본다 | 접속자별 보내기 큐(느린 접속자는 최신 화면만) |
 | 재접속 | 게임 도중에 끊겨도 10초 안에 다시 붙으면 점수와 기회를 이어받는다 | 세션 토큰(`getrandom`), 소켓 바꿔 끼우기 |
@@ -65,6 +96,27 @@ build/release/client --host=서버주소 --name=이름
 | 자원 사용량 | 판이 끝나면 쓴 CPU 시간과 메모리를 로그에 찍는다. `--nice`로 우선순위를 낮춘다 | `getrusage` `setpriority` |
 | 병렬 자가 대전 훈련 | `make boss-train`이 CPU 수만큼 프로세스를 띄워 보스전의 수치를 봇과의 대전으로 맞춘다 | `fork`, 파이프, `mmap(MAP_SHARED)`, `waitpid(WNOHANG)`, `sysconf` |
 | 마우스 장치 | `client --mouse-dev=/dev/input/eventN`은 마우스의 움직임을 장치 파일에서 직접 읽는다(리눅스로 부팅한 컴퓨터) | `/dev/input`의 `struct input_event`, `ioctl(EVIOCGNAME)` |
+
+**코드에서 찾는 곳**
+
+| 무엇 | 파일과 함수 |
+|---|---|
+| 접속 받기, 접속마다의 읽기와 쓰기 | `core/server.c`의 `accept_main`, `reader_main`, `writer_main` |
+| 사건 큐와 게임 마스터 | `core/server.c`의 `ev_push`, `game_master` |
+| 시그널 전담 스레드, 주기 타이머 | `core/server.c`의 `signal_main`, `tick_by_timer`, `main`의 `setitimer` |
+| 스테이지 프로세스 띄우기와 파이프 | `core/server.c`의 `stage_spawn`, 스테이지 쪽은 `core/stage_host.c`, `core/host_pipe.c` |
+| 뇌 프로세스 띄우기, 감시, 다시 띄우기 | `core/brain_sup.c` |
+| 공유 메모리와 세마포어, seqlock | `brain/brain_shm.c`, `brain/brain_shm.h` |
+| 뉴런 발화 계산 | `brain/lif.c` |
+| 랭킹 파일 (잠금, fsync, rename) | `core/ranking.c`의 `ranking_append`, `compact`, `open_locked` |
+| 터미널 원시 입력, 창 크기 (SIGWINCH) | `ui/term.c` |
+| 클라이언트의 스레드 | `core/client.c`의 `recv_main`(수신), `input_main`(입력), `run_screen`(그리기), `writer_main`(터미널에 내보내기) |
+| 재접속 | `core/server.c`의 `on_join`, `away_check`, `core/client.c`의 `rejoin` |
+| 서버 찾기 (UDP) | `core/server.c`의 `find_main`, `core/client.c`의 `find_server` |
+| 관리 창구 (FIFO), 데몬, 자원 사용량 | `core/server.c`의 `ctl_main`, `daemonize`, `log_rusage` |
+| 병렬 훈련 | `tools/bossbot.c`의 `train` |
+| 마우스 장치 | `core/client.c`의 `mouse_open`, `mouse_read` |
+| 보스전의 규칙, 초파리의 몸 | `boss/boss.c`, `boss/body.c` |
 
 고장 상황은 `make test-fail`이 일부러 만들어 본다(스테이지 죽이기, 접속 끊기, 잘못된 메시지, 뇌 죽이기와 멈추기 등).
 
