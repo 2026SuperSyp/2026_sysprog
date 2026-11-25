@@ -12,7 +12,7 @@ L=build/logs
 [ -x $B/stage_$STAGE ] || { echo "실패: $B/stage_$STAGE 가 없습니다. 먼저 make all"; exit 1; }
 mkdir -p $L
 LOG=$L/stage_$STAGE.log
-before=$(wc -l < $LOG 2>/dev/null || echo 0)
+before=$( (wc -l < $LOG) 2>/dev/null || echo 0)       # 로그가 아직 없으면 0
 
 timeout 120 $B/server --port=$PORT --fast --once --seed=1 --order=$STAGE --rounds=2 --boss=0 --brain=$BRAIN \
     --ranking=$L/stage_test_ranking.txt > $L/stage_test_server.log 2>&1 &
