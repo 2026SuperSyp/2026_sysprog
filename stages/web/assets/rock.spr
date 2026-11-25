@@ -1,0 +1,9 @@
+; 돌 위에 얹는 무늬
+size 12 6
+palette . C_NONE  g C_GRAY2  d C_GRAY1  w C_WHITE
+..gggggggg..
+.gggwggggdg.
+ggggggggdddg
+gggggggddddg
+.ggddddddd..
+..dddddddd..
