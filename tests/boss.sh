@@ -71,14 +71,14 @@ case_a() {
 
 case_b() {
     why=""
-    server b $((PORT + 1)) --once --boss=30 || why="$why 서버가 뜨지 않음"
+    server b $((PORT + 1)) --once --boss=30 --rejoin-ms=200 || why="$why 서버가 뜨지 않음"
     bot b $((PORT + 1)) GONE1; b1=$LAST
     sleep 0.2
     bot b $((PORT + 1)) GONE2; b2=$LAST
     wait_line $L/boss_b_server.log "보스전 시작" 30 || why="$why 보스전이 시작되지 않음"
     kill -9 $b1 $b2 2>/dev/null
     wait $b1 $b2 2>/dev/null
-    sleep 0.5                                        # 서버가 로비로 돌아갈 틈
+    sleep 0.8                                        # 서버가 끊긴 사람을 기다리다(0.2초) 로비로 돌아갈 틈
     kill -0 $SV 2>/dev/null || why="$why 모두 나가자 서버가 끝남"
     bot b $((PORT + 1)) NEW1; n1=$LAST
     sleep 0.2

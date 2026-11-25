@@ -11,7 +11,8 @@
 
 #include <stdint.h>
 
-#define PROTO_VERSION    6             /* 6: 보스전 초파리의 나는 자세와 벽에 붙기(boss_snap_t에 높이, 기울기).
+#define PROTO_VERSION    7             /* 7: 재접속(HELLO와 WELCOME에 세션 토큰).
+                                        * 6: 보스전 초파리의 나는 자세와 벽에 붙기(boss_snap_t에 높이, 기울기).
                                         * 5: 보스전 초파리의 다리(boss_snap_t에 걸음의 위상과 크기).
                                         * 4: 보스전의 먹이(boss_snap_t에 놓인 먹이와 먹는 상태).
                                         * 3: 보스전의 키(스페이스 뛰기, E 쓰기, R 막기), boss_snap_t의 막기와 높이.
@@ -56,11 +57,17 @@ typedef struct {
     uint16_t version;                  /* PROTO_VERSION */
     uint16_t peek;                     /* 1이면 역대 순위(MSG_TOP)만 받고 끊는다. 자리에 앉지 않는다 */
     char     name[PROTO_NAME_LEN];
+    uint8_t  pad[4];
+    uint64_t token;                    /* 재접속: 전에 받은 세션 토큰. 처음 들어오는 것이면 0 */
 } hello_msg_t;
-
+/* 세션 토큰은 서버가 접속마다 무작위로 만들어 그 사람에게만 알려 주는 수다. 게임 도중에 접속이 끊긴 사람이 다시 들어오며
+ * 이 수를 대면, 서버는 그 사람이 앉아 있던 자리(점수, 남은 기회, 이번 라운드의 칸)를 돌려준다. 남이 이름만 대고
+ * 그 자리에 앉을 수는 없다. 새 접속에는 새 토큰을 주고, 다음 재접속에는 그것을 쓴다 */
 typedef struct {
     uint16_t version;
     uint16_t slot;                     /* 서버가 준 접속 번호 */
+    uint8_t  pad[4];
+    uint64_t token;                    /* 이 접속의 세션 토큰 */
 } welcome_msg_t;
 
 /* 단계가 바뀔 때 클라이언트가 화면을 그리는 데 필요한 것을 한 번에 싣는다. */

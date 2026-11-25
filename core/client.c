@@ -62,6 +62,15 @@
 #define LOOK_SMOOTH_MS 45.0          /* 화면의 시선이 정한 방향을 따라가는 빠르기. 글자 칸이 크면 마우스가 뚝뚝 끊겨 온다 */
 
 static int sock = -1;
+/* 재접속(아래 rejoin). 소켓은 수신 스레드만 바꾸고, 바꾸는 동안 입력 스레드가 쓰지 못하게 sock_mu로 지킨다 */
+#define REJOIN_TRIES  16             /* 다시 붙어 보는 횟수 */
+#define REJOIN_GAP_MS 500            /* 그 사이의 간격. 합쳐서 8초쯤: 서버가 자리를 남겨 두는 시간(10초)보다 짧다 */
+static pthread_mutex_t sock_mu = PTHREAD_MUTEX_INITIALIZER;
+static const char *srv_host = "127.0.0.1";
+static int srv_port = PROTO_PORT;
+static char my_name[PROTO_NAME_LEN];
+static uint64_t my_token;            /* 서버가 준 세션 토큰. 다시 붙을 때 댄다 */
+static int rejoin_count;
 static int view_scale = 1;           /* --scale. 화면을 몇 배로 키워 터미널에 그리는가 */
 /* 화면을 픽셀 그림(Sixel)으로 보내는가(--gfx). 터미널이 받아 주면 그렇게 하고, 아니면 글자 칸으로 보낸다.
  * 그림의 크기는 240x134의 hd_n배이고 창 크기에 맞춰 hd_cap 이하에서 고른다. 입력 스레드도 hd_n을 읽는다 */
@@ -98,6 +107,7 @@ static struct {
     int jump_queued;                 /* 내려서기 직전에 또 눌렀다: 내려서자마자 다시 뛴다 */
     int watch;                       /* 오른쪽 위에 볼 칸. WATCH_FLY이면 키보드 치는 초파리 */
     int dirty, quit;
+    int rejoining;                   /* 접속이 끊겨 다시 붙는 중이다 */
     char why[96];                    /* 끝난 이유 */
 } S = { .mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER, .watch = WATCH_FLY };
 
@@ -139,6 +149,56 @@ static int connect_to(const char *host, int port)
     return fd;
 }
 
+/* 서버로 보낸다. 실패해도 0을 돌려준다: 접속이 끊긴 것은 수신 스레드가 알아채고 다시 붙인다(rejoin). 그동안의 입력은
+ * 버려진다. 다시 붙지 못하면 수신 스레드가 프로그램을 끝낸다 */
+static int net_send(uint8_t type, uint8_t flags, uint16_t slot, const void *body, uint32_t len)
+{
+    pthread_mutex_lock(&sock_mu);
+    (void)msg_send(sock, type, flags, slot, body, len);
+    pthread_mutex_unlock(&sock_mu);
+    return 0;
+}
+
+/* 재접속. 게임 도중에 서버와의 접속이 끊겼을 때 수신 스레드가 부른다. 새 소켓으로 다시 붙어서 전에 받은 세션 토큰을
+ * 댄다. 서버가 그 토큰의 자리를 아직 남겨 두고 있으면 점수와 기회를 그대로 이어받는다. 0이면 다시 붙었다 */
+static int rejoin(void)
+{
+    if (my_token == 0) return -1;                    /* 자리를 받기도 전에 끊겼다 */
+    pthread_mutex_lock(&S.mu);
+    S.rejoining = 1;
+    S.dirty = 1;
+    pthread_cond_broadcast(&S.cv);
+    pthread_mutex_unlock(&S.mu);
+    int ok = -1;
+    for (int k = 0; k < REJOIN_TRIES && ok != 0; k++) {
+        pthread_mutex_lock(&S.mu);
+        int quit = S.quit;
+        pthread_mutex_unlock(&S.mu);
+        if (quit) break;
+        int fd = connect_to(srv_host, srv_port);
+        hello_msg_t hello = { .version = PROTO_VERSION, .token = my_token };
+        memcpy(hello.name, my_name, sizeof hello.name);
+        if (fd >= 0 && msg_send(fd, MSG_HELLO, 0, 0, &hello, sizeof hello) == 0) {
+            pthread_mutex_lock(&sock_mu);
+            int old = sock;
+            sock = fd;
+            pthread_mutex_unlock(&sock_mu);
+            close(old);
+            rejoin_count++;
+            ok = 0;
+        } else {
+            if (fd >= 0) close(fd);
+            usleep(REJOIN_GAP_MS * 1000);
+        }
+    }
+    pthread_mutex_lock(&S.mu);
+    S.rejoining = 0;
+    S.dirty = 1;
+    pthread_cond_broadcast(&S.cv);
+    pthread_mutex_unlock(&S.mu);
+    return ok;
+}
+
 /* 내가 이번 라운드에 보는 칸. 뛰고 있으면 내 칸, 아니면 0번 칸을 본다. */
 static int view_pane(const phase_msg_t *ph)
 {
@@ -154,7 +214,17 @@ static void *recv_main(void *arg)
     (void)arg;
     for (;;) {
         int r = msg_recv(sock, &h, body, sizeof body);
-        if (r != 1) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
+        if (r != 1) {
+            if (rejoin() == 0) continue;                 /* 다시 붙었다. 서버가 지금 상태를 새로 보내 준다 */
+            quit_with("서버와의 접속이 끊겼습니다");
+            return NULL;
+        }
+        if (h.type == MSG_WELCOME && h.len == sizeof(welcome_msg_t)) {
+            welcome_msg_t wm;
+            memcpy(&wm, body, sizeof wm);
+            my_token = wm.token;
+            continue;
+        }
         if (h.type == MSG_PHASE && h.len == sizeof(phase_msg_t)) {
             pthread_mutex_lock(&S.mu);
             int was = S.have_phase ? S.ph.phase : -1;
@@ -336,14 +406,14 @@ static int look_send(int now)
     pthread_mutex_unlock(&S.mu);
     look.unsent = 0;
     look.sent_at = now_ms();
-    return msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m);
+    return net_send(MSG_INPUT, 0, 0, &m, sizeof m);
 }
 
 static int send_boss_key(uint16_t code)
 {
     input_msg_t m = { .kind = IN_KEY, .code = code };
     if (look_send(1) != 0) return -1;                /* 무기는 지금 보는 방향으로 써야 한다 */
-    return msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m);
+    return net_send(MSG_INPUT, 0, 0, &m, sizeof m);
 }
 
 /* ---- 누르고 있는 이동 키 ----------------------------------------------------------------
@@ -383,7 +453,7 @@ static int held_send(void)
         if (!held.on[i]) continue;
         input_msg_t m = { .kind = IN_KEY, .flags = (uint8_t)(held.shift ? IN_F_SHIFT : 0),
                           .code = (uint16_t)(held.shift ? keys[i] - 32 : keys[i]) };
-        if (msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m) != 0) return -1;
+        if (net_send(MSG_INPUT, 0, 0, &m, sizeof m) != 0) return -1;
     }
     return 0;
 }
@@ -399,7 +469,7 @@ static void *input_main(void *arg)
         /* 가만히 있어도 서버가 끊지 않게 2초마다 알린다. 소켓에 쓰는 것은 이 스레드뿐이다 */
         if (now_ms() - pinged >= 2000) {
             pinged = now_ms();
-            if (msg_send(sock, MSG_PING, 0, 0, NULL, 0) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
+            if (net_send(MSG_PING, 0, 0, NULL, 0) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
         }
         pthread_mutex_lock(&S.mu);
         int quit = S.quit, boss = S.have_phase && S.ph.phase == PH_BOSS;
@@ -477,7 +547,7 @@ static void *input_main(void *arg)
             } else if (ev.kind != IN_KEY) {
                 continue;
             }
-            if (msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
+            if (net_send(MSG_INPUT, 0, 0, &m, sizeof m) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
         }
         if (len == sizeof buf) len = 0;              /* 해석할 수 없는 바이트가 가득 찼다 */
     }
@@ -595,6 +665,7 @@ static void draw(canvas_t *full)
     const phase_msg_t *ph = &S.ph;
     double t = (double)(now_ms() - S.phase_at) / 1000.0;
     if (!S.have_phase) { scene_message(full, "CONNECTING...", C_TEXT); return; }
+    if (S.rejoining) { scene_message(full, "RECONNECTING...", C_YELLOW); return; }
 
     switch (ph->phase) {
     case PH_LOBBY: {
@@ -1031,10 +1102,10 @@ static int run_screen(void)
 static void send_key(uint16_t code)
 {
     input_msg_t m = { .kind = IN_KEY, .code = code };
-    msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m);
+    net_send(MSG_INPUT, 0, 0, &m, sizeof m);
 }
 
-static int run_bot(int wait_players)
+static int run_bot(int wait_players, int drop_at)
 {
     static uint8_t body[PROTO_MAX_LEN];
     msg_hdr_t h;
@@ -1044,8 +1115,21 @@ static int run_bot(int wait_players)
     for (;;) {
         /* 올 것이 없으면 1초마다 PING을 보낸다(서버가 말 없는 접속을 끊는다) */
         struct pollfd pf = { sock, POLLIN, 0 };
-        if (poll(&pf, 1, 1000) == 0) { msg_send(sock, MSG_PING, 0, 0, NULL, 0); continue; }
-        if (msg_recv(sock, &h, body, sizeof body) != 1) { printf("BOT 접속이 끊겼습니다\n"); return 1; }
+        if (poll(&pf, 1, 1000) == 0) { net_send(MSG_PING, 0, 0, NULL, 0); continue; }
+        if (msg_recv(sock, &h, body, sizeof body) != 1) {
+            if (rejoin() == 0) { printf("BOT 다시 접속했습니다\n"); continue; }
+            printf("BOT 접속이 끊겼습니다\n");
+            return 1;
+        }
+        if (h.type == MSG_WELCOME && h.len == sizeof(welcome_msg_t)) {
+            welcome_msg_t wm;
+            memcpy(&wm, body, sizeof wm);
+            my_token = wm.token;
+            continue;
+        }
+        /* 검사용(--drop-at=N): 화면을 N장 받았을 때 접속을 일부러 끊는다. 위의 재접속이 자리를 되찾아야 한다 */
+        if (drop_at > 0 && (h.type == MSG_FRAME || h.type == MSG_BOSS) && frames + boss_n == drop_at && rejoin_count == 0)
+            shutdown(sock, SHUT_RDWR);
         if (h.type == MSG_TOP && h.len == sizeof(top_msg_t)) top_n = body[offsetof(top_msg_t, n)];
         if (h.type == MSG_FRAME) {
             if (++frames % 4 == 0) send_key(frames % 8 == 0 ? IN_K_LEFT : IN_K_RIGHT);
@@ -1080,7 +1164,7 @@ static int run_bot(int wait_players)
 int main(int argc, char **argv)
 {
     const char *host = "127.0.0.1", *name = "PLAYER";
-    int port = PROTO_PORT, bot = 0, wait_players = 1, no_title = 0, auto_scale = 0, scale_given = 0;
+    int port = PROTO_PORT, bot = 0, wait_players = 1, no_title = 0, auto_scale = 0, scale_given = 0, drop_at = 0;
     const char *gfx = "auto";
     setvbuf(stdout, NULL, _IOLBF, 0);
     for (int i = 1; i < argc; i++) {
@@ -1090,6 +1174,7 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--name=", 7) == 0)   name = a + 7;
         else if (strncmp(a, "--wait=", 7) == 0)   wait_players = atoi(a + 7);
         else if (strcmp(a, "--bot") == 0)         bot = 1;
+        else if (strncmp(a, "--drop-at=", 10) == 0) drop_at = atoi(a + 10);
         else if (strcmp(a, "--no-title") == 0)    no_title = 1;
         else if (strcmp(a, "--scale=auto") == 0)  auto_scale = 1;
         else if (strncmp(a, "--scale=", 8) == 0)  { view_scale = atoi(a + 8); scale_given = 1; }
@@ -1147,9 +1232,12 @@ int main(int argc, char **argv)
     boss_cfg_load(&boss_cfg, "boss/config.ini");     /* 뛰어오르기를 서버와 같은 수치로 그린다 */
     hello_msg_t hello = { .version = PROTO_VERSION };
     utf8_copy(hello.name, sizeof hello.name, name);
+    srv_host = host;
+    srv_port = port;
+    memcpy(my_name, hello.name, sizeof my_name);
     if (msg_send(sock, MSG_HELLO, 0, 0, &hello, sizeof hello) != 0) { if (!bot) term_leave(); return 1; }
 
-    if (bot) return run_bot(wait_players);
+    if (bot) return run_bot(wait_players, drop_at);
 
     S.fly = canvas_new(PANE_W, PANE_H);
     for (int p = 0; p < PROTO_PANES; p++) S.panes[p] = canvas_new(PANE_W, PANE_H);
