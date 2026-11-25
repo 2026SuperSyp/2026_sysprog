@@ -84,7 +84,7 @@ cd ~/2026_sysprog
 서버 한 대에 클라이언트가 접속한다. 3명까지 참가자이고 그 뒤로 들어온 사람은 관전자다.
 
 ```
-make server ORDER=example            (서버. ORDER에 스테이지 이름을 쉼표로 적는다)
+make server ORDER=example            (서버. ORDER에 스테이지 이름을 쉼표로 적는다. 빼면 example,swat,web 순서다)
 make client HOST=서버주소 NAME=이름  (접속. 같은 컴퓨터면 HOST를 빼도 된다)
 make demo-local                      (한 컴퓨터에서 서버, 봇 2명, 나 1명으로 한 판)
 ```

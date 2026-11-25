@@ -1356,7 +1356,10 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    if (opt.n_order == 0) { snprintf(opt.order[0], 32, "example"); opt.n_order = 1; }
+    if (opt.n_order == 0) {                          /* --order가 없을 때의 순서 */
+        static const char *const usual[] = { "example", "swat", "web" };
+        for (size_t i = 0; i < sizeof usual / sizeof usual[0]; i++) snprintf(opt.order[opt.n_order++], 32, "%s", usual[i]);
+    }
     if (opt.n_rounds < 1) opt.n_rounds = 1;
     if (opt.fast) opt.card_ms = opt.ready_ms = opt.verdict_ms = opt.rank_ms = 100;
 
