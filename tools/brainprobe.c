@@ -57,6 +57,48 @@ static void run_case(lif_t *l, const char *label, int ms, const stim_t *stims, i
            total / ticks, worst);
 }
 
+/* 그림용 기록(--dump=폴더): 행동마다 그 자극을 0.5초 넣고, 그동안 발화한 뉴런을 파일에 적는다.
+ * 첫 줄은 자극을 넣은 집단, 둘째 줄은 반응을 읽는 집단, 그 뒤는 "뉴런 번호 발화 수"다. tools/brain_fig.py가 그림으로 만든다 */
+static int dump_all(lif_t *l, const char *out_dir)
+{
+    static const struct { const char *name; const char *in[2]; float hz; const char *out[2]; } C[] = {
+        { "escape",   { "BR_LOOM_L", NULL },          150.0f, { "BR_ESCAPE", NULL } },
+        { "walk",     { "BR_OBJECT_L", NULL },        150.0f, { "BR_WALK_L", NULL } },
+        { "steer",    { "BR_OBJECT_L", NULL },        150.0f, { "BR_STEER_L", NULL } },
+        { "backward", { "BR_LOOM_L", "BR_LOOM_R" },   150.0f, { "BR_BACKWARD", NULL } },
+        { "feed",     { "BR_SUGAR", NULL },           120.0f, { "BR_FEED", NULL } },
+        { "airturn",  { "BR_LOOM_L", NULL },          150.0f, { "BR_AIRTURN_L", "BR_AIRTURN_R" } },
+        { "land",     { "BR_SURFACE_L", "BR_SURFACE_R" }, 75.0f, { "BR_LAND", NULL } },
+    };
+    for (size_t c = 0; c < sizeof C / sizeof C[0]; c++) {
+        char path[600];
+        const uint32_t *idx;
+        snprintf(path, sizeof path, "%s/%s.txt", out_dir, C[c].name);
+        FILE *f = fopen(path, "w");
+        if (!f) { perror(path); return 1; }
+        lif_reset(l, 7);
+        lif_stim_clear(l);
+        fprintf(f, "in");
+        for (int k = 0; k < 2 && C[c].in[k]; k++) {
+            int n = lif_group(l, C[c].in[k], &idx);
+            lif_stim_add(l, idx, n, C[c].hz);
+            fprintf(f, " %s", C[c].in[k]);
+        }
+        fprintf(f, "\nout");
+        for (int k = 0; k < 2 && C[c].out[k]; k++) fprintf(f, " %s", C[c].out[k]);
+        fprintf(f, "\n");
+        lif_run(l, 500 * LIF_STEPS_PER_MS);
+        uint32_t fired = 0;
+        for (uint32_t i = 0; i < lif_neurons(l); i++) {
+            uint32_t n = lif_count(l, i);
+            if (n > 0) { fprintf(f, "%u %u\n", i, n); fired++; }
+        }
+        fclose(f);
+        printf("%-9s 발화한 뉴런 %u개\n", C[c].name, fired);
+    }
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     char bin[512], groups[512];
@@ -65,6 +107,7 @@ int main(int argc, char **argv)
     snprintf(groups, sizeof groups, "%s/brain_groups.txt", dir);
     lif_t *l = lif_open(bin, groups);
     if (!l) return 1;
+    if (argc > 2 && strncmp(argv[2], "--dump=", 7) == 0) return dump_all(l, argv[2] + 7);
 
     printf("뉴런 %u개\n", lif_neurons(l));
     printf("%-26s %7s %7s %7s %7s %7s | %8s %7s | %6s %6s\n", "자극(초당 발화 수)",

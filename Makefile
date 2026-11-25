@@ -98,7 +98,7 @@ endif
 
 ALL_SRC := $(KIT_SRC) $(HOST_SRC) $(NET_SRC) $(SCREEN_SRC) $(TEST_SRC) $(STAGE_SRC) $(wildcard tools/*.c)
 
-.PHONY: test-stage brain-table bossbot boss-train all test run bot screen log termbench brain-data brain-groups brain-check brainprobe server client demo-local clean need-stage need-screen test-fail release
+.PHONY: test-stage brain-table bossbot boss-train brain-figs all test run bot screen log termbench brain-data brain-groups brain-check brainprobe server client demo-local clean need-stage need-screen test-fail release
 all: $(KIT_OBJ) $(STAGE_BIN) $(TOOL_BIN)
 
 # 발표용 빌드를 한 번에 만든다.
@@ -257,6 +257,13 @@ boss-train:
 brainprobe:
 	@$(MAKE) --no-print-directory $(B)/brainprobe
 	@$(B)/brainprobe data
+
+# 문서에 넣는 뇌 그림을 다시 만든다(docs/img/brain_*.png). 행동마다 자극을 넣어 발화한 뉴런을 기록하고, 뉴런의 위치에 찍는다
+brain-figs:
+	@$(MAKE) --no-print-directory $(B)/brainprobe
+	@mkdir -p build/figs
+	@$(B)/brainprobe data --dump=build/figs
+	@data/venv/bin/python3 tools/brain_fig.py data/raw data/brain_groups.txt build/figs docs/img
 
 # 섞은 배선(data/shuffled)이 없으면 만들고, 두 배선의 반응을 나란히 찍는다.
 .PHONY: brain-compare
