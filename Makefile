@@ -98,7 +98,7 @@ endif
 
 ALL_SRC := $(KIT_SRC) $(HOST_SRC) $(NET_SRC) $(SCREEN_SRC) $(TEST_SRC) $(STAGE_SRC) $(wildcard tools/*.c)
 
-.PHONY: test-stage brain-table bossbot all test run bot screen log termbench brain-data brain-groups brain-check brainprobe server client demo-local clean need-stage need-screen test-fail release
+.PHONY: test-stage brain-table bossbot boss-train brain-figs all test run bot screen log termbench brain-data brain-groups brain-check brainprobe server client demo-local clean need-stage need-screen test-fail release
 all: $(KIT_OBJ) $(STAGE_BIN) $(TOOL_BIN)
 
 # 발표용 빌드를 한 번에 만든다.
@@ -171,6 +171,7 @@ test: $(TEST_BIN) $(STAGE_BIN) $(B)/server $(B)/client $(B)/brain_proc
 	@SSP_BUILD=$(B) sh tests/brain.sh
 	@SSP_BUILD=$(B) sh tests/fallback.sh
 	@SSP_BUILD=$(B) sh tests/boss.sh
+	@SSP_BUILD=$(B) sh tests/rejoin.sh
 
 need-stage:
 	@if [ -z "$(STAGE)" ]; then echo "STAGE=이름 을 주세요. 있는 스테이지: $(STAGES)"; exit 2; fi
@@ -202,7 +203,7 @@ termbench:
 
 # 서버는 스테이지 실행 파일을 직접 띄우므로 먼저 전부 빌드한다.
 server: all brain-check
-	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example) --brain=$(or $(BRAIN),fast)
+	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example,swat,web) --brain=$(or $(BRAIN),fast)
 
 client: all
 	@$(B)/client --host=$(or $(HOST),127.0.0.1) --port=$(or $(PORT),4620) --name=$(or $(NAME),PLAYER); \
@@ -210,7 +211,7 @@ client: all
 
 demo-local: all brain-check
 	@mkdir -p build/logs
-	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example) --brain=$(or $(BRAIN),fast) \
+	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example,swat,web) --brain=$(or $(BRAIN),fast) \
 	    > build/logs/server.log 2>&1 & sv=$$!; sleep 0.5; \
 	 $(B)/client --bot --wait=3 --port=$(or $(PORT),4620) --name=BOT1 > build/logs/bot1.log 2>&1 & \
 	 sleep 0.2; $(B)/client --bot --wait=3 --port=$(or $(PORT),4620) --name=BOT2 > build/logs/bot2.log 2>&1 & \
@@ -247,9 +248,22 @@ bossbot:
 	@$(MAKE) --no-print-directory $(B)/bossbot
 	@$(B)/bossbot $(if $(filter real,$(BRAIN)),--brain=real)
 
+# 병렬 자가 대전 훈련: CPU 수만큼 프로세스를 띄워 보스전의 게임 규칙 수치를 봇과의 대전으로 맞춘다. 결과는 boss/trained.ini.
+# 옵션은 TRAIN="--gens=20 --target-sec=45" 처럼 준다. 되돌리려면 boss/trained.ini를 지운다
+boss-train:
+	@$(MAKE) --no-print-directory MODE=release build/release/bossbot
+	@build/release/bossbot --train $(if $(filter real,$(BRAIN)),--brain=real) $(TRAIN)
+
 brainprobe:
 	@$(MAKE) --no-print-directory $(B)/brainprobe
 	@$(B)/brainprobe data
+
+# 문서에 넣는 뇌 그림을 다시 만든다(docs/img/brain_*.png). 행동마다 자극을 넣어 발화한 뉴런을 기록하고, 뉴런의 위치에 찍는다
+brain-figs:
+	@$(MAKE) --no-print-directory $(B)/brainprobe
+	@mkdir -p build/figs
+	@$(B)/brainprobe data --dump=build/figs
+	@data/venv/bin/python3 tools/brain_fig.py data/raw data/brain_groups.txt build/figs docs/img
 
 # 섞은 배선(data/shuffled)이 없으면 만들고, 두 배선의 반응을 나란히 찍는다.
 .PHONY: brain-compare

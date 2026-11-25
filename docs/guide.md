@@ -2,6 +2,22 @@
 
 스테이지(미니게임)와 화면을 만들 때 필요한 것만 적었다. 자세한 약속은 `include/`의 헤더 주석과 `docs/skeleton-design.md` 6장에 있다.
 
+## 11/25에 바뀐 것
+
+- 보스전의 초파리가 다리로 걷고, 날면서 몸을 기울여 방향을 꺾고, 벽이 다가오면 그 벽에 붙는다. 스테이지 코드와는 무관하다.
+- `brain.h`의 끝에 보스전용 항목이 붙었다. 스테이지가 쓰는 항목과 함수 세 개는 그대로다.
+- 진짜 뇌를 쓰는 사람은 `git pull` 뒤에 `make brain-groups`를 한 번 돌린다(몇 초). `make server BRAIN=real`과 `make demo-local BRAIN=real`은 알아서 한다.
+- 서버와 클라이언트는 같은 커밋으로 다시 빌드한다(통신 규격 버전 7).
+- 재접속: 게임 도중에 접속이 끊기면 클라이언트가 스스로 다시 붙고, 10초 안이면 점수와 기회를 그대로 이어받는다. 서버의 `--rejoin-ms=N`으로 기다리는 시간을 바꾼다(0이면 끊기는 즉시 나간 것으로 한다).
+- 훈련: `make boss-train`이 CPU 수만큼 프로세스를 띄워 보스전의 게임 규칙 수치를 봇과의 대전으로 맞추고 `boss/trained.ini`에 쓴다. 그 파일이 있으면 게임이 설정 위에 덧씌운다. 되돌리려면 그 파일을 지운다. 목표는 `TRAIN="--target-sec=45 --target-win=70 --gens=20"`처럼 준다.
+- 마우스 장치: 리눅스로 부팅한 컴퓨터에서는 `client --mouse-dev=/dev/input/eventN`으로 보스전의 시선을 마우스 장치에서 직접 읽을 수 있다(읽을 권한 필요. WSL에서는 안 된다).
+- 에어팟: `client --airpods=블루투스주소`로 에어팟 프로(2, 3)의 머리 움직임을 읽어 보스전의 시선을 돌린다. 먼저 리눅스에서 에어팟을 짝짓고 접속해 둔다(`bluetoothctl`에서 `pair 주소`, `connect 주소`). 귀에 꽂아야 값이 온다. 처음에는 `client --airpods=주소 --airpods-test`로 5초 동안 값이 오는지, 오른쪽으로 돌릴 때 각도가 양수인지 본다. 음수로 나오면 `--airpods-gain=-3`처럼 배율을 음수로 준다(기본 3: 고개 60도에 반 바퀴). 애플이 공개하지 않은 통로라서 공개된 분석 문서의 패킷 구성을 보고 직접 썼고(출처는 `ui/airpods.c`의 맨 위), **실물로는 아직 확인하지 못했다.** 리눅스에 블루투스 장치가 있어야 하므로 WSL에서는 어댑터를 넘겨 줘야 한다.
+- 창 크기가 바뀌면 SIGWINCH로 알아채고, 랭킹 파일은 fsync와 rename으로 전원이 나가도 남게 쓴다.
+- 서버 찾기: `client --host=auto`가 같은 망에 UDP 브로드캐스트로 물어 서버의 주소를 알아낸다. 주소를 몰라도 된다.
+- 관리 창구: 서버가 뜨면 `/tmp/ssp_ctl_포트`라는 이름 있는 파이프가 생긴다. 다른 터미널에서 `echo status > /tmp/ssp_ctl_4620`처럼 쓴다. 명령은 `status`(상태를 로그에), `boss`(보스전으로 건너뜀), `lobby`(로비로), `quit`(끝냄)이다.
+- 데몬: `server --daemon [--log=파일] [--pid=파일]`은 터미널에서 떨어져 뒤에서 돈다. 로그는 `build/logs/server.log`, pid는 `build/server.pid`에 있다. 끝내려면 `echo quit > /tmp/ssp_ctl_포트` 또는 `kill $(cat build/server.pid)`.
+- 서버의 틱은 주기 타이머(setitimer, SIGALRM)가 박자를 준다. 한 판이 끝나면 쓴 CPU 시간과 메모리(getrusage)를 로그에 찍는다. `server --nice=N`은 우선순위를 낮춘다.
+
 ## 11/24에 바뀐 것 (스테이지를 만드는 사람은 꼭 읽기)
 
 **할 일**
@@ -68,7 +84,7 @@ cd ~/2026_sysprog
 서버 한 대에 클라이언트가 접속한다. 3명까지 참가자이고 그 뒤로 들어온 사람은 관전자다.
 
 ```
-make server ORDER=example            (서버. ORDER에 스테이지 이름을 쉼표로 적는다)
+make server ORDER=example            (서버. ORDER에 스테이지 이름을 쉼표로 적는다. 빼면 example,swat,web 순서다)
 make client HOST=서버주소 NAME=이름  (접속. 같은 컴퓨터면 HOST를 빼도 된다)
 make demo-local                      (한 컴퓨터에서 서버, 봇 2명, 나 1명으로 한 판)
 ```

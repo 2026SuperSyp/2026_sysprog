@@ -123,7 +123,8 @@ int  present_cell_to_screen_scaled(int cols, int rows, int scale, int cell_x, in
 /* ---- 터미널 (term.c) ---- */
 int  term_enter(void);           /* 원시 입력, 대체 화면, 커서 숨김, 마우스 보고를 켠다. 0이면 성공 */
 void term_leave(void);           /* 전부 되돌린다. 여러 번 불러도 된다 */
-int  term_size(int *cols, int *rows);
+int  term_size(int *cols, int *rows);   /* 터미널의 칸 수. 크기가 바뀌었을 때(SIGWINCH)만 커널에 다시 묻는다. 터미널이 아니면 -1 */
+int  term_size_asked(void);             /* 커널에 물은 횟수(검사용) */
 /* 터미널이 할 수 있는 것. term_enter가 터미널에 물어서 채운다(답이 없으면 sixel은 0이고 칸은 10x20으로 둔다) */
 typedef struct {
     int sixel;                   /* Sixel 그림을 받는다 */

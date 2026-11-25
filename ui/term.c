@@ -5,6 +5,7 @@
 #include "ui/ui_internal.h"
 
 #include <poll.h>
+#include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -115,11 +116,50 @@ int term_enter(void)
     return 0;
 }
 
+/* 터미널의 크기. 창 크기가 바뀌면 커널이 SIGWINCH를 보낸다. 핸들러는 표시만 세우고(size_stale), 크기를 실제로
+ * 다시 묻는 것(ioctl)은 다음에 term_size를 부른 스레드가 한다. 그래서 그리는 쪽이 프레임마다 불러도 크기가 바뀌지
+ * 않은 동안은 시스템 호출이 없다. SA_RESTART를 줘서 이 신호 때문에 다른 스레드의 read가 끊기지 않게 한다 */
+static volatile sig_atomic_t size_stale = 1;
+static pthread_mutex_t size_mu = PTHREAD_MUTEX_INITIALIZER;
+static int size_hooked, size_cols, size_rows, size_asked;
+
+static void on_winch(int sig)
+{
+    (void)sig;
+    size_stale = 1;
+}
+
 int term_size(int *cols, int *rows)
 {
-    struct winsize ws;
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0 || ws.ws_col == 0) return -1;
-    *cols = ws.ws_col;
-    *rows = ws.ws_row;
-    return 0;
+    int rc = 0;
+    pthread_mutex_lock(&size_mu);
+    if (!size_hooked) {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof sa);
+        sa.sa_handler = on_winch;
+        sa.sa_flags = SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGWINCH, &sa, NULL);
+        size_hooked = 1;
+    }
+    if (size_stale) {
+        struct winsize ws;
+        size_stale = 0;                              /* 묻는 사이에 또 바뀌면 핸들러가 다시 세운다 */
+        size_asked++;
+        if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0 || ws.ws_col == 0) {
+            size_stale = 1;                          /* 터미널이 아니다. 다음에 다시 물어본다 */
+            rc = -1;
+        } else {
+            size_cols = ws.ws_col;
+            size_rows = ws.ws_row;
+        }
+    }
+    if (rc == 0) {
+        *cols = size_cols;
+        *rows = size_rows;
+    }
+    pthread_mutex_unlock(&size_mu);
+    return rc;
 }
+
+int term_size_asked(void) { return size_asked; }

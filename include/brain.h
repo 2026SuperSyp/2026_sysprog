@@ -32,6 +32,9 @@ typedef enum {
     BR_OBJECT_L, BR_OBJECT_R,    /* 입력: 왼쪽, 오른쪽에 물체가 보인다(물체를 보는 시각 뉴런 LC9) */
     BR_WALK_L, BR_WALK_R,        /* 출력: 앞으로 걸어라(명령 뉴런 DNp09). 한쪽만 세면 그쪽으로 휘어 걷는다 */
     BR_STEER_L, BR_STEER_R,      /* 출력: 왼쪽, 오른쪽으로 돌아라(명령 뉴런 DNa02) */
+    /* 보스전용: 떠 있는 동안. BR_LAND(위)는 착지 명령 뉴런 DNp07의 반응이다 */
+    BR_SURFACE_L, BR_SURFACE_R,  /* 입력: 날아가는 쪽 왼쪽, 오른쪽에 면(벽)이 다가온다(시각 뉴런 LPLC4) */
+    BR_AIRTURN_L, BR_AIRTURN_R,  /* 출력: 날면서 왼쪽, 오른쪽으로 꺾어라(명령 뉴런 DNp06) */
     BRAIN_GROUP_COUNT            /* 새 항목은 이 줄 바로 앞에만 추가한다 */
 } brain_group_t;
 

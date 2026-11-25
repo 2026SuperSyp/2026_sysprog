@@ -301,6 +301,196 @@ static void test_hurt(void)
     T_CHECK(S.fly.windup > 0);
 }
 
+/* 떠 있는 동안: 뇌의 꺾기 명령만큼 날아가는 방향이 돌고, 착지 명령이 기준을 넘으면 그 벽으로 가서 붙는다.
+ * 날아가는 쪽의 벽은 떠 있을 때만 면 자극으로 들어간다 */
+static void test_flight(void)
+{
+    boss_cfg_t c = calm();
+    float r[BRAIN_GROUP_COUNT] = { 0 }, stim[BRAIN_GROUP_COUNT];
+    c.air_ticks = 30;                                             /* 벽까지 날아갈 만큼 길게 */
+    setup(&c, 1);
+    put_player(0, 16.0f, 16.0f, NORTH);
+    put_fly(8.0f, 9.0f);
+    S.fly.ang = 0.0f;                                             /* 오른쪽(+x)을 본다. 벽은 9칸 앞이다 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_SURFACE_L] == 0.0f && stim[BR_SURFACE_R] == 0.0f);    /* 땅에서는 면 자극이 없다 */
+    r[BR_ESCAPE] = 1.0f;
+    boss_tick(&S, r);                                             /* 앞(+x)으로 뛰어오른다 */
+    T_EQ_INT(count_ev(BOSS_EV_TAKEOFF), 1);
+    T_CHECK(S.fly.air_dx > 0.99f);
+    boss_stimulus(&S, stim);
+    float far_l = stim[BR_SURFACE_L];
+    T_CHECK(far_l > 0.0f && far_l < 0.2f);                         /* 벽이 멀다: 약하다 */
+
+    memset(r, 0, sizeof r);
+    r[BR_AIRTURN_R] = 1.0f;                                       /* 오른쪽으로 꺾어라 */
+    boss_tick(&S, r);
+    float per_tick = c.air_turn_deg_s * 3.14159265f / 180.0f * c.air_turn_scale / 20.0f;
+    T_CHECK(fabsf(atan2f(S.fly.air_dy, S.fly.air_dx) - per_tick) < 1e-3f);
+    T_CHECK(fabsf(S.fly.ang - per_tick) < 1e-3f);                  /* 몸도 같이 돈다 */
+    r[BR_AIRTURN_R] = 0.0f;
+    r[BR_AIRTURN_L] = 1.0f;
+    boss_tick(&S, r);
+    T_CHECK(fabsf(S.fly.air_dy) < 1e-3f);                          /* 왼쪽으로 같은 만큼: 제자리 */
+
+    memset(r, 0, sizeof r);                                       /* 벽 가까이 가면 면 자극이 세진다 */
+    while (S.fly.air > c.air_land_ticks + 1 && S.fly.x < 13.0f) boss_tick(&S, r);
+    T_CHECK(S.fly.air > c.air_land_ticks + 1);
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_SURFACE_L] > far_l + 0.1f && fabsf(stim[BR_SURFACE_L] - stim[BR_SURFACE_R]) < 0.05f);
+
+    r[BR_LAND] = c.land_level - 0.01f;                            /* 기준에 못 미치면 그대로 난다 */
+    int left = S.fly.air;
+    boss_tick(&S, r);
+    T_EQ_INT(S.fly.air, left - 1);
+    T_EQ_INT(count_ev(BOSS_EV_DESCEND), 0);
+    r[BR_LAND] = 1.0f;                                            /* 착지 명령: 다리를 뻗고 속도를 줄여 그 벽으로 간다 */
+    float before = S.fly.x;
+    boss_tick(&S, r);
+    T_EQ_INT(count_ev(BOSS_EV_DESCEND), 1);
+    T_CHECK(S.fly.land_cmd && !S.fly.perch);
+    T_EQ_INT(S.fly.air, c.approach_ticks);
+    before = S.fly.x;
+    boss_tick(&S, r);
+    T_CHECK(S.fly.x - before < 0.45f);                             /* 느려졌다(보통은 한 틱에 0.63칸) */
+    int landed = 0;
+    for (int k = 0; k < c.approach_ticks && S.fly.air > 0; k++) { boss_tick(&S, r); landed += count_ev(BOSS_EV_LAND); }
+    T_EQ_INT(landed, 1);
+    T_EQ_INT(S.fly.air, 0);
+    T_CHECK(S.fly.perch);                                         /* 벽에 붙었다. 머리가 벽 쪽이고 몸이 벽에 닿아 있다 */
+    T_CHECK(fabsf(S.fly.ang) < 1e-3f);
+    T_CHECK(boss_solid(&S, (int)floorf(S.fly.x + c.fly_radius + 0.05f), (int)floorf(S.fly.y)));
+    T_CHECK(S.fly.z > 0.3f);
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_SURFACE_L] == 0.0f);
+
+    memset(r, 0, sizeof r);                                       /* 붙어 있는 동안은 걷기 명령이 있어도 한동안 머문다 */
+    r[BR_WALK_L] = r[BR_WALK_R] = 1.0f;
+    float px = S.fly.x, py = S.fly.y;
+    ticks(c.perch_min_ticks - 1, r);
+    T_CHECK(S.fly.perch && S.fly.x == px && S.fly.y == py);
+    T_CHECK(S.fly.pitch > 1.5f && fabsf(S.fly.z - c.perch_height) < 0.01f);    /* 머리가 위를 본다. 벽의 그 높이에 앉아 있다 */
+    boss_tick(&S, r);                                             /* 그 뒤에는 내려와서 방 쪽을 본다 */
+    T_CHECK(!S.fly.perch && cosf(S.fly.ang) < -0.9f);
+    ticks(10, r);
+    T_CHECK(S.fly.x < px - 0.3f && S.fly.z == 0.0f && fabsf(S.fly.pitch) < 0.05f);
+
+    setup(&c, 1);                                                 /* 벽에서 뛰어오르면 벽을 차고 방 쪽으로 나온다 */
+    put_player(0, 2.0f, 2.0f, NORTH);
+    put_fly(17.0f - c.fly_radius, 9.0f);
+    S.fly.ang = 0.0f;
+    S.fly.perch = 1;
+    S.fly.z = 1.0f;
+    memset(r, 0, sizeof r);
+    r[BR_ESCAPE] = 1.0f;
+    r[BR_TURN_R] = 1.0f;                                          /* 옆으로 피하는 쪽은 그대로다 */
+    boss_tick(&S, r);
+    T_EQ_INT(count_ev(BOSS_EV_TAKEOFF), 1);
+    T_CHECK(!S.fly.perch && S.fly.air_dx < -0.5f && S.fly.air_dy > 0.5f);
+
+    c.approach_ticks = 2;                                         /* 시간 안에 벽에 닿지 못하면 바닥에 내려앉는다 */
+    setup(&c, 1);
+    put_player(0, 16.0f, 16.0f, NORTH);
+    put_fly(3.0f, 9.0f);
+    S.fly.ang = 0.0f;
+    memset(r, 0, sizeof r);
+    r[BR_ESCAPE] = 1.0f;
+    r[BR_LAND] = 1.0f;
+    landed = 0;
+    for (int k = 0; k < 12 && (k == 0 || S.fly.air > 0); k++) { boss_tick(&S, r); landed += count_ev(BOSS_EV_LAND); r[BR_ESCAPE] = 0.0f; }
+    T_EQ_INT(landed, 1);
+    T_CHECK(!S.fly.perch && S.fly.air == 0 && S.fly.x < 12.0f);
+    c.approach_ticks = 14;
+
+    setup(&c, 1);                                                 /* 꺾는 동안은 도는 쪽으로 몸을 기울인다 */
+    put_player(0, 16.0f, 16.0f, NORTH);
+    put_fly(4.0f, 9.0f);
+    S.fly.ang = 0.0f;
+    memset(r, 0, sizeof r);
+    r[BR_ESCAPE] = 1.0f;
+    boss_tick(&S, r);
+    T_CHECK(S.fly.pitch > 0.1f && S.fly.z > 0.3f);                  /* 솟으면서 머리를 든다 */
+    r[BR_ESCAPE] = 0.0f;
+    r[BR_AIRTURN_R] = 1.0f;
+    ticks(3, r);
+    T_CHECK(S.fly.roll > 0.5f);
+    r[BR_AIRTURN_R] = 0.0f;
+    r[BR_AIRTURN_L] = 1.0f;
+    ticks(4, r);
+    T_CHECK(S.fly.roll < -0.5f);
+    boss_snap_t snap;
+    boss_snapshot(&S, &snap);
+    T_CHECK(snap.fly.roll < -40 && snap.fly.z > 50 && !(snap.fly.pose & BOSS_POSE_PERCH));
+
+    setup(&c, 1);                                                 /* 뛰어오른 직후에는 착지 명령이 있어도 내려앉지 않는다 */
+    put_player(0, 16.0f, 16.0f, NORTH);
+    put_fly(4.0f, 9.0f);
+    S.fly.ang = 0.0f;
+    memset(r, 0, sizeof r);
+    r[BR_ESCAPE] = 1.0f;
+    r[BR_LAND] = 1.0f;
+    boss_tick(&S, r);
+    for (int k = 0; k < c.air_min_ticks - 1; k++) { boss_tick(&S, r); T_EQ_INT(count_ev(BOSS_EV_DESCEND), 0); }
+    boss_tick(&S, r);
+    T_EQ_INT(count_ev(BOSS_EV_DESCEND), 1);
+}
+
+/* 날아오는 끈끈이는 다가옴 자극이다. 비껴 가거나 멀어지는 것은 아니다. 붙어 있는 동안 뇌의 달아남 출력이 기준을
+ * 넘으면 끈끈이가 더 빨리 떨어진다. 날다가 붙으면 그 자리에 떨어진다 */
+static void test_trap_seen(void)
+{
+    boss_cfg_t c = calm();
+    float r[BRAIN_GROUP_COUNT] = { 0 }, stim[BRAIN_GROUP_COUNT];
+    setup(&c, 1);
+    put_player(0, 16.0f, 16.0f, NORTH);
+    put_fly(8.5f, 9.0f);
+    S.fly.ang = 0.0f;                                             /* 오른쪽(+x)을 본다 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_L] == 0.0f && stim[BR_LOOM_R] == 0.0f);
+
+    S.proj[0] = (boss_proj_t){ 1, 0, 8.5f, 9.0f - 2.0f, 0.0f, c.trap_speed, 5.0f };      /* 왼쪽 옆에서 날아온다 */
+    boss_stimulus(&S, stim);
+    float near = stim[BR_LOOM_L];
+    T_CHECK(near > 0.4f && stim[BR_LOOM_R] == 0.0f);
+    S.proj[0].y = 9.0f - 3.5f;                                    /* 멀면 약하다 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_L] > 0.0f && stim[BR_LOOM_L] < near);
+    S.proj[0].y = 9.0f - c.fly_radius - c.trap_see - 0.5f;        /* 보이는 거리 밖 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_L] == 0.0f);
+    S.proj[0] = (boss_proj_t){ 1, 0, 8.5f, 9.0f - 2.0f, 0.0f, -c.trap_speed, 5.0f };     /* 멀어진다 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_L] == 0.0f);
+    S.proj[0] = (boss_proj_t){ 1, 0, 8.5f + 1.5f, 9.0f - 2.0f, 0.0f, c.trap_speed, 5.0f }; /* 1.5칸 옆으로 비껴 간다 */
+    boss_stimulus(&S, stim);
+    T_CHECK(stim[BR_LOOM_L] == 0.0f && stim[BR_LOOM_R] == 0.0f);
+    S.proj[0].on = 0;
+
+    S.fly.stun = 10;                                              /* 몸부림 */
+    boss_tick(&S, r);
+    T_EQ_INT(S.fly.stun, 9);
+    r[BR_ESCAPE] = c.takeoff_level;
+    boss_tick(&S, r);
+    T_EQ_INT(S.fly.stun, 9 - 1 - c.stun_struggle);
+    T_EQ_INT(count_ev(BOSS_EV_TAKEOFF), 0);                       /* 그래도 붙어 있는 동안은 뛰지 못한다 */
+    S.fly.stun = 1;
+    boss_tick(&S, r);
+    T_EQ_INT(S.fly.stun, 0);
+
+    setup(&c, 1);                                                 /* 날다가 붙으면 떨어진다 */
+    put_player(0, 16.0f, 16.0f, NORTH);
+    put_fly(8.5f, 9.0f);
+    S.fly.ang = 0.0f;
+    memset(r, 0, sizeof r);
+    r[BR_ESCAPE] = 1.0f;
+    boss_tick(&S, r);
+    T_CHECK(S.fly.air > 0);
+    S.proj[0] = (boss_proj_t){ 1, 0, S.fly.x + 1.0f, S.fly.y, -c.trap_speed, 0.0f, 5.0f };
+    ticks(2, still);
+    T_EQ_INT(S.fly.air, 0);
+    T_CHECK(S.fly.stun > 0);
+}
+
 /* 도약: 달아남 반응이 기준을 넘을 때만 뛴다. 방향은 뇌의 방향 반응을 따른다. 붙어 있으면 못 뛰고, 돌진도 끊는다 */
 static void test_takeoff(void)
 {
@@ -316,6 +506,7 @@ static void test_takeoff(void)
 
     put_fly(8.5f, 9.0f);
     S.fly.v = 0.0f;
+    S.fly.ang = 0.0f;                                             /* 위에서 한 틱 걸으며 몸이 조금 돌았을 수 있다 */
     r[BR_ESCAPE] = 1.0f;
     r[BR_BACKWARD] = 1.0f;                                        /* 앞에서 다가왔다: 뒤(-x)로 뛴다 */
     boss_tick(&S, r);
@@ -703,6 +894,8 @@ int main(void)
     test_dead_input();
     test_hurt();
     test_takeoff();
+    test_flight();
+    test_trap_seen();
     test_sneak();
     test_look_strafe();
     test_guard();

@@ -12,7 +12,6 @@
 /* 방의 높이. 계산부는 평면에서만 계산하고(뛰어오른 높이만 따로 가진다), 벽이 얼마나 높은가는 그리는 쪽의 일이다 */
 #define BOSS_VIEW_WALL_H   6.0f          /* 벽의 높이(칸). 천장이 이 높이에 있다. 방의 너비가 22칸이라 이보다 낮으면 납작해 보인다 */
 #define BOSS_VIEW_EYE_H    0.5f          /* 서 있을 때의 눈높이(칸). 뛰어오르면 그만큼 높아진다 */
-#define BOSS_VIEW_FLY_HOVER 0.45f        /* 초파리가 평소에 떠 있는 높이(칸, 발끝에서 바닥까지) */
 
 struct brain_map;                        /* brain/brain_host.h */
 struct image;                            /* ui/hd.h */

@@ -59,6 +59,12 @@ static void fake_targets(const float *s, float *t)
     t[BR_STEER_L] = clamp01(t[BR_TURN_L] + (ol > orr ? ol - orr : 0.0f));
     t[BR_STEER_R] = clamp01(t[BR_TURN_R] + (orr > ol ? orr - ol : 0.0f));
 
+    /* 떠 있는 동안(보스전): 다가오는 쪽의 반대로 꺾고, 날아가는 쪽에 면이 다가오면 내려앉는다.
+     * 진짜 뇌는 면 자극이 양쪽 0.2쯤일 때 착지 반응이 0.5를 넘는다. 그 예민함에 맞춘다 */
+    t[BR_AIRTURN_L] = t[BR_TURN_L];
+    t[BR_AIRTURN_R] = t[BR_TURN_R];
+    t[BR_LAND] = clamp01((s[BR_SURFACE_L] + s[BR_SURFACE_R]) * 1.25f);
+
     float sum = 0.0f;
     for (int i = BR_SUGAR; i <= BR_REPEL_R; i++) sum += s[i];
     t[BR_AROUSAL] = clamp01(sum * 0.5f);

@@ -50,6 +50,11 @@
 #include <string.h>
 #include <sys/eventfd.h>
 #include <sys/prctl.h>
+#include <stdatomic.h>
+#include <sys/file.h>
+#include <sys/random.h>
+#include <sys/resource.h>
+#include <syslog.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/time.h>
@@ -64,6 +69,7 @@
 #define STAGE_WAIT_MS 2000       /* 스테이지가 이만큼 답하지 않으면 죽인다 */
 #define HELLO_WAIT_MS 3000       /* 접속하고 이만큼 HELLO가 오지 않으면 끊는다 */
 #define SEND_WAIT_MS  3000       /* 접속자가 이만큼 하나도 받아 가지 않으면 끊는다 */
+#define REJOIN_WAIT_MS 10000     /* 게임 도중에 접속이 끊긴 사람의 자리를 이만큼 남겨 둔다. 그 안에 다시 들어오면 이어서 한다 */
 #define IDLE_WAIT_MS  10000      /* 들어온 접속자가 이만큼 아무것도 보내지 않으면 끊는다. 클라이언트는 2초마다 PING을 보낸다 */
 #define SEND_BUF      65536      /* 접속자마다 커널에 쌓아 두는 보낼 것의 한도(바이트) */
 #define INPUT_WIN_MS  100        /* 접속자 한 명의 입력은 이 시간 동안 */
@@ -86,7 +92,8 @@ static struct {
     int tick_ms, ticks;              /* 검사용. 0이면 쓰지 않는다 */
     int boss_sec;                    /* 보스전 길이(초). 음수이면 boss/config.ini의 값, 0이면 보스전을 건너뛴다 */
     int idle_ms;                     /* 말이 없는 접속을 끊는 시간. 검사에서 --idle-ms=N 으로 줄인다 */
-} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 3000, 2000, 2000, 6000, 0, 0, -1, IDLE_WAIT_MS };
+    int rejoin_ms;                   /* 끊긴 사람의 자리를 남겨 두는 시간. 0이면 끊기는 즉시 나간 것으로 한다(--rejoin-ms=N) */
+} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 3000, 2000, 2000, 6000, 0, 0, -1, IDLE_WAIT_MS, REJOIN_WAIT_MS };
 
 static int64_t now_ms(void)
 {
@@ -96,9 +103,10 @@ static int64_t now_ms(void)
 }
 
 /* ---- 사건 큐: 다른 스레드가 넣고 게임 마스터가 꺼낸다 ------------------------- */
-enum { EV_JOIN, EV_LEAVE, EV_INPUT, EV_SIGNAL, EV_BRAIN };
+enum { EV_JOIN, EV_LEAVE, EV_INPUT, EV_SIGNAL, EV_BRAIN, EV_CTL };
 typedef struct {
     int type, slot, gen, signo;
+    uint64_t token, claim;           /* EV_JOIN: 이 접속에 준 세션 토큰, 접속자가 댄 옛 토큰(없으면 0) */
     char name[PROTO_NAME_LEN];
     input_msg_t in;
 } event_t;
@@ -266,6 +274,31 @@ static int recv_hello(int fd, msg_hdr_t *h, uint8_t *body, uint32_t cap, int64_t
     }
 }
 
+/* 세션 토큰: 커널의 난수(getrandom)로 만든 64비트 수. 추측해서 남의 자리에 앉을 수 없어야 하므로 rand를 쓰지 않는다.
+ * 0은 "토큰 없음"이라 쓰지 않는다 */
+static uint64_t new_token(void)
+{
+    uint64_t t = 0;
+    for (int tries = 0; tries < 16 && t == 0; tries++) {
+        ssize_t n = getrandom(&t, sizeof t, 0);
+        if (n != (ssize_t)sizeof t) t = 0;           /* 시그널에 끊겼거나 다 받지 못했다. 다시 받는다 */
+    }
+    if (t == 0) t = ((uint64_t)now_ms() << 20) ^ (uint64_t)getpid() ^ 0x9E3779B97F4A7C15ULL;
+    return t;
+}
+
+/* 접속을 끊는다. 읽기 스레드가 알아채고 정리한다 */
+static void conn_kick(int slot, int gen)
+{
+    conn_t *c = &conns[slot];
+    pthread_mutex_lock(&c->mu);
+    if (c->used && c->gen == gen && !c->closing) {
+        c->closing = 1;
+        shutdown(c->fd, SHUT_RDWR);
+    }
+    pthread_mutex_unlock(&c->mu);
+}
+
 static void *reader_main(void *arg)
 {
     conn_t *c = arg;
@@ -302,9 +335,9 @@ static void *reader_main(void *arg)
     if (pthread_create(&writer, NULL, writer_main, c) != 0) goto out;
     writer_up = 1;
 
-    welcome_msg_t wm = { PROTO_VERSION, (uint16_t)slot };
+    welcome_msg_t wm = { PROTO_VERSION, (uint16_t)slot, { 0 }, new_token() };
     conn_post(slot, gen, MSG_WELCOME, 0, &wm, sizeof wm, 0);
-    event_t join = { .type = EV_JOIN, .slot = slot, .gen = gen };
+    event_t join = { .type = EV_JOIN, .slot = slot, .gen = gen, .token = wm.token, .claim = hello.token };
     snprintf(join.name, sizeof join.name, "%s", hello.name[0] ? hello.name : "PLAYER");
     ev_push(&join);
 
@@ -398,6 +431,113 @@ static void *accept_main(void *arg)
         }
         pthread_detach(t);
     }
+}
+
+/* ---- 서버 찾기에 답하는 스레드(UDP) --------------------------------------------------- */
+static atomic_int pub_phase, pub_seats;      /* 게임 마스터가 적어 두는 지금 단계와 인원(send_phase) */
+
+static void *find_main(void *arg)
+{
+    int fd = *(int *)arg;
+    char host[32] = "";
+    gethostname(host, sizeof host - 1);
+    for (;;) {
+        find_msg_t q;
+        struct sockaddr_in from;
+        socklen_t flen = sizeof from;
+        ssize_t n = recvfrom(fd, &q, sizeof q, 0, (struct sockaddr *)&from, &flen);
+        if (n < 0 && errno == EINTR) continue;
+        if (n != (ssize_t)sizeof q || q.magic != FIND_MAGIC) continue;      /* 우리 물음이 아니다 */
+        find_msg_t a = { FIND_MAGIC, PROTO_VERSION, (uint16_t)opt.port, (uint8_t)atomic_load(&pub_phase),
+                         (uint8_t)atomic_load(&pub_seats), { 0 }, { 0 } };
+        memcpy(a.host, host, sizeof a.host - 1);
+        sendto(fd, &a, sizeof a, 0, (struct sockaddr *)&from, flen);
+    }
+    return NULL;
+}
+
+/* ---- 관리 창구(이름 있는 파이프) -------------------------------------------------------
+ * 서버가 뜨면 파일 시스템에 파이프를 하나 만든다(mkfifo). 다른 터미널에서 그 파일에 글자를 쓰면 서버가 명령으로 읽는다.
+ *     echo status > /tmp/ssp_ctl_4620      지금 단계와 자리를 로그에 찍는다
+ *     echo boss   > /tmp/ssp_ctl_4620      남은 미니게임을 건너뛰고 보스전으로 간다
+ *     echo lobby  > /tmp/ssp_ctl_4620      판을 접고 로비로 돌아간다
+ *     echo quit   > /tmp/ssp_ctl_4620      서버를 끝낸다
+ * 읽는 스레드는 명령을 사건 큐에 넣기만 하고, 실제로 하는 것은 게임 마스터다 */
+static char ctl_path[108];
+
+static void ctl_remove(void) { if (ctl_path[0]) unlink(ctl_path); }
+
+static void *ctl_main(void *arg)
+{
+    (void)arg;
+    /* 읽기와 쓰기로 같이 연다. 읽기로만 열면 쓰는 쪽이 닫을 때마다 "끝"이 와서 다시 열어야 한다 */
+    int fd = open(ctl_path, O_RDWR | O_CLOEXEC);
+    if (fd < 0) return NULL;
+    char line[64];
+    size_t len = 0;
+    for (;;) {
+        char ch;
+        ssize_t n = read(fd, &ch, 1);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) break;
+        if (ch != '\n') { if (len < sizeof line - 1) line[len++] = ch; continue; }
+        line[len] = '\0';
+        len = 0;
+        event_t e = { .type = EV_CTL };
+        snprintf(e.name, sizeof e.name, "%.*s", (int)sizeof e.name - 1, line);
+        ev_push(&e);
+    }
+    close(fd);
+    return NULL;
+}
+
+/* ---- 데몬 --------------------------------------------------------------------------
+ * 터미널을 닫아도 서버가 계속 돌게 터미널에서 떼어 낸다(--daemon).
+ *   1. fork하고 부모는 끝낸다: 셸이 명령이 끝난 줄 알고, 자식은 프로세스 그룹의 대표가 아니게 된다
+ *   2. setsid로 새 세션을 만든다: 터미널과의 연결이 끊긴다(터미널을 닫을 때 오는 SIGHUP을 받지 않는다)
+ *   3. 한 번 더 fork한다: 세션의 대표가 아니므로 실수로 터미널을 다시 얻을 수 없다
+ *   4. 표준 입력은 /dev/null로, 표준 출력과 오류는 로그 파일로 돌린다(dup2). 새 파일의 권한은 umask로 정한다
+ *   5. pid를 파일에 적고 잠근다(flock): 같은 포트로 둘이 뜨지 않게 하고, 끝낼 때 누구를 kill할지 알 수 있다
+ * 일하는 폴더는 바꾸지 않는다(스테이지 실행 파일과 자료를 상대 경로로 찾는다) */
+static int daemonize(const char *log_path, const char *pid_path)
+{
+    pid_t pid = fork();
+    if (pid < 0) return -1;
+    if (pid > 0) _exit(0);
+    if (setsid() < 0) return -1;
+    pid = fork();
+    if (pid < 0) return -1;
+    if (pid > 0) _exit(0);
+    umask(022);
+    int nul = open("/dev/null", O_RDONLY), log = open(log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (nul < 0 || log < 0) return -1;
+    dup2(nul, STDIN_FILENO);
+    dup2(log, STDOUT_FILENO);
+    dup2(log, STDERR_FILENO);
+    close(nul);
+    close(log);
+    int pf = open(pid_path, O_WRONLY | O_CREAT | O_CLOEXEC, 0644);
+    if (pf < 0 || flock(pf, LOCK_EX | LOCK_NB) != 0) { fprintf(stderr, "서버: 이미 떠 있습니다(%s)\n", pid_path); return -1; }
+    char buf[32];
+    int len = snprintf(buf, sizeof buf, "%d\n", (int)getpid());
+    if (ftruncate(pf, 0) != 0 || write(pf, buf, (size_t)len) != len) return -1;      /* pf는 닫지 않는다: 잠금을 쥐고 있다 */
+    openlog("ssp_server", LOG_PID, LOG_DAEMON);
+    syslog(LOG_INFO, "started on port %d, log %s", opt.port, log_path);
+    return 0;
+}
+
+/* ---- 자원 사용량 ----------------------------------------------------------------------
+ * 한 판이 끝날 때 서버와 자식들(스테이지, 뇌)이 쓴 CPU 시간과 가장 많이 쓴 메모리를 커널에 물어 로그에 찍는다 */
+static void log_rusage(void)
+{
+    struct rusage me, kids;
+    if (getrusage(RUSAGE_SELF, &me) != 0 || getrusage(RUSAGE_CHILDREN, &kids) != 0) return;
+    fprintf(stderr, "서버: 자원 사용량 - 서버 CPU %.2f초(사용자 %.2f, 커널 %.2f) 최대 메모리 %ldMB, 끝난 자식들 CPU %.2f초 최대 메모리 %ldMB\n",
+            (double)(me.ru_utime.tv_sec + me.ru_stime.tv_sec) + (double)(me.ru_utime.tv_usec + me.ru_stime.tv_usec) / 1e6,
+            (double)me.ru_utime.tv_sec + (double)me.ru_utime.tv_usec / 1e6, (double)me.ru_stime.tv_sec + (double)me.ru_stime.tv_usec / 1e6,
+            me.ru_maxrss / 1024,
+            (double)(kids.ru_utime.tv_sec + kids.ru_stime.tv_sec) + (double)(kids.ru_utime.tv_usec + kids.ru_stime.tv_usec) / 1e6,
+            kids.ru_maxrss / 1024);
 }
 
 /* ---- 시그널 스레드 ----------------------------------------------------------- */
@@ -519,10 +659,12 @@ static int stage_spawn(const char *name, uint32_t seed, int n_players)
 typedef struct {
     int used, conn, gen, connected, ready, lives, total, pane, passed, score;
     long join_no;
+    uint64_t token;                  /* 이 자리의 세션 토큰. 다시 들어오는 접속이 이것을 대면 자리를 돌려준다 */
+    int64_t away_until;              /* 접속이 끊겼다: 이 시각(ms)까지 자리를 남겨 둔다. 0이면 기다리지 않는다 */
     char name[PROTO_NAME_LEN];
 } seat_t;
 
-static struct { int in, gen, seat; long join_no; char name[PROTO_NAME_LEN]; } members[MAX_CONN];
+static struct { int in, gen, seat; long join_no; uint64_t token; char name[PROTO_NAME_LEN]; } members[MAX_CONN];
 static seat_t seats[PROTO_SEATS];
 static int phase = PH_LOBBY, round_no, void_count, fly_score;
 static boss_state_t boss;                    /* 보스전의 상태(아래 "보스전") */
@@ -533,6 +675,12 @@ static int game_over;                        /* 한 판이 랭킹까지 갔다(-
 static uint8_t stage_buf[PROTO_MAX_LEN];
 
 static void start_round(void);
+
+/* 그 자리에 사람이 있는 것으로 치는가. 접속해 있거나, 끊겼지만 아직 기다려 주는 중이다 */
+static int present(int s)
+{
+    return seats[s].used && (seats[s].connected || (seats[s].away_until && now_ms() < seats[s].away_until));
+}
 
 static int host_seat(void)
 {
@@ -554,6 +702,7 @@ static void send_phase(void)
     if (phase == PH_PLAY) m.ms_left = (uint32_t)((st.info.n_ticks - st.ticks_sent) * TICK_MS);
     if (phase == PH_BOSS) m.ms_left = (uint32_t)((boss.cfg.ticks - boss.tick) * TICK_MS);
     m.host = (int8_t)host_seat();
+    atomic_store(&pub_phase, phase);
     m.fly_score = fly_score;
     for (int s = 0; s < PROTO_SEATS; s++) {
         m.seated[s] = (uint8_t)(seats[s].used && seats[s].connected);
@@ -566,6 +715,7 @@ static void send_phase(void)
         m.total[s] = seats[s].total;
         if (seats[s].used) memcpy(m.name[s], seats[s].name, PROTO_NAME_LEN);
     }
+    atomic_store(&pub_seats, m.n_seats);
     memcpy(m.title, st.info.title, sizeof m.title);
     memcpy(m.rule, st.info.rule, sizeof m.rule);
     memcpy(m.controls, st.info.controls, sizeof m.controls);
@@ -628,6 +778,7 @@ static void fill_seats(void)
         seats[s].conn = pick;
         seats[s].gen = members[pick].gen;
         seats[s].join_no = members[pick].join_no;
+        seats[s].token = members[pick].token;
         seats[s].pane = -1;
         memcpy(seats[s].name, members[pick].name, PROTO_NAME_LEN);
         members[pick].seat = s;
@@ -643,6 +794,7 @@ static void to_lobby(void)
     deadline = 0;
     for (int s = 0; s < PROTO_SEATS; s++) {
         if (seats[s].used && !seats[s].connected) seats[s].used = 0;       /* 나간 사람의 자리를 비운다 */
+        seats[s].away_until = 0;
         seats[s].ready = 0;
         seats[s].pane = -1;
         seats[s].passed = seats[s].score = 0;
@@ -657,6 +809,7 @@ static void finish_game(void)
     stage_kill();
     game_over = 1;
     save_ranking();
+    log_rusage();
     phase = PH_RANK;
     deadline = now_ms() + opt.rank_ms;
     send_phase();
@@ -676,7 +829,7 @@ static void start_round(void)
     int n = 0;
     for (int s = 0; s < PROTO_SEATS; s++) {
         seats[s].passed = seats[s].score = 0;
-        seats[s].pane = (seats[s].used && seats[s].connected && seats[s].lives > 0) ? n++ : -1;
+        seats[s].pane = (present(s) && seats[s].lives > 0) ? n++ : -1;
     }
     if (n == 0) { finish_game(); return; }
     const char *name = opt.order[(round_no + void_count) % opt.n_order];
@@ -808,7 +961,7 @@ static void start_boss(void)
     for (int s = 0; s < PROTO_SEATS; s++) {
         seats[s].passed = seats[s].score = 0;
         seats[s].pane = -1;
-        if (seats[s].used && seats[s].connected && seats[s].lives > 0 && n < BOSS_PLAYERS) {
+        if (present(s) && seats[s].lives > 0 && n < BOSS_PLAYERS) {
             seats[s].pane = n;
             /* 남은 기회를 그대로 체력으로 주면 한두 판 진 사람들로는 이길 수 없었다(봇으로 3명이 2개씩일 때 승률 2.5%,
              * 3개씩일 때 55%). 그래서 기회는 누가 보스전에 가는지만 정하고 체력은 모두 같게 준다 */
@@ -873,8 +1026,20 @@ static void on_stage_readable(void)
     }
 }
 
+/* 틱의 박자는 주기 타이머가 준다. 서버가 뜰 때 setitimer로 TICK_MS마다 SIGALRM이 오게 해 두었다. 시그널 스레드가
+ * 그것을 받아 사건으로 넣으면 게임 마스터가 다음 틱을 진행한다(아래 game_master). 여기서는 "다음 SIGALRM에 틱을
+ * 진행해 달라"고 적어 두고, 신호가 오지 않을 때를 대비해 마감을 두 틱 뒤로 잡아 둔다(안전망) */
+static int timer_wants;
+
+static void tick_by_timer(int64_t now)
+{
+    timer_wants = 1;
+    deadline = now + 2 * TICK_MS;
+}
+
 static void on_deadline(void)
 {
+    timer_wants = 0;
     int64_t now = now_ms();
     switch (phase) {
     case PH_CARD:
@@ -906,14 +1071,14 @@ static void on_deadline(void)
             stage_failed("결과를 보내지 않습니다");
             return;
         }
-        deadline = opt.tick_ms > 0 ? now + opt.tick_ms : (opt.fast ? now + 5 : deadline + TICK_MS);
-        if (deadline < now - 500) deadline = now;        /* 많이 밀렸으면 따라잡으려 하지 않는다 */
+        if (opt.tick_ms > 0 || opt.fast) deadline = opt.tick_ms > 0 ? now + opt.tick_ms : now + 5;
+        else tick_by_timer(now);
         break;
     case PH_VERDICT: {
         int alive = 0;
         round_no++;
         for (int s = 0; s < PROTO_SEATS; s++)
-            if (seats[s].used && seats[s].connected && seats[s].lives > 0) alive++;
+            if (present(s) && seats[s].lives > 0) alive++;
         if (alive == 0) finish_game();
         else if (round_no >= opt.n_rounds) { if (opt.boss_sec != 0) start_boss(); else finish_game(); }
         else start_round();
@@ -923,8 +1088,8 @@ static void on_deadline(void)
         if (boss_over) { finish_boss(); break; }         /* 결과를 보여 준 시간이 지났다. 랭킹으로 간다 */
         boss_step();
         if (boss_over) { deadline = now + (opt.fast ? 100 : BOSS_END_MS); break; }
-        deadline = opt.tick_ms > 0 ? now + opt.tick_ms : (opt.fast ? now : deadline + TICK_MS);
-        if (deadline < now - 500) deadline = now;
+        if (opt.tick_ms > 0 || opt.fast) deadline = opt.tick_ms > 0 ? now + opt.tick_ms : now;
+        else tick_by_timer(now);
         break;
     case PH_RANK:
         to_lobby();
@@ -941,7 +1106,30 @@ static void on_join(const event_t *e)
     members[e->slot].gen = e->gen;
     members[e->slot].seat = -1;
     members[e->slot].join_no = ++join_counter;
+    members[e->slot].token = e->token;
     memcpy(members[e->slot].name, e->name, PROTO_NAME_LEN);
+    /* 재접속: 게임 도중에 끊긴 사람이 옛 토큰을 대고 들어왔다. 앉아 있던 자리를 돌려준다(점수, 남은 기회, 이번 라운드의
+     * 칸이 그대로다). 서버가 옛 접속이 끊긴 것을 아직 모를 수도 있다(상대의 네트워크만 바뀐 경우). 그때는 옛 접속을 끊는다 */
+    for (int s = 0; s < PROTO_SEATS && e->claim != 0 && phase != PH_LOBBY; s++) {
+        if (!seats[s].used || seats[s].token != e->claim) continue;
+        if (seats[s].connected) {
+            int old = seats[s].conn;
+            members[old].in = 0;
+            members[old].seat = -1;
+            conn_kick(old, seats[s].gen);
+        } else if (!present(s)) {
+            break;                                   /* 너무 늦었다. 관전자로 들어온다 */
+        }
+        seats[s].conn = e->slot;
+        seats[s].gen = e->gen;
+        seats[s].connected = 1;
+        seats[s].away_until = 0;
+        seats[s].token = e->token;
+        members[e->slot].seat = s;
+        memcpy(members[e->slot].name, seats[s].name, PROTO_NAME_LEN);
+        fprintf(stderr, "서버: %s 님이 다시 접속했습니다(자리 %d)\n", seats[s].name, s);
+        break;
+    }
     /* 판이 진행 중일 때 들어온 사람은 관전자다. 로비에서는 빈 자리에 앉는다 */
     if (phase == PH_LOBBY) fill_seats();
     send_top(e->slot);
@@ -954,15 +1142,53 @@ static void on_leave(const event_t *e)
     int s = members[e->slot].seat, left = 0;
     members[e->slot].in = 0;
     if (s >= 0) {
-        if (phase == PH_LOBBY) seats[s].used = 0;
-        else seats[s].connected = 0;                 /* 라운드는 계속한다 */
-        if (phase == PH_BOSS && seats[s].pane >= 0)      /* 보스전에서 나간 사람은 쓰러진 것으로 한다 */
+        if (phase == PH_LOBBY) {
+            seats[s].used = 0;
+        } else {
+            /* 라운드는 계속한다. 자리는 rejoin_ms 동안 남겨 둔다. 그 안에 다시 들어오면 이어서 한다(on_join) */
+            seats[s].connected = 0;
+            /* 랭킹 화면에서 나간 것은 기다리지 않는다. 판이 이미 끝났다 */
+            seats[s].away_until = (opt.rejoin_ms > 0 && phase != PH_RANK) ? now_ms() + opt.rejoin_ms : 0;
+            fprintf(stderr, "서버: %s 님의 접속이 끊겼습니다(자리 %d). %d초 기다립니다\n", seats[s].name, s, opt.rejoin_ms / 1000);
+        }
+        if (phase == PH_BOSS && seats[s].pane >= 0 && !present(s))   /* 보스전에서 나간 사람은 쓰러진 것으로 한다 */
             boss.p[seats[s].pane].alive = boss.p[seats[s].pane].hp = 0;
     }
-    for (int k = 0; k < PROTO_SEATS; k++) left += seats[k].used && seats[k].connected;
+    for (int k = 0; k < PROTO_SEATS; k++) left += present(k);
     if (phase != PH_LOBBY && left == 0) { to_lobby(); return; }      /* 참가자가 모두 나갔다 */
     if (phase == PH_LOBBY) fill_seats();
     send_phase();
+}
+
+/* 끊긴 사람을 기다리는 시간이 지났는지 본다. 지났으면 나간 것으로 한다: 보스전이면 쓰러진 것으로 하고, 남은 사람이
+ * 없으면 로비로 돌아간다 */
+static void away_check(void)
+{
+    int64_t now = now_ms();
+    int gone = 0, left = 0;
+    if (phase == PH_LOBBY) return;
+    for (int s = 0; s < PROTO_SEATS; s++) {
+        if (!seats[s].used || seats[s].connected || !seats[s].away_until || now < seats[s].away_until) continue;
+        seats[s].away_until = 0;
+        gone++;
+        if (phase == PH_BOSS && seats[s].pane >= 0) boss.p[seats[s].pane].alive = boss.p[seats[s].pane].hp = 0;
+        fprintf(stderr, "서버: %s 님이 돌아오지 않아 나간 것으로 합니다(자리 %d)\n", seats[s].name, s);
+    }
+    if (!gone) return;
+    for (int k = 0; k < PROTO_SEATS; k++) left += present(k);
+    if (left == 0) to_lobby();
+    send_phase();
+}
+
+/* 기다리는 사람이 있으면 그 시간이 끝날 때까지 남은 ms. 없으면 -1 */
+static int away_wait_ms(void)
+{
+    int64_t now = now_ms(), first = 0;
+    for (int s = 0; s < PROTO_SEATS; s++)
+        if (seats[s].used && !seats[s].connected && seats[s].away_until && (!first || seats[s].away_until < first))
+            first = seats[s].away_until;
+    if (!first || phase == PH_LOBBY) return -1;
+    return first > now ? (int)(first - now) : 0;
 }
 
 static void on_input(const event_t *e)
@@ -1031,6 +1257,26 @@ static void on_input(const event_t *e)
     }
 }
 
+/* 관리 창구로 온 명령 */
+static void on_ctl(const char *cmd)
+{
+    static const char *names[] = { "로비", "소개", "준비", "게임", "판정", "보스전", "랭킹" };
+    fprintf(stderr, "서버: 관리 명령 '%s'\n", cmd);
+    if (strcmp(cmd, "status") == 0) {
+        fprintf(stderr, "서버: 단계 %s, 라운드 %d/%d\n", names[phase], round_no + (phase != PH_LOBBY), opt.n_rounds);
+        for (int s = 0; s < PROTO_SEATS; s++)
+            if (seats[s].used) fprintf(stderr, "서버:   자리 %d %s %s 기회 %d 점수 %d\n", s, seats[s].name,
+                                       seats[s].connected ? "접속" : "끊김", seats[s].lives, seats[s].total);
+    } else if (strcmp(cmd, "boss") == 0) {
+        if ((phase == PH_CARD || phase == PH_READY || phase == PH_PLAY) && opt.boss_sec != 0) { round_no = opt.n_rounds; start_boss(); }
+    } else if (strcmp(cmd, "lobby") == 0) {
+        if (phase != PH_LOBBY) { to_lobby(); send_phase(); }
+    } else if (strcmp(cmd, "quit") == 0) {
+        stage_kill();
+        exit(0);
+    }
+}
+
 static void game_master(void)
 {
     for (;;) {
@@ -1042,6 +1288,8 @@ static void game_master(void)
         }
         int brain_left = brain_sup_wait_ms();        /* 뇌를 다시 띄우기로 한 시각이 있으면 그때까지만 */
         if (brain_left >= 0 && (timeout < 0 || brain_left < timeout)) timeout = brain_left;
+        int away_left = away_wait_ms();              /* 끊긴 사람을 기다리는 시간이 끝나는 때에도 깨어난다 */
+        if (away_left >= 0 && (timeout < 0 || away_left < timeout)) timeout = away_left;
         if (poll(pf, 2, timeout) < 0 && errno != EINTR) { perror("poll"); exit(1); }
 
         if (pf[0].revents) {
@@ -1053,6 +1301,8 @@ static void game_master(void)
                 else if (e.type == EV_LEAVE) on_leave(&e);
                 else if (e.type == EV_INPUT) on_input(&e);
                 else if (e.type == EV_BRAIN) brain_sup_stalled((uint32_t)e.gen);
+                else if (e.type == EV_CTL) on_ctl(e.name);
+                else if (e.signo == SIGALRM) { if (timer_wants) deadline = now_ms(); }      /* 주기 타이머: 틱을 진행할 때다 */
                 else if (e.signo == SIGCHLD) reap_children();
                 else if (e.signo == SIGINT || e.signo == SIGTERM) { stage_kill(); exit(0); }
             }
@@ -1062,6 +1312,7 @@ static void game_master(void)
             struct pollfd sp = { st.from, POLLIN, 0 };
             if (poll(&sp, 1, 0) > 0 && sp.revents) on_stage_readable();
         }
+        away_check();
         if (deadline && now_ms() >= deadline) on_deadline();
         brain_sup_tick();
     }
@@ -1069,7 +1320,8 @@ static void game_master(void)
 
 int main(int argc, char **argv)
 {
-    int brain_inproc = 0, brain_strict = 0;
+    int brain_inproc = 0, brain_strict = 0, as_daemon = 0, nice_by = 0;
+    const char *log_path = "build/logs/server.log", *pid_path = "build/server.pid";
     setvbuf(stdout, NULL, _IOLBF, 0);
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -1084,6 +1336,11 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--ticks=", 8) == 0)   opt.ticks = atoi(a + 8);
         else if (strncmp(a, "--boss=", 7) == 0)    opt.boss_sec = atoi(a + 7);
         else if (strncmp(a, "--idle-ms=", 10) == 0) opt.idle_ms = atoi(a + 10);
+        else if (strncmp(a, "--rejoin-ms=", 12) == 0) opt.rejoin_ms = atoi(a + 12);
+        else if (strcmp(a, "--daemon") == 0)       as_daemon = 1;
+        else if (strncmp(a, "--log=", 6) == 0)     log_path = a + 6;
+        else if (strncmp(a, "--pid=", 6) == 0)     pid_path = a + 6;
+        else if (strncmp(a, "--nice=", 7) == 0)    nice_by = atoi(a + 7);
         else if (strcmp(a, "--brain-inproc") == 0) brain_inproc = 1;
         else if (strcmp(a, "--brain-strict") == 0) brain_strict = 1;
         else if (strncmp(a, "--order=", 8) == 0) {
@@ -1099,9 +1356,18 @@ int main(int argc, char **argv)
             return 2;
         }
     }
-    if (opt.n_order == 0) { snprintf(opt.order[0], 32, "example"); opt.n_order = 1; }
+    if (opt.n_order == 0) {                          /* --order가 없을 때의 순서 */
+        static const char *const usual[] = { "example", "swat", "web" };
+        for (size_t i = 0; i < sizeof usual / sizeof usual[0]; i++) snprintf(opt.order[opt.n_order++], 32, "%s", usual[i]);
+    }
     if (opt.n_rounds < 1) opt.n_rounds = 1;
     if (opt.fast) opt.card_ms = opt.ready_ms = opt.verdict_ms = opt.rank_ms = 100;
+
+    /* 데몬으로 뜨는 것은 스레드와 자식을 만들기 전에 한다(fork는 부른 스레드만 복사한다) */
+    if (as_daemon && daemonize(log_path, pid_path) != 0) { perror("데몬으로 뜰 수 없습니다"); return 1; }
+    /* 우선순위를 낮춘다(--nice=N). 여럿이 쓰는 컴퓨터에서 뇌 계산이 남의 일을 밀어내지 않게 한다. 자식(스테이지, 뇌)도
+     * 이 값을 물려받는다. 높이는 것(음수)은 관리자만 할 수 있다 */
+    if (nice_by != 0 && setpriority(PRIO_PROCESS, 0, nice_by) != 0) perror("우선순위를 바꿀 수 없습니다");
 
     /* 규칙 1: 스레드를 만들기 전에 시그널을 막는다. 새 스레드는 이 마스크를 물려받는다 */
     static sigset_t set;
@@ -1138,9 +1404,23 @@ int main(int argc, char **argv)
         else if (strcmp(opt.brain, "real") == 0 && brain_host_open_real("data") == 0) boss_brain = BRAIN_REAL;
     }
 
-    pthread_t t_sig, t_acc;
+    pthread_t t_sig, t_acc, t_find, t_ctl;
     pthread_create(&t_sig, NULL, signal_main, &set);
     pthread_create(&t_acc, NULL, accept_main, &lfd);
+    /* 서버 찾기: 같은 번호의 UDP 포트에서 물음을 기다린다. 열지 못해도 게임은 된다(주소를 직접 치면 된다) */
+    static int ufd;
+    ufd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    setsockopt(ufd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+    if (ufd >= 0 && bind(ufd, (struct sockaddr *)&addr, sizeof addr) == 0) pthread_create(&t_find, NULL, find_main, &ufd);
+    else fprintf(stderr, "서버: 서버 찾기(UDP %d)를 열지 못했습니다\n", opt.port);
+    /* 관리 창구 */
+    snprintf(ctl_path, sizeof ctl_path, "/tmp/ssp_ctl_%d", opt.port);
+    unlink(ctl_path);
+    if (mkfifo(ctl_path, 0600) == 0) { atexit(ctl_remove); pthread_create(&t_ctl, NULL, ctl_main, NULL); }
+    else ctl_path[0] = '\0';
+    /* 틱의 박자: TICK_MS마다 SIGALRM. 시그널 스레드가 받는다 */
+    struct itimerval beat = { { 0, TICK_MS * 1000 }, { 0, TICK_MS * 1000 } };
+    setitimer(ITIMER_REAL, &beat, NULL);
     printf("서버: 포트 %d에서 기다립니다 (스테이지 %d종, %d라운드)\n", opt.port, opt.n_order, opt.n_rounds);
 
     game_master();

@@ -216,16 +216,94 @@ static void make_parent_dirs(const char *path)
     }
 }
 
+/* 파일을 열고 잠근다. 잠금을 기다리는 사이에 다른 프로세스가 파일을 정리해서 바꿔 놓았으면(rename) 내가 잠근 것은
+ * 이미 이름이 없는 옛 파일이다. 그래서 잠근 뒤에 "지금 그 이름의 파일"과 같은 파일인지 확인하고, 다르면 새로 연다 */
+static int open_locked(const char *path, int flags, int how)
+{
+    for (int tries = 0; tries < 50; tries++) {
+        int fd = open(path, flags | O_CLOEXEC, 0644);
+        if (fd < 0) return -1;
+        if (lock_wait(fd, how) != 0) {
+            close(fd);
+            errno = EAGAIN;
+            return -1;
+        }
+        struct stat mine, named;
+        if (fstat(fd, &mine) == 0 && stat(path, &named) == 0 && mine.st_ino == named.st_ino && mine.st_dev == named.st_dev)
+            return fd;
+        close(fd);
+    }
+    errno = EAGAIN;
+    return -1;
+}
+
+/* path가 들어 있는 폴더를 디스크에 적는다. 새로 만든 파일과 rename은 폴더의 내용이 바뀐 것이라, 파일만 fsync해서는
+ * 전원이 나갔을 때 그 이름이 남는다는 보장이 없다 */
+static void sync_parent(const char *path)
+{
+    char dir[512];
+    const char *slash = strrchr(path, '/');
+    size_t len = slash ? (size_t)(slash - path) : 0;
+    if (len >= sizeof dir) return;
+    if (len == 0) { dir[0] = slash ? '/' : '.'; len = 1; }
+    else memcpy(dir, path, len);
+    dir[len] = '\0';
+    int fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) return;
+    if (fsync(fd) != 0) { /* 폴더를 fsync할 수 없는 파일 시스템도 있다. 파일은 이미 적혔다 */ }
+    close(fd);
+}
+
+static int write_all(int fd, const char *buf, size_t len)
+{
+    while (len > 0) {
+        ssize_t w = write(fd, buf, len);
+        if (w < 0 && errno == EINTR) continue;
+        if (w <= 0) return -1;
+        buf += w;
+        len -= (size_t)w;
+    }
+    return 0;
+}
+
+static int insert_top(rank_rec_t *out, int n, int cap, const rank_rec_t *r);
+static int read_top(int fd, rank_rec_t *out, int cap);
+
+int ranking_compact_bytes = 256 * 1024;
+
+/* 파일이 커졌으면 높은 순위 RANKING_KEEP개만 남긴다. 잠근 채로 부른다(fd가 그 파일이다).
+ * 새 내용을 옆의 임시 파일에 다 쓰고 디스크에 적은 뒤(fsync) 이름을 바꿔 치운다(rename). rename은 한 번에 일어나므로
+ * 도중에 죽어도 랭킹 파일은 옛 것 아니면 새 것이고, 반만 쓰인 파일이 되는 일은 없다. 실패하면 옛 파일이 그대로 남는다 */
+static void compact(const char *path, int fd)
+{
+    static rank_rec_t keep[RANKING_KEEP];
+    char tmp[512];
+    if (snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp) return;
+    if (lseek(fd, 0, SEEK_SET) != 0) return;
+    int n = read_top(fd, keep, RANKING_KEEP);
+    if (n <= 0) return;
+    int out = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
+    if (out < 0) return;
+    int ok = 1;
+    for (int i = 0; i < n && ok; i++) {
+        char line[LINE_MAX_LEN + 1];
+        size_t len = format_line(&keep[i], line);
+        ok = write_all(out, line, len) == 0;
+    }
+    if (ok && fsync(out) != 0) ok = 0;
+    close(out);
+    if (ok && rename(tmp, path) == 0) sync_parent(path);
+    else unlink(tmp);
+}
+
 int ranking_append(const char *path, const rank_rec_t *recs, int n)
 {
     if (!path || !recs || n <= 0) return n == 0 ? 0 : -1;
     make_parent_dirs(path);
-    int fd = open(path, O_RDWR | O_APPEND | O_CREAT | O_CLOEXEC, 0644);
+    struct stat before;
+    int was_new = stat(path, &before) != 0;
+    int fd = open_locked(path, O_RDWR | O_APPEND | O_CREAT, LOCK_EX);
     if (fd < 0) return -1;
-    if (lock_wait(fd, LOCK_EX) != 0) {
-        close(fd);
-        return -1;
-    }
 
     int rc = -1;
     struct stat sb;
@@ -247,7 +325,15 @@ int ranking_append(const char *path, const rank_rec_t *recs, int n)
             goto out;
         }
     }
+    /* 디스크에 적힐 때까지 기다린다. write는 커널의 메모리에 넣었을 뿐이라, 여기서 돌아간 뒤에 전원이 나가도
+     * 이 판의 기록이 남으려면 fsync가 필요하다. 못 적었으면 이 판의 기록을 지우고 실패로 돌려준다 */
+    if (fsync(fd) != 0) {
+        if (ftruncate(fd, sb.st_size) != 0) { /* 위와 같다 */ }
+        goto out;
+    }
+    if (was_new) sync_parent(path);
     rc = 0;
+    if (fstat(fd, &sb) == 0 && sb.st_size > ranking_compact_bytes) compact(path, fd);
 out:
     close(fd);                                       /* 닫으면 잠금도 풀린다 */
     return rc;
@@ -273,16 +359,9 @@ static int insert_top(rank_rec_t *out, int n, int cap, const rank_rec_t *r)
     return n;
 }
 
-int ranking_load_top(const char *path, rank_rec_t *out, int cap)
+/* 열려 있는 파일을 지금 자리부터 끝까지 읽어 높은 순위 cap개를 고른다. 읽지 못하면 -1 */
+static int read_top(int fd, rank_rec_t *out, int cap)
 {
-    if (!path || !out || cap <= 0) return 0;
-    int fd = open(path, O_RDONLY | O_CLOEXEC);
-    if (fd < 0) return errno == ENOENT ? 0 : -1;
-    if (lock_wait(fd, LOCK_SH) != 0) {
-        close(fd);
-        return -1;
-    }
-
     char buf[4096], line[LINE_MAX_LEN];
     size_t len = 0;
     int n = 0, too_long = 0;
@@ -307,6 +386,15 @@ int ranking_load_top(const char *path, rank_rec_t *out, int cap)
             too_long = 0;
         }
     }
+    return n;
+}
+
+int ranking_load_top(const char *path, rank_rec_t *out, int cap)
+{
+    if (!path || !out || cap <= 0) return 0;
+    int fd = open_locked(path, O_RDONLY, LOCK_SH);
+    if (fd < 0) return errno == ENOENT ? 0 : -1;
+    int n = read_top(fd, out, cap);
     close(fd);
     return n;
 }

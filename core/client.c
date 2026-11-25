@@ -8,6 +8,12 @@
  *       --gfx=auto|sixel|cell: 화면을 픽셀 그림(Sixel)으로 보낼지 글자 칸으로 보낼지. auto(기본값)는 터미널에 물어서
  *       그림을 받으면 그림으로 보낸다. 그림은 창에 들어가는 가장 큰 배율로 그린다(10배 = 2400x1340까지).
  *       그때 --scale=N은 그 상한을 낮춘다
+ *   build/dev/client --host=auto              같은 망에서 서버를 찾아(UDP 브로드캐스트) 접속한다
+ *   build/dev/client --mouse-dev=/dev/input/eventN [--mouse-turn=N]   보스전의 시선을 마우스 장치에서 직접 읽는다
+ *                    (리눅스로 부팅한 컴퓨터, 읽을 권한 필요. N은 한 바퀴 도는 데 드는 마우스 움직임, 기본 2400)
+ *   build/dev/client --airpods=블루투스주소 [--airpods-gain=N]   보스전의 시선을 에어팟 프로의 머리 움직임으로 돌린다
+ *                    (리눅스에 짝지어 접속해 둔 에어팟. N은 고개가 돈 각도에 곱하는 배율, 기본 3, 음수면 반대로)
+ *   build/dev/client --airpods=블루투스주소 --airpods-test       게임 없이 5초 동안 센서 값을 찍어 본다
  *   build/dev/client --bot [--wait=N] [...]   화면 없이 접속해 준비하고 무작위로 누른다(검사용).
  *                                             방장이면 참가자가 N명 이상일 때 시작한다
  *
@@ -30,11 +36,14 @@
 #include "protocol.h"
 #include "screen.h"
 #include "stage.h"
+#include "ui/airpods.h"
 #include "ui/hd.h"
 #include "ui/ui_internal.h"
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <linux/input.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -46,6 +55,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
@@ -62,6 +72,15 @@
 #define LOOK_SMOOTH_MS 45.0          /* 화면의 시선이 정한 방향을 따라가는 빠르기. 글자 칸이 크면 마우스가 뚝뚝 끊겨 온다 */
 
 static int sock = -1;
+/* 재접속(아래 rejoin). 소켓은 수신 스레드만 바꾸고, 바꾸는 동안 입력 스레드가 쓰지 못하게 sock_mu로 지킨다 */
+#define REJOIN_TRIES  16             /* 다시 붙어 보는 횟수 */
+#define REJOIN_GAP_MS 500            /* 그 사이의 간격. 합쳐서 8초쯤: 서버가 자리를 남겨 두는 시간(10초)보다 짧다 */
+static pthread_mutex_t sock_mu = PTHREAD_MUTEX_INITIALIZER;
+static const char *srv_host = "127.0.0.1";
+static int srv_port = PROTO_PORT;
+static char my_name[PROTO_NAME_LEN];
+static uint64_t my_token;            /* 서버가 준 세션 토큰. 다시 붙을 때 댄다 */
+static int rejoin_count;
 static int view_scale = 1;           /* --scale. 화면을 몇 배로 키워 터미널에 그리는가 */
 /* 화면을 픽셀 그림(Sixel)으로 보내는가(--gfx). 터미널이 받아 주면 그렇게 하고, 아니면 글자 칸으로 보낸다.
  * 그림의 크기는 240x134의 hd_n배이고 창 크기에 맞춰 hd_cap 이하에서 고른다. 입력 스레드도 hd_n을 읽는다 */
@@ -98,6 +117,7 @@ static struct {
     int jump_queued;                 /* 내려서기 직전에 또 눌렀다: 내려서자마자 다시 뛴다 */
     int watch;                       /* 오른쪽 위에 볼 칸. WATCH_FLY이면 키보드 치는 초파리 */
     int dirty, quit;
+    int rejoining;                   /* 접속이 끊겨 다시 붙는 중이다 */
     char why[96];                    /* 끝난 이유 */
 } S = { .mu = PTHREAD_MUTEX_INITIALIZER, .cv = PTHREAD_COND_INITIALIZER, .watch = WATCH_FLY };
 
@@ -139,6 +159,56 @@ static int connect_to(const char *host, int port)
     return fd;
 }
 
+/* 서버로 보낸다. 실패해도 0을 돌려준다: 접속이 끊긴 것은 수신 스레드가 알아채고 다시 붙인다(rejoin). 그동안의 입력은
+ * 버려진다. 다시 붙지 못하면 수신 스레드가 프로그램을 끝낸다 */
+static int net_send(uint8_t type, uint8_t flags, uint16_t slot, const void *body, uint32_t len)
+{
+    pthread_mutex_lock(&sock_mu);
+    (void)msg_send(sock, type, flags, slot, body, len);
+    pthread_mutex_unlock(&sock_mu);
+    return 0;
+}
+
+/* 재접속. 게임 도중에 서버와의 접속이 끊겼을 때 수신 스레드가 부른다. 새 소켓으로 다시 붙어서 전에 받은 세션 토큰을
+ * 댄다. 서버가 그 토큰의 자리를 아직 남겨 두고 있으면 점수와 기회를 그대로 이어받는다. 0이면 다시 붙었다 */
+static int rejoin(void)
+{
+    if (my_token == 0) return -1;                    /* 자리를 받기도 전에 끊겼다 */
+    pthread_mutex_lock(&S.mu);
+    S.rejoining = 1;
+    S.dirty = 1;
+    pthread_cond_broadcast(&S.cv);
+    pthread_mutex_unlock(&S.mu);
+    int ok = -1;
+    for (int k = 0; k < REJOIN_TRIES && ok != 0; k++) {
+        pthread_mutex_lock(&S.mu);
+        int quit = S.quit;
+        pthread_mutex_unlock(&S.mu);
+        if (quit) break;
+        int fd = connect_to(srv_host, srv_port);
+        hello_msg_t hello = { .version = PROTO_VERSION, .token = my_token };
+        memcpy(hello.name, my_name, sizeof hello.name);
+        if (fd >= 0 && msg_send(fd, MSG_HELLO, 0, 0, &hello, sizeof hello) == 0) {
+            pthread_mutex_lock(&sock_mu);
+            int old = sock;
+            sock = fd;
+            pthread_mutex_unlock(&sock_mu);
+            close(old);
+            rejoin_count++;
+            ok = 0;
+        } else {
+            if (fd >= 0) close(fd);
+            usleep(REJOIN_GAP_MS * 1000);
+        }
+    }
+    pthread_mutex_lock(&S.mu);
+    S.rejoining = 0;
+    S.dirty = 1;
+    pthread_cond_broadcast(&S.cv);
+    pthread_mutex_unlock(&S.mu);
+    return ok;
+}
+
 /* 내가 이번 라운드에 보는 칸. 뛰고 있으면 내 칸, 아니면 0번 칸을 본다. */
 static int view_pane(const phase_msg_t *ph)
 {
@@ -154,7 +224,17 @@ static void *recv_main(void *arg)
     (void)arg;
     for (;;) {
         int r = msg_recv(sock, &h, body, sizeof body);
-        if (r != 1) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
+        if (r != 1) {
+            if (rejoin() == 0) continue;                 /* 다시 붙었다. 서버가 지금 상태를 새로 보내 준다 */
+            quit_with("서버와의 접속이 끊겼습니다");
+            return NULL;
+        }
+        if (h.type == MSG_WELCOME && h.len == sizeof(welcome_msg_t)) {
+            welcome_msg_t wm;
+            memcpy(&wm, body, sizeof wm);
+            my_token = wm.token;
+            continue;
+        }
         if (h.type == MSG_PHASE && h.len == sizeof(phase_msg_t)) {
             pthread_mutex_lock(&S.mu);
             int was = S.have_phase ? S.ph.phase : -1;
@@ -336,14 +416,14 @@ static int look_send(int now)
     pthread_mutex_unlock(&S.mu);
     look.unsent = 0;
     look.sent_at = now_ms();
-    return msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m);
+    return net_send(MSG_INPUT, 0, 0, &m, sizeof m);
 }
 
 static int send_boss_key(uint16_t code)
 {
     input_msg_t m = { .kind = IN_KEY, .code = code };
     if (look_send(1) != 0) return -1;                /* 무기는 지금 보는 방향으로 써야 한다 */
-    return msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m);
+    return net_send(MSG_INPUT, 0, 0, &m, sizeof m);
 }
 
 /* ---- 누르고 있는 이동 키 ----------------------------------------------------------------
@@ -383,9 +463,150 @@ static int held_send(void)
         if (!held.on[i]) continue;
         input_msg_t m = { .kind = IN_KEY, .flags = (uint8_t)(held.shift ? IN_F_SHIFT : 0),
                           .code = (uint16_t)(held.shift ? keys[i] - 32 : keys[i]) };
-        if (msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m) != 0) return -1;
+        if (net_send(MSG_INPUT, 0, 0, &m, sizeof m) != 0) return -1;
     }
     return 0;
+}
+
+/* ---- 마우스를 장치에서 직접 읽기(--mouse-dev=/dev/input/eventN) -------------------------------
+ * 터미널이 알려 주는 마우스는 글자 칸 단위라서, 글자가 크면 시선이 뚝뚝 끊겨 돈다. 리눅스는 입력 장치를
+ * /dev/input/event* 파일로 내놓는다. 그 파일을 읽으면 마우스가 보낸 그대로의 움직임(struct input_event:
+ * 종류, 번호, 값)이 온다. 가로로 움직인 양(EV_REL, REL_X)을 보스전의 시선에 바로 쓴다. 왼쪽 버튼은 무기 쓰기,
+ * 오른쪽 버튼은 막기, 휠은 다음 무기다.
+ * 그 파일은 보통 root나 input 그룹만 읽을 수 있다(sudo usermod -aG input 사용자). WSL에는 이 장치가 없어서
+ * 리눅스로 부팅한 컴퓨터에서만 된다. 열지 못하면 알리고 터미널의 마우스를 그대로 쓴다.
+ * 입력 스레드가 터미널과 같이 poll로 지켜본다 */
+static int mouse_fd = -1;
+static double mouse_gain = 65536.0 / 2400.0;         /* 마우스가 2400만큼 움직이면 한 바퀴 돈다(--mouse-turn=N) */
+
+static void mouse_open(const char *path)
+{
+    char name[96] = "?";
+    unsigned long rel[(REL_MAX / (8 * sizeof(unsigned long))) + 1];
+    mouse_fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (mouse_fd < 0) {
+        fprintf(stderr, "마우스 장치 %s 을 열 수 없습니다(%s). 터미널의 마우스를 씁니다\n", path, strerror(errno));
+        return;
+    }
+    /* 장치의 이름과, 가로 움직임을 보내는 장치인지 물어본다. 장치 파일이 아니면(검사용 파이프) 묻지 못하고 그대로 쓴다 */
+    memset(rel, 0, sizeof rel);
+    if (ioctl(mouse_fd, EVIOCGNAME(sizeof name - 1), name) >= 0 && ioctl(mouse_fd, EVIOCGBIT(EV_REL, sizeof rel), rel) >= 0 &&
+        !(rel[REL_X / (8 * sizeof(unsigned long))] & (1UL << (REL_X % (8 * sizeof(unsigned long)))))) {
+        fprintf(stderr, "장치 %s (%s)는 마우스가 아닙니다(가로 움직임을 보내지 않습니다). 터미널의 마우스를 씁니다\n", path, name);
+        close(mouse_fd);
+        mouse_fd = -1;
+        return;
+    }
+    fprintf(stderr, "마우스 장치: %s (%s)\n", path, name);
+}
+
+/* 장치가 보낸 사건을 있는 대로 읽어 쓴다. 보스전일 때만 쓰고, 아닐 때는 읽어서 버린다(쌓이지 않게) */
+static int mouse_read(int boss)
+{
+    struct input_event ev[32];
+    int moved = 0, bad = 0;
+    for (;;) {
+        ssize_t n = read(mouse_fd, ev, sizeof ev);
+        if (n < 0 && errno == EINTR) continue;
+        if (n == 0 || (n < 0 && errno != EAGAIN)) {          /* 장치가 뽑혔다 */
+            close(mouse_fd);
+            mouse_fd = -1;
+            break;
+        }
+        if (n < (ssize_t)sizeof ev[0]) break;
+        for (int i = 0; boss && i < (int)(n / (ssize_t)sizeof ev[0]); i++) {
+            if (ev[i].type == EV_REL && ev[i].code == REL_X) moved += ev[i].value;
+            else if (ev[i].type == EV_REL && ev[i].code == REL_WHEEL && ev[i].value != 0) bad |= send_boss_key('f');
+            else if (ev[i].type == EV_KEY && ev[i].code == BTN_LEFT && ev[i].value == 1) bad |= send_boss_key('e');
+            else if (ev[i].type == EV_KEY && ev[i].code == BTN_RIGHT && ev[i].value == 1) bad |= send_boss_key('r');
+        }
+    }
+    if (moved != 0) {
+        look_turn((double)moved * mouse_gain);
+        bad |= look_send(1);
+    }
+    return bad;
+}
+
+/* ---- 에어팟의 머리 움직임(--airpods=블루투스 주소) ---------------------------------------------
+ * 에어팟 프로의 센서를 블루투스 소켓(L2CAP)으로 직접 읽어(ui/airpods.c), 고개를 좌우로 돌린 만큼 보스전의 시선을
+ * 돌린다. 고개는 양쪽으로 60도쯤만 돌아가므로 배율을 곱한다(--airpods-gain=N, 기본 3: 60도를 돌리면 반 바퀴.
+ * 음수이면 방향이 뒤집힌다). 마우스와 같이 쓸 수 있다. 입력 스레드가 터미널, 마우스 장치와 같이 poll로 지켜본다.
+ * 귀에서 빼면 에어팟이 표본을 멈추고, 다시 꽂으면 이어서 온다 */
+static int pods_fd = -1;
+static double pods_gain = 3.0;
+static airpods_yaw_t pods_yaw;
+
+static void pods_close(void)
+{
+    if (pods_fd < 0) return;
+    airpods_stop(pods_fd);
+    close(pods_fd);
+    pods_fd = -1;
+}
+
+/* 통로를 열고 센서를 켠다. 터미널을 바꾸기 전에 불러서 안내가 보이게 한다. 못 열면 알리고 없는 채로 간다 */
+static void pods_open(const char *addr)
+{
+    char err[200];
+    printf("에어팟(%s)에 접속하는 중...\n", addr);
+    pods_fd = airpods_open(addr, err, sizeof err);
+    if (pods_fd >= 0 && airpods_start(pods_fd, 20000) != 0) {        /* 1초에 50번 */
+        snprintf(err, sizeof err, "센서를 켜는 요청을 보내지 못했습니다");
+        close(pods_fd);
+        pods_fd = -1;
+    }
+    if (pods_fd < 0) { printf("에어팟을 쓸 수 없습니다: %s. 마우스와 키보드로 합니다\n", err); return; }
+    printf("에어팟에 접속했습니다. 귀에 꽂고 고개를 돌리면 보스전의 시선이 돕니다\n");
+    atexit(pods_close);
+}
+
+/* 와 있는 패킷을 모두 읽어 고개가 돈 만큼 시선을 돌린다. 보스전이 아닐 때도 읽는다(쌓이지 않게, 그리고 앞 표본의
+ * 시각을 알고 있어야 하므로) */
+static void pods_read(int boss)
+{
+    uint8_t pkt[AIRPODS_MTU];
+    double deg = 0.0;
+    for (;;) {
+        ssize_t n = recv(pods_fd, pkt, sizeof pkt, 0);
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && errno == EAGAIN) break;
+        if (n <= 0) {                                    /* 접속이 끊겼다(케이스에 넣음, 멀어짐) */
+            close(pods_fd);
+            pods_fd = -1;
+            break;
+        }
+        airpods_sample_t s;
+        if (airpods_parse(pkt, (size_t)n, &s)) deg += airpods_yaw(&pods_yaw, &s);
+    }
+    if (boss && deg != 0.0) look_turn(deg * 65536.0 / 360.0 * pods_gain);
+}
+
+/* --airpods-test: 게임 없이 5초 동안 받은 것을 찍는다. 처음 연결했을 때 값이 오는지, 어느 쪽이 오른쪽인지 본다 */
+static int pods_test(void)
+{
+    uint8_t pkt[AIRPODS_MTU];
+    int packets = 0, samples = 0;
+    double total = 0.0;
+    if (pods_fd < 0) return 1;
+    printf("5초 동안 받습니다. 고개를 오른쪽으로 돌려 보세요(오른쪽이 양수여야 합니다)\n");
+    for (int64_t end = now_ms() + 5000; now_ms() < end;) {
+        struct pollfd pf = { pods_fd, POLLIN, 0 };
+        if (poll(&pf, 1, 100) <= 0) continue;
+        ssize_t n = recv(pods_fd, pkt, sizeof pkt, 0);
+        if (n < 0 && (errno == EINTR || errno == EAGAIN)) continue;
+        if (n <= 0) { printf("접속이 끊겼습니다\n"); break; }
+        packets++;
+        airpods_sample_t s;
+        if (!airpods_parse(pkt, (size_t)n, &s)) continue;
+        total += airpods_yaw(&pods_yaw, &s);
+        if (samples++ % 10 == 0)
+            printf("회전 %6d %6d %6d  중력 %6d %6d %6d  자세 %6d %6d %6d  돈 각도 %+7.1f도\n", s.gyro[0], s.gyro[1], s.gyro[2],
+                   s.grav[0], s.grav[1], s.grav[2], s.att[0], s.att[1], s.att[2], total);
+    }
+    printf("받은 패킷 %d개, 그중 움직임 표본 %d개, 오른쪽으로 돈 각도의 합 %+.1f도\n", packets, samples, total);
+    if (samples == 0) printf("표본이 없습니다. 에어팟을 귀에 꽂았는지 확인하세요\n");
+    return samples > 0 ? 0 : 1;
 }
 
 static void *input_main(void *arg)
@@ -399,7 +620,7 @@ static void *input_main(void *arg)
         /* 가만히 있어도 서버가 끊지 않게 2초마다 알린다. 소켓에 쓰는 것은 이 스레드뿐이다 */
         if (now_ms() - pinged >= 2000) {
             pinged = now_ms();
-            if (msg_send(sock, MSG_PING, 0, 0, NULL, 0) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
+            if (net_send(MSG_PING, 0, 0, NULL, 0) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
         }
         pthread_mutex_lock(&S.mu);
         int quit = S.quit, boss = S.have_phase && S.ph.phase == PH_BOSS;
@@ -420,7 +641,12 @@ static void *input_main(void *arg)
             }
             if (look_send(0) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
         }
-        if (poll(&pf, 1, boss ? 15 : 100) <= 0) continue;
+        /* 장치가 없으면 fd가 -1이라 poll이 건너뛴다 */
+        struct pollfd pfs[3] = { pf, { mouse_fd, POLLIN, 0 }, { pods_fd, POLLIN, 0 } };
+        if (poll(pfs, 3, boss ? 15 : 100) <= 0) continue;
+        if (mouse_fd >= 0 && pfs[1].revents) mouse_read(boss);
+        if (pods_fd >= 0 && pfs[2].revents) pods_read(boss);
+        if (!(pfs[0].revents & POLLIN)) continue;
         ssize_t r = read(STDIN_FILENO, buf + len, sizeof buf - len);
         if (r <= 0) continue;
         len += (size_t)r;
@@ -477,7 +703,7 @@ static void *input_main(void *arg)
             } else if (ev.kind != IN_KEY) {
                 continue;
             }
-            if (msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
+            if (net_send(MSG_INPUT, 0, 0, &m, sizeof m) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
         }
         if (len == sizeof buf) len = 0;              /* 해석할 수 없는 바이트가 가득 찼다 */
     }
@@ -595,6 +821,7 @@ static void draw(canvas_t *full)
     const phase_msg_t *ph = &S.ph;
     double t = (double)(now_ms() - S.phase_at) / 1000.0;
     if (!S.have_phase) { scene_message(full, "CONNECTING...", C_TEXT); return; }
+    if (S.rejoining) { scene_message(full, "RECONNECTING...", C_YELLOW); return; }
 
     switch (ph->phase) {
     case PH_LOBBY: {
@@ -1031,10 +1258,10 @@ static int run_screen(void)
 static void send_key(uint16_t code)
 {
     input_msg_t m = { .kind = IN_KEY, .code = code };
-    msg_send(sock, MSG_INPUT, 0, 0, &m, sizeof m);
+    net_send(MSG_INPUT, 0, 0, &m, sizeof m);
 }
 
-static int run_bot(int wait_players)
+static int run_bot(int wait_players, int drop_at)
 {
     static uint8_t body[PROTO_MAX_LEN];
     msg_hdr_t h;
@@ -1044,8 +1271,21 @@ static int run_bot(int wait_players)
     for (;;) {
         /* 올 것이 없으면 1초마다 PING을 보낸다(서버가 말 없는 접속을 끊는다) */
         struct pollfd pf = { sock, POLLIN, 0 };
-        if (poll(&pf, 1, 1000) == 0) { msg_send(sock, MSG_PING, 0, 0, NULL, 0); continue; }
-        if (msg_recv(sock, &h, body, sizeof body) != 1) { printf("BOT 접속이 끊겼습니다\n"); return 1; }
+        if (poll(&pf, 1, 1000) == 0) { net_send(MSG_PING, 0, 0, NULL, 0); continue; }
+        if (msg_recv(sock, &h, body, sizeof body) != 1) {
+            if (rejoin() == 0) { printf("BOT 다시 접속했습니다\n"); continue; }
+            printf("BOT 접속이 끊겼습니다\n");
+            return 1;
+        }
+        if (h.type == MSG_WELCOME && h.len == sizeof(welcome_msg_t)) {
+            welcome_msg_t wm;
+            memcpy(&wm, body, sizeof wm);
+            my_token = wm.token;
+            continue;
+        }
+        /* 검사용(--drop-at=N): 화면을 N장 받았을 때 접속을 일부러 끊는다. 위의 재접속이 자리를 되찾아야 한다 */
+        if (drop_at > 0 && (h.type == MSG_FRAME || h.type == MSG_BOSS) && frames + boss_n == drop_at && rejoin_count == 0)
+            shutdown(sock, SHUT_RDWR);
         if (h.type == MSG_TOP && h.len == sizeof(top_msg_t)) top_n = body[offsetof(top_msg_t, n)];
         if (h.type == MSG_FRAME) {
             if (++frames % 4 == 0) send_key(frames % 8 == 0 ? IN_K_LEFT : IN_K_RIGHT);
@@ -1077,11 +1317,51 @@ static int run_bot(int wait_players)
     }
 }
 
+/* ---- 서버 찾기(--host=auto) -------------------------------------------------------------
+ * 같은 망 전체에 UDP로 "서버 있나요"를 보내고(브로드캐스트) 1초 동안 답을 모은다. 답이 온 주소가 서버다.
+ * 여러 개가 답하면 목록을 찍고 먼저 답한 것을 쓴다. 이 컴퓨터에 떠 있는 서버도 찾도록 127.0.0.1에도 묻는다 */
+static int find_server(int port, char *host_out, size_t cap, int *port_out)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0), one = 1, found = 0;
+    if (fd < 0) return 0;
+    setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &one, sizeof one);      /* 이것 없이는 브로드캐스트 주소로 보낼 수 없다 */
+    find_msg_t q = { .magic = FIND_MAGIC, .version = PROTO_VERSION };
+    static const char *to[] = { "255.255.255.255", "127.0.0.1" };
+    for (int k = 0; k < 2; k++) {
+        struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port) };
+        inet_pton(AF_INET, to[k], &a.sin_addr);
+        sendto(fd, &q, sizeof q, 0, (struct sockaddr *)&a, sizeof a);
+    }
+    int64_t until = now_ms() + 1000;
+    for (;;) {
+        int64_t left = until - now_ms();
+        struct pollfd pf = { fd, POLLIN, 0 };
+        if (left <= 0 || poll(&pf, 1, (int)left) <= 0) break;
+        find_msg_t r;
+        struct sockaddr_in from;
+        socklen_t flen = sizeof from;
+        if (recvfrom(fd, &r, sizeof r, 0, (struct sockaddr *)&from, &flen) != (ssize_t)sizeof r || r.magic != FIND_MAGIC) continue;
+        char ip[INET_ADDRSTRLEN] = "";
+        inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
+        r.host[sizeof r.host - 1] = '\0';
+        printf("찾은 서버: %s:%d (%s, %d명%s)%s\n", ip, r.port, r.host, r.n_seats, r.phase == PH_LOBBY ? ", 로비" : ", 게임 중",
+               r.version == PROTO_VERSION ? "" : "  버전이 달라 접속할 수 없습니다");
+        if (!found && r.version == PROTO_VERSION) {
+            snprintf(host_out, cap, "%s", ip);
+            *port_out = r.port;
+            found = 1;
+        }
+    }
+    close(fd);
+    return found;
+}
+
 int main(int argc, char **argv)
 {
     const char *host = "127.0.0.1", *name = "PLAYER";
-    int port = PROTO_PORT, bot = 0, wait_players = 1, no_title = 0, auto_scale = 0, scale_given = 0;
-    const char *gfx = "auto";
+    int port = PROTO_PORT, bot = 0, wait_players = 1, no_title = 0, auto_scale = 0, scale_given = 0, drop_at = 0;
+    const char *gfx = "auto", *mouse_dev = NULL, *pods_addr = NULL;
+    int pods_try = 0;
     setvbuf(stdout, NULL, _IOLBF, 0);
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -1090,17 +1370,30 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--name=", 7) == 0)   name = a + 7;
         else if (strncmp(a, "--wait=", 7) == 0)   wait_players = atoi(a + 7);
         else if (strcmp(a, "--bot") == 0)         bot = 1;
+        else if (strncmp(a, "--drop-at=", 10) == 0) drop_at = atoi(a + 10);
+        else if (strncmp(a, "--mouse-dev=", 12) == 0) mouse_dev = a + 12;
+        else if (strncmp(a, "--mouse-turn=", 13) == 0 && atof(a + 13) > 0.0) mouse_gain = 65536.0 / atof(a + 13);
+        else if (strncmp(a, "--airpods=", 10) == 0) pods_addr = a + 10;
+        else if (strncmp(a, "--airpods-gain=", 15) == 0 && atof(a + 15) != 0.0) pods_gain = atof(a + 15);
+        else if (strcmp(a, "--airpods-test") == 0) pods_try = 1;
         else if (strcmp(a, "--no-title") == 0)    no_title = 1;
         else if (strcmp(a, "--scale=auto") == 0)  auto_scale = 1;
         else if (strncmp(a, "--scale=", 8) == 0)  { view_scale = atoi(a + 8); scale_given = 1; }
         else if (strcmp(a, "--gfx=auto") == 0 || strcmp(a, "--gfx=cell") == 0 || strcmp(a, "--gfx=sixel") == 0) gfx = a + 6;
         else { printf("모르는 옵션: %s\n", a); return 2; }
     }
+    static char found_host[64];
+    if (strcmp(host, "auto") == 0) {
+        if (!find_server(port, found_host, sizeof found_host, &port)) { printf("같은 망에서 서버를 찾지 못했습니다. --host=주소 로 직접 알려 주세요\n"); return 1; }
+        host = found_host;
+    }
     if (view_scale < 1 || view_scale > PRESENT_MAX_SCALE) {
         printf("--scale은 1부터 %d까지, 또는 auto입니다\n", PRESENT_MAX_SCALE);
         return 2;
     }
     signal(SIGPIPE, SIG_IGN);
+    if (pods_addr && !bot) pods_open(pods_addr);
+    if (pods_try) return pods_addr ? pods_test() : (printf("--airpods=주소 를 같이 주세요\n"), 2);
 
     if (!bot) {
         /* 입장 화면부터 보여 준다. 여기서는 아직 서버에 붙지 않는다 */
@@ -1147,9 +1440,13 @@ int main(int argc, char **argv)
     boss_cfg_load(&boss_cfg, "boss/config.ini");     /* 뛰어오르기를 서버와 같은 수치로 그린다 */
     hello_msg_t hello = { .version = PROTO_VERSION };
     utf8_copy(hello.name, sizeof hello.name, name);
+    srv_host = host;
+    srv_port = port;
+    memcpy(my_name, hello.name, sizeof my_name);
     if (msg_send(sock, MSG_HELLO, 0, 0, &hello, sizeof hello) != 0) { if (!bot) term_leave(); return 1; }
 
-    if (bot) return run_bot(wait_players);
+    if (bot) return run_bot(wait_players, drop_at);
+    if (mouse_dev) mouse_open(mouse_dev);
 
     S.fly = canvas_new(PANE_W, PANE_H);
     for (int p = 0; p < PROTO_PANES; p++) S.panes[p] = canvas_new(PANE_W, PANE_H);

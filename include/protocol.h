@@ -11,7 +11,10 @@
 
 #include <stdint.h>
 
-#define PROTO_VERSION    4             /* 4: 보스전의 먹이(boss_snap_t에 놓인 먹이와 먹는 상태).
+#define PROTO_VERSION    7             /* 7: 재접속(HELLO와 WELCOME에 세션 토큰).
+                                        * 6: 보스전 초파리의 나는 자세와 벽에 붙기(boss_snap_t에 높이, 기울기).
+                                        * 5: 보스전 초파리의 다리(boss_snap_t에 걸음의 위상과 크기).
+                                        * 4: 보스전의 먹이(boss_snap_t에 놓인 먹이와 먹는 상태).
                                         * 3: 보스전의 키(스페이스 뛰기, E 쓰기, R 막기), boss_snap_t의 막기와 높이.
                                         * 2: 보스전의 시선 입력(INPUT_LOOK), MSG_BOSS에 붙는 뇌 표시, boss_snap_t의 각도 */
 #define PROTO_PORT       4620
@@ -47,6 +50,18 @@ enum {
     MSG_RESULT,                        /* 스테이지->S  result_msg_t. 마지막 틱 뒤에 한 번 */
 };
 
+/* 서버 찾기(UDP). 클라이언트가 같은 망 전체에 "서버 있나요"를 보내면(브로드캐스트, 포트는 PROTO_PORT) 서버가 보낸
+ * 사람에게만 답한다. 그 답이 온 주소가 서버의 주소다. TCP 접속과는 따로 도는 한 번 묻고 한 번 답하는 대화다 */
+#define FIND_MAGIC 0x46505353u         /* "SSPF" */
+typedef struct {
+    uint32_t magic;                    /* FIND_MAGIC */
+    uint16_t version;                  /* PROTO_VERSION */
+    uint16_t port;                     /* 답: 게임이 도는 TCP 포트. 물음에서는 0 */
+    uint8_t  phase, n_seats;           /* 답: 지금 단계와 앉아 있는 사람 수 */
+    uint8_t  pad[2];
+    char     host[32];                 /* 답: 서버 컴퓨터의 이름 */
+} find_msg_t;
+
 /* 단계. 게임 마스터의 상태 기계와 같다. */
 enum { PH_LOBBY = 0, PH_CARD, PH_READY, PH_PLAY, PH_VERDICT, PH_BOSS, PH_RANK };
 
@@ -54,11 +69,17 @@ typedef struct {
     uint16_t version;                  /* PROTO_VERSION */
     uint16_t peek;                     /* 1이면 역대 순위(MSG_TOP)만 받고 끊는다. 자리에 앉지 않는다 */
     char     name[PROTO_NAME_LEN];
+    uint8_t  pad[4];
+    uint64_t token;                    /* 재접속: 전에 받은 세션 토큰. 처음 들어오는 것이면 0 */
 } hello_msg_t;
-
+/* 세션 토큰은 서버가 접속마다 무작위로 만들어 그 사람에게만 알려 주는 수다. 게임 도중에 접속이 끊긴 사람이 다시 들어오며
+ * 이 수를 대면, 서버는 그 사람이 앉아 있던 자리(점수, 남은 기회, 이번 라운드의 칸)를 돌려준다. 남이 이름만 대고
+ * 그 자리에 앉을 수는 없다. 새 접속에는 새 토큰을 주고, 다음 재접속에는 그것을 쓴다 */
 typedef struct {
     uint16_t version;
     uint16_t slot;                     /* 서버가 준 접속 번호 */
+    uint8_t  pad[4];
+    uint64_t token;                    /* 이 접속의 세션 토큰 */
 } welcome_msg_t;
 
 /* 단계가 바뀔 때 클라이언트가 화면을 그리는 데 필요한 것을 한 번에 싣는다. */
