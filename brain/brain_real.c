@@ -31,6 +31,8 @@ static struct { int group; const char *name; float full_hz; const uint32_t *idx;
     { BR_WATER,  "BR_WATER",  160.0f, NULL, 0 },
     { BR_OBJECT_L, "BR_OBJECT_L", 150.0f, NULL, 0 },       /* 물체를 보는 시각 뉴런(LC9) */
     { BR_OBJECT_R, "BR_OBJECT_R", 150.0f, NULL, 0 },
+    { BR_SURFACE_L, "BR_SURFACE_L", 150.0f, NULL, 0 },     /* 날아가는 쪽에 다가오는 면(LPLC4) */
+    { BR_SURFACE_R, "BR_SURFACE_R", 150.0f, NULL, 0 },
 };
 #define N_INPUTS ((int)(sizeof inputs / sizeof inputs[0]))
 
@@ -54,6 +56,11 @@ static struct {
     { BR_WALK_R,   "BR_WALK_R",    45.0f, 4, NULL, 0, 0, {0}, {0} },
     { BR_STEER_L,  "BR_STEER_L",   40.0f, 4, NULL, 0, 0, {0}, {0} },
     { BR_STEER_R,  "BR_STEER_R",   40.0f, 4, NULL, 0, 0, {0}, {0} },
+    /* 떠 있는 동안 쓰는 명령 뉴런. 한쪽 다가옴 자극 150에서 반대쪽 DNp06이 초당 100번쯤, 양쪽 면 자극 150에서
+     * 착지 뉴런(DNp07)이 초당 280번쯤 발화한다. 면 자극 30(0.2)이면 150번쯤이라 반응이 0.5를 넘는다 */
+    { BR_AIRTURN_L, "BR_AIRTURN_L", 100.0f, 2, NULL, 0, 0, {0}, {0} },
+    { BR_AIRTURN_R, "BR_AIRTURN_R", 100.0f, 2, NULL, 0, 0, {0}, {0} },
+    { BR_LAND,     "BR_LAND",     280.0f, 2, NULL, 0, 0, {0}, {0} },
 };
 #define N_OUTPUTS ((int)(sizeof outputs / sizeof outputs[0]))
 

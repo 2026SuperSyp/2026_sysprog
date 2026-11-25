@@ -46,6 +46,7 @@ typedef struct {
 void boss_view_draw(canvas_t *full, const boss_snap_t *b, const boss_view_t *v);
 
 /* 초파리가 지금 떠 있는 높이(칸). 두 그리는 쪽이 같이 쓴다. 한 프레임에 한 번 부른다 */
+#define BOSS_VIEW_LAND_TICKS 3       /* 내려앉는 동안(boss/config.ini의 air_land_ticks와 같게 둔다) */
 float boss_view_fly_lift(const boss_snap_t *b);
 
 /* 같은 화면을 픽셀 그림에 그린다(boss_view_hd.c). 화면을 Sixel 그림으로 보낼 때 쓴다. 색을 마음대로 쓸 수 있어서

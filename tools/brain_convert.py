@@ -47,6 +47,11 @@ GROUPS = {
     "BR_WALK_R":   ("type", {"DNp09"}, "right"),
     "BR_STEER_L":  ("type", {"DNa02"}, "left"),     # 방향 전환 명령 뉴런(Rayshubskiy 외 2024)
     "BR_STEER_R":  ("type", {"DNa02"}, "right"),
+    "BR_SURFACE_L": ("type", {"LPLC4"}, "left"),    # 착지 명령 뉴런(DNp07)에 가장 많이 들어오는 시각 뉴런
+    "BR_SURFACE_R": ("type", {"LPLC4"}, "right"),
+    "BR_AIRTURN_L": ("type", {"DNp06"}, "left"),    # 날면서 피해 도는 명령 뉴런(Kim 외 2023)
+    "BR_AIRTURN_R": ("type", {"DNp06"}, "right"),
+    "BR_LAND":     ("type", {"DNp07"}, None),       # 착지 명령 뉴런(Ache 외 2019)
 }
 
 

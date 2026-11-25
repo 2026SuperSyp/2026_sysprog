@@ -12,7 +12,7 @@ int main(void)
     T_EQ_INT(BR_SUGAR, 0);
     T_EQ_INT(BR_VALENCE, 18);                        /* 전부터 있던 것들의 번호는 그대로다 */
     T_EQ_INT(BR_OBJECT_L, 19);                       /* 새 항목은 끝에만 붙는다(11/25: 몸을 움직이는 명령 뉴런 여섯) */
-    T_EQ_INT(BRAIN_GROUP_COUNT, 25);
+    T_EQ_INT(BRAIN_GROUP_COUNT, 29);
     T_EQ_INT(C_NONE, 0);
     T_EQ_INT(C_BROWN, 23);
     T_EQ_INT(SPR_MISSING, 0);

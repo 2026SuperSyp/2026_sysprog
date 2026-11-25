@@ -703,6 +703,7 @@ static void draw_fly(image_t *im, const boss_snap_t *b, const boss_view_t *v, co
     stun_full = stun > stun_full ? stun : (stun == 0 ? 0 : stun_full);
     float lift = boss_view_fly_lift(b);              /* 떠 있는 높이 */
     int flying = lift > 0.08f;
+    int landing = b->fly.air > 0 && b->fly.air <= BOSS_VIEW_LAND_TICKS;
     shadow(im, t, cx, fy, scale * (0.62f - 0.12f * clamp01(lift)), 0.5f - 0.2f * clamp01(lift));
     if (stun > 0 && stun_full > 30)                  /* 끈끈이에 붙었다(막혀서 멈춘 것은 짧다) */
         blot(im, t, cx, fy, scale * 0.8f, (col_t){ 240, 140, 40 }, 0.9f);
@@ -752,7 +753,8 @@ static void draw_fly(image_t *im, const boss_snap_t *b, const boss_view_t *v, co
         int no = ((k & 1) ? 3 : 0) + k / 2;          /* 몸의 다리 번호: 왼쪽 앞, 가운데, 뒤, 오른쪽 앞, 가운데, 뒤 */
         float foot[3] = { 0.30f - 0.30f * (float)(k / 2), (k & 1) ? 0.31f : -0.31f, 0.0f };
         if (!flying) body_foot(&bc, no, (float)b->fly.leg[no] * TWO_PI / 256.0f, (float)b->fly.leg_mag[no] / 127.0f, foot);
-        float top = bz - 0.34f, len = flying ? 0.14f : top - foot[2];
+        /* 날 때는 다리를 접고, 내려앉는 동안에는 여섯 다리를 모두 뻗는다(착지 명령 뉴런이 하는 일이다) */
+        float top = bz - 0.34f, len = flying ? (landing ? 0.34f : 0.14f) : top - foot[2];
         fly_box(&job, FK_LEG, 0, (float[3]){ foot[0], foot[1], top - len * 0.5f }, (float[3]){ 0.045f, 0.045f, len * 0.5f }, 0.0f, rv, up, dir);
     }
     /* 날개: 등의 양옆에 붙어 바깥으로 뻗는다. 떠 있을 때는 빠르게 치고(틱마다 올렸다 내렸다), 내려앉으면 접는다 */
@@ -1019,7 +1021,7 @@ static float draw_brain(image_t *im, const boss_snap_t *b, const boss_view_t *v)
     bar(im, x + 5.0f + lw, gy + 47.0f, w - 10.0f - lw, 4.0f, stim[BR_SUGAR], 0.0f, hd_rgb(250, 200, 60));
     text(im, x + 5.0f, gy + 55.0f, "먹기", DIM, 0.75f, 1.0f);
     bar(im, x + 5.0f + lw, gy + 58.0f, w - 10.0f - lw, 4.0f, rate[BR_FEED], 0.5f, b->fly.feeding ? hd_rgb(85, 200, 120) : SKY);
-    const char *doing = b->fly.hp <= 0 ? "쓰러짐" : (b->fly.stun ? "멈춤" : (b->fly.air ? "달아남" : ((b->fly.windup || b->fly.charging) ? "돌진" :
+    const char *doing = b->fly.hp <= 0 ? "쓰러짐" : (b->fly.stun ? "멈춤" : (b->fly.air ? (b->fly.air <= BOSS_VIEW_LAND_TICKS ? "내려앉음" : "날아감") : ((b->fly.windup || b->fly.charging) ? "돌진" :
                         (b->fly.feeding ? "먹는 중" : (b->fly.lured ? "먹이로 감" : (loom > 0.1f ? "경계" : (walk > 0.15f ? "다가옴" : "가만히")))))));
     text(im, x + 5.0f, gy + 67.0f, "상태", DIM, 0.75f, 1.0f);
     text(im, x + 5.0f + lw, gy + 67.0f, doing, b->fly.feeding ? hd_rgb(85, 200, 120) : INK, 0.75f, 1.0f);

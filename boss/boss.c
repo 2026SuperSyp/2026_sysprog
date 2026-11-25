@@ -11,7 +11,12 @@
  * 보는 시각 뉴런(LC4, LPLC2)에서 입력을 받고, 발화하면 하던 행동을 끊고 뛰어오르게 한다(von Reyn 외 2014).
  * 그래서 그 출력이 발화 기준(takeoff_level)을 넘으면 돌진 중이어도 뛰어오른다. 뛰는 방향은 그 순간 뇌의 방향 출력
  * (좌우 회전, 후진)을 합친 것이다: 한쪽에서 다가오면 반대쪽 앞으로, 앞에서 다가오면 뒤로 뛴다. 빠르기는 잰 값이다.
- * 떠 있는 시간과 내려앉은 뒤 쉬는 시간은 게임 규칙이다(실제 초파리는 그대로 날아가 버린다).
+ * 떠 있는 동안에도 뇌가 정한다. 다가옴 자극이 한쪽에서 계속 오면 날면서 피해 도는 명령 뉴런(DNp06, BR_AIRTURN_L/R)이
+ * 켜지고 그쪽으로 꺾는다(Kim 외 2023). 날아가는 쪽에 벽이 다가오면 그 면을 자극(BR_SURFACE_L/R, 시각 뉴런 LPLC4)으로
+ * 주고, 착지 명령 뉴런(DNp07, BR_LAND)의 반응이 land_level을 넘으면 내려앉기 시작한다(Ache 외 2019).
+ * 실제로 이 뉴런들은 날고 있을 때만 반응한다. 이 뇌 모델에는 그 조절이 없어서, 떠 있을 때만 그 자극을 주고
+ * 그 반응을 읽는 것은 계산부가 한다. 가장 오래 떠 있는 시간, 내려앉는 데 걸리는 시간, 내려앉은 뒤 쉬는 시간은
+ * 게임 규칙이다(실제 초파리는 그대로 날아가 버린다).
  * 자극의 세기는 진짜 뇌에 맞췄다. 진짜 뇌는 다가옴 자극 0.23쯤에서 달아남 출력이 발화 기준 0.5를 넘는다
  * (make bossbot BRAIN=real의 첫 줄이 이 곡선이다). 그래서 걸어서 다가오면 0.23을 넘고, 살금살금 다가오거나
  * 가만히 서 있을 때는 넘지 않게 잡았다. 가짜 뇌는 덜 예민해서(0.42쯤) 덜 뛴다.
@@ -34,6 +39,7 @@
 
 #define PI_F 3.14159265f
 #define BAIT_TOUCH 0.2f              /* 초파리의 몸이 먹이에 닿았다고 보는 틈(칸) */
+#define SURFACE_ANGLE 0.35f          /* 떠 있을 때 날아가는 쪽에서 좌우로 이만큼(20도) 벌려 벽을 본다 */
 
 /* ---- 설정 ---------------------------------------------------------------------- */
 void boss_cfg_default(boss_cfg_t *c)
@@ -52,8 +58,10 @@ void boss_cfg_default(boss_cfg_t *c)
     c->foot_lift = 0.12f; c->foot_fore = 0.48f; c->foot_side = 0.45f;
     c->body_spring_hz = 8.0f; c->body_damping = 0.7f; c->leg_grip = 60.0f; c->hit_push = 2.0f;
     c->speed_scale = 0.22f; c->turn_scale = 1.0f;
-    c->takeoff_level = 0.5f; c->takeoff_mm_s = 480.0f; c->air_ticks = 10; c->air_rest_ticks = 20;
+    c->takeoff_level = 0.5f; c->takeoff_mm_s = 480.0f; c->air_ticks = 12; c->air_rest_ticks = 20;
     c->takeoff_scale = 0.055f;
+    c->air_turn_deg_s = 1000.0f; c->air_turn_scale = 0.3f; c->land_level = 0.5f; c->surface_gain = 0.07f;
+    c->air_min_ticks = 4; c->air_land_ticks = 3;
     c->guard_ticks = 10; c->guard_cooldown = 50; c->guard_stun = 24;
     c->jump_ticks = 10; c->jump_rest = 0; c->jump_buffer = 3; c->jump_carry = 4; c->jump_height = 1.0f; c->jump_clear = 0.35f;
     c->bait_count = 3; c->bait_ticks = 60; c->bait_wary = 100;
@@ -85,6 +93,7 @@ void boss_cfg_load(boss_cfg_t *c, const char *path)
     F(step_hz); F(cpg_couple); F(cpg_converge); F(swing_front); F(swing_mid); F(swing_hind);
     F(foot_lift); F(foot_fore); F(foot_side); F(body_spring_hz); F(body_damping); F(leg_grip); F(hit_push);
     F(takeoff_level); F(takeoff_mm_s); I(air_ticks); I(air_rest_ticks); F(takeoff_scale);
+    F(air_turn_deg_s); F(air_turn_scale); F(land_level); F(surface_gain); I(air_min_ticks); I(air_land_ticks);
     I(guard_ticks); I(guard_cooldown); I(guard_stun);
     I(jump_ticks); I(jump_rest); I(jump_buffer); I(jump_carry); F(jump_height); F(jump_clear);
     I(bait_count); I(bait_ticks); I(bait_wary); F(bait_throw); F(bait_smell); F(bait_sugar); F(bait_heal);
@@ -328,6 +337,13 @@ static float threat(const boss_state_t *s, int i)
     return clamp01(level);
 }
 
+/* 떠서 날아가는 빠르기(칸/초). 도약의 빠르기에는 전체 배율(speed_scale)이 아니라 따로 둔 배율을 곱한다. 전체 배율을
+ * 그대로 쓰면 0.2초에 10칸을 날아가서 순간이동처럼 보였다 */
+static float air_speed(const boss_cfg_t *c)
+{
+    return c->takeoff_mm_s * 2.0f * c->fly_radius / c->body_mm * c->takeoff_scale;
+}
+
 void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT])
 {
     const boss_fly_t *f = &s->fly;
@@ -369,6 +385,16 @@ void boss_stimulus(const boss_state_t *s, float stim[BRAIN_GROUP_COUNT])
     }
     stim[BR_OBJECT_L] = ol;
     stim[BR_OBJECT_R] = orr;
+    /* 떠 있는 동안: 날아가는 쪽의 벽. 눈에는 다가오는 면으로 보인다. 세기는 빠르기 / 거리, 곧 닿을 때까지 남은
+     * 시간의 역수에 비례한다. 걸을 때는 느려서 이 값이 0에 가깝고, 실제 착지 뉴런도 날 때만 반응하므로(Ache 외 2019)
+     * 떠 있을 때만 준다. 왼쪽 앞과 오른쪽 앞을 따로 본다 */
+    if (f->air > 0) {
+        float a = atan2f(f->air_dy, f->air_dx), v = air_speed(&s->cfg);
+        float dl = wall_dist(s, f->x, f->y, a - SURFACE_ANGLE, 8.0f) - s->cfg.fly_radius;
+        float dr = wall_dist(s, f->x, f->y, a + SURFACE_ANGLE, 8.0f) - s->cfg.fly_radius;
+        stim[BR_SURFACE_L] = clamp01(s->cfg.surface_gain * v / (dl < 0.1f ? 0.1f : dl));
+        stim[BR_SURFACE_R] = clamp01(s->cfg.surface_gain * v / (dr < 0.1f ? 0.1f : dr));
+    }
 }
 
 /* ---- 참가자 ------------------------------------------------------------------------- */
@@ -598,14 +624,28 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
     if (f->hurt > 0) f->hurt--;
     if (f->stun > 0) { f->stun--; return; }          /* 붙어 있는 동안은 움직이지도 공격하지도 않는다 */
 
-    /* 떠 있는 동안: 뛰어오른 방향으로 곧게 간다. 빨라서 벽을 건너뛰지 않게 잘게 나눠 움직인다 */
+    /* 떠 있는 동안: 날아가는 방향으로 간다. 그 방향은 뇌의 꺾기 명령(DNp06)의 좌우 차이만큼 돈다. 몸도 같이 돈다.
+     * 빨라서 벽을 건너뛰지 않게 잘게 나눠 움직인다 */
     if (f->air > 0) {
-        /* 도약의 빠르기에는 전체 배율(speed_scale)이 아니라 따로 둔 배율을 곱한다. 전체 배율을 그대로 쓰면 0.2초에
-         * 10칸을 날아가서 순간이동처럼 보였다. 지금은 0.5초에 6칸쯤 날아가므로 날아가는 것이 눈에 보인다 */
-        float len = c->takeoff_mm_s * 2.0f * c->fly_radius / c->body_mm * c->takeoff_scale / 20.0f;
+        float turn = (rate[BR_AIRTURN_R] - rate[BR_AIRTURN_L]) * c->air_turn_deg_s * PI_F / 180.0f * c->air_turn_scale / 20.0f;
+        if (turn != 0.0f) {
+            float cs = cosf(turn), sn = sinf(turn), dx = f->air_dx, dy = f->air_dy;
+            f->air_dx = dx * cs - dy * sn;
+            f->air_dy = dx * sn + dy * cs;
+            f->ang = wrap_angle(f->ang + turn);
+        }
+        f->w = turn;
+        float len = air_speed(c) / 20.0f;
         int n = (int)(len / 0.2f) + 1;
         for (int k = 0; k < n; k++)
             slide(s, &f->x, &f->y, f->air_dx * len / (float)n, f->air_dy * len / (float)n, c->fly_radius);
+        f->air_age++;
+        /* 착지: 뇌의 착지 명령(DNp07)이 기준을 넘으면 내려앉기 시작한다. 명령이 없어도 air_ticks가 지나면 내려앉는다
+         * (게임 규칙). 남은 틱의 마지막 air_land_ticks가 내려앉는 동안이다 */
+        if (f->air > c->air_land_ticks + 1 && f->air_age >= c->air_min_ticks && rate[BR_LAND] >= c->land_level) {
+            f->air = c->air_land_ticks + 1;
+            event(s, BOSS_EV_DESCEND, 255, f->x, f->y);
+        }
         if (--f->air == 0) {
             f->air_rest = c->air_rest_ticks;
             f->v = f->w = 0.0f;
@@ -621,6 +661,7 @@ static void fly_act(boss_state_t *s, const float rate[BRAIN_GROUP_COUNT])
         f->air_dx = cosf(a);
         f->air_dy = sinf(a);
         f->air = c->air_ticks;
+        f->air_age = 0;
         if (f->windup > 0 || f->charging > 0) f->charge_cool = c->charge_cooldown;
         f->windup = f->charging = 0;
         f->target = -1;

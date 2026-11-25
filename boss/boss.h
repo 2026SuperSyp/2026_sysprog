@@ -73,7 +73,8 @@ enum {
     BOSS_EV_BLOCK,                               /* 돌진을 막았다(who가 막은 참가자) */
     BOSS_EV_DODGE,                               /* 돌진을 뛰어넘어 피했다(who가 피한 참가자) */
     BOSS_EV_BAIT,                                /* 먹이를 놓았다(x, y는 놓인 곳) */
-    BOSS_EV_EAT                                  /* 초파리가 먹기 시작했다 */
+    BOSS_EV_EAT,                                 /* 초파리가 먹기 시작했다 */
+    BOSS_EV_DESCEND                              /* 뇌의 착지 명령으로 내려앉기 시작했다 */
 };
 
 typedef struct {
@@ -96,6 +97,11 @@ typedef struct {
     /* 도약. 뇌의 달아남 출력(거대 섬유 뉴런)이 takeoff_level 이상이면 뛰어오른다 */
     float takeoff_level, takeoff_mm_s;           /* 뛰는 기준(반응), 뛰어오른 직후의 빠르기(잰 값) */
     float takeoff_scale;                         /* 도약에만 곱하는 게임용 배율(speed_scale 대신) */
+    /* 떠 있는 동안. 꺾는 것과 내려앉는 때는 뇌가 정한다(명령 뉴런 DNp06, DNp07) */
+    float air_turn_deg_s, air_turn_scale;        /* 꺾기 명령이 1일 때 도는 빠르기(잰 값)와 게임용 배율 */
+    float land_level;                            /* 착지 명령의 반응이 이 이상이면 내려앉기 시작한다 */
+    float surface_gain;                          /* 날아가는 쪽 면의 자극 = surface_gain x 빠르기 / 거리 */
+    int   air_min_ticks, air_land_ticks;         /* 뛰어오른 뒤 내려앉지 않는 시간, 내려앉는 데 걸리는 시간(게임 규칙) */
     int   guard_ticks, guard_cooldown, guard_stun;   /* 막는 자세의 길이, 다시 쓸 때까지, 막힌 초파리가 멈추는 시간 */
     int   jump_ticks, jump_rest;                 /* 뛰어올라 떠 있는 시간, 내려선 뒤 다시 뛰지 못하는 시간 */
     int   jump_buffer;                           /* 뛸 수 없을 때 누른 키를 기억해 두는 시간. 그 안에 뛸 수 있게 되면 뛴다 */
@@ -110,7 +116,7 @@ typedef struct {
      * 세기에 see_player, see_bait를 곱한다. 이 자극이 뇌의 걷기 명령 뉴런을 켜서 초파리가 그쪽으로 걸어간다 */
     float see_range, see_player, see_bait;
     float pursue_turn;                           /* 걷기 명령의 좌우 차이가 도는 빠르기에 주는 몫 */
-    int   air_ticks, air_rest_ticks;             /* 떠 있는 시간, 내려앉은 뒤 다시 뛰지 못하는 시간(둘 다 게임 규칙) */
+    int   air_ticks, air_rest_ticks;             /* 떠 있는 가장 긴 시간, 내려앉은 뒤 다시 뛰지 못하는 시간(둘 다 게임 규칙) */
     float swat_range, swat_damage; int swat_cooldown;
     float spray_range, spray_damage; int spray_ammo, spray_cooldown;
     float trap_speed, trap_range; int trap_count, stun_ticks;
@@ -155,12 +161,13 @@ typedef struct {
     float v, w;                  /* 방금 틱에 움직인 거리(칸)와 돈 각도(라디안). 기록용 */
     body_t body;                 /* 몸: 다리 여섯의 걸음과 힘(boss/body.h). 걸을 때의 자리와 방향은 여기서 나온다 */
     int   hurt;                  /* 맞은 뒤 남은 틱 */
-    int   air, air_rest;         /* 떠 있는 남은 틱, 내려앉은 뒤 쉬는 남은 틱 */
+    int   air, air_rest;         /* 떠 있는 남은 틱(마지막 air_land_ticks는 내려앉는 중), 내려앉은 뒤 쉬는 남은 틱 */
+    int   air_age;               /* 뛰어오른 뒤 지난 틱 */
     int   dodged;                /* 이번 돌진을 뛰어넘어 피한 참가자들(비트). 피한 사람은 그 돌진에 다시 맞지 않는다 */
     int   feeding, lured;        /* 이번 틱에 먹고 있다, 먹이 쪽으로 가고 있다 */
     int   bait;                  /* 그 먹이의 번호 */
     int   wary;                  /* 놀라서 먹이를 찾지 않는 남은 틱 */
-    float air_dx, air_dy;        /* 뛰어오른 방향(길이 1) */
+    float air_dx, air_dy;        /* 날아가는 방향(길이 1). 떠 있는 동안 뇌의 꺾기 명령으로 돈다 */
     float hurt_x, hurt_y;        /* 때린 사람이 있던 곳 */
 } boss_fly_t;
 

@@ -68,7 +68,7 @@ static int bot_key(const boss_state_t *s, int i, int strat, bot_t *b, stage_rng_
 
 typedef struct {
     int games, wins;
-    double ticks, dealt, taken, charges, hits, escape, backward, near_wall, stuck_turns, takeoffs;
+    double ticks, dealt, taken, charges, hits, escape, backward, near_wall, stuck_turns, takeoffs, descends;
 } stat_t;
 
 static int near_wall(const boss_state_t *s)
@@ -153,6 +153,7 @@ static void play(const boss_cfg_t *c, brain_mode_t mode, int strat, int n, uint3
             st->charges += s.ev[e].kind == BOSS_EV_CHARGE;
             st->hits += s.ev[e].kind == BOSS_EV_HIT_PLAYER;
             st->takeoffs += s.ev[e].kind == BOSS_EV_TAKEOFF;
+            st->descends += s.ev[e].kind == BOSS_EV_DESCEND;      /* 뇌의 착지 명령으로 내려앉은 횟수 */
         }
         if (s.fly.stun == 0 && s.fly.windup + s.fly.charging == 0) {
             st->escape += rate[BR_ESCAPE] >= 0.5f;
@@ -170,9 +171,9 @@ static void row(const char *brain, int strat, int n, const stat_t *st)
 {
     double g = st->games, t = st->ticks;
     printf("%-5s %-6s %d명 %4d판  승률 %5.1f%%  평균 %5.1f초  준 피해/명 %6.1f  받은 피해/명 %4.2f  "
-           "돌진/판 %5.1f  맞힘/판 %4.1f  도약/판 %5.1f  | 달아남 %4.1f%%  뒤로 %4.1f%%  벽 옆 %4.1f%%  끼어서 돎/판 %4.1f\n",
+           "돌진/판 %5.1f  맞힘/판 %4.1f  도약/판 %5.1f  착지 명령/판 %5.1f  | 달아남 %4.1f%%  뒤로 %4.1f%%  벽 옆 %4.1f%%  끼어서 돎/판 %4.1f\n",
            brain, strat_name[strat], n, st->games, 100.0 * st->wins / g, t / g / 20.0, st->dealt / g / n, st->taken / g / n,
-           st->charges / g, st->hits / g, st->takeoffs / g, 100.0 * st->escape / t, 100.0 * st->backward / t, 100.0 * st->near_wall / t,
+           st->charges / g, st->hits / g, st->takeoffs / g, st->descends / g, 100.0 * st->escape / t, 100.0 * st->backward / t, 100.0 * st->near_wall / t,
            st->stuck_turns / g);
 }
 
