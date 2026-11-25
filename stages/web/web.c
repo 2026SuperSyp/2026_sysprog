@@ -15,7 +15,7 @@ typedef struct {
 
 typedef struct {
     float x, y, camera, best;
-    int lives, stun_until, last_move;
+    int lives, stun_until, safe_until, last_move;
     int finished, finish_tick;
 } actor_t;
 
@@ -43,7 +43,7 @@ static const web_t webs[] = {
 
 static actor_t players[STAGE_MAX_PLAYERS], fly;
 static int n_players, ticks, tick_no;
-static int lives_max, step_gap, stun_ticks;
+static int lives_max, step_gap, stun_ticks, grace_ticks;
 
 static float world_h, spawn_y, goal_y;
 static float body_w, move_px, fly_speed;
@@ -141,10 +141,18 @@ static void step_actor(
         );
 
         if (hits_web(nx, ny)) {
-            a->lives--;
-            a->stun_until = tick_no + stun_ticks;
-            fx_flash(pane, C_BAD, 70);
-            fx_shake(pane, 2, 140);
+            /* For a short while after a hit the web only blocks.
+             * Otherwise a held key walks into the same web again
+             * the moment the stun ends and takes every life in
+             * about half a second.
+             */
+            if (tick_no >= a->safe_until) {
+                a->lives--;
+                a->stun_until = tick_no + stun_ticks;
+                a->safe_until = a->stun_until + grace_ticks;
+                fx_flash(pane, C_BAD, 70);
+                fx_shake(pane, 2, 140);
+            }
             break;
         }
 
@@ -196,6 +204,9 @@ void stage_start(const stage_ctx_t *ctx) {
 
     stun_ticks = (int)cfg_get("stun_ticks", 6.0f);
     if (stun_ticks < 0) stun_ticks = 0;
+
+    grace_ticks = (int)cfg_get("grace_ticks", 14.0f);
+    if (grace_ticks < 0) grace_ticks = 0;
 
     lives_max = (int)cfg_get("lives", 3.0f);
     if (lives_max < 1) lives_max = 1;
@@ -555,26 +566,13 @@ static float score(const actor_t *a) {
 
 void stage_result(stage_result_t *out)
 {
-    for (int p = 0; p < STAGE_MAX_PLAYERS; p++) {
-        if (p >= n_players) {
-            out->score[p] = 0.0f;
-        }
-        else if (players[p].finished) {
-            /* 출구에 도달한 플레이어만 높은 점수를 받음 */
-            out->score[p] = score(&players[p]);
-        }
-        else {
-            /* 탈출 실패 시 승리할 수 없도록 0점 처리 */
-            out->score[p] = 0.0f;
-        }
-    }
+    /* 참가자와 초파리를 같은 규칙으로 채점한다: 출구에 닿으면 90~100점(빨리 닿을수록 높다),
+     * 못 닿으면 올라간 만큼 0~80점. 출구에 닿은 쪽이 못 닿은 쪽을 항상 이기고, 못 닿은 사람도
+     * 올라간 만큼은 점수를 받는다. 초파리는 늘 조금은 올라가므로 가만히 있던 참가자와 0:0으로
+     * 비기지 않는다 */
+    for (int p = 0; p < STAGE_MAX_PLAYERS; p++)
+        out->score[p] = p < n_players ? score(&players[p]) : 0.0f;
 
-    if (fly.finished) {
-        out->fly_score = score(&fly);
-    }
-    else {
-        /* 둘 다 실패해도 0:0 동점 WIN이 발생하지 않게 함 */
-        out->fly_score = 1.0f;
-    }
+    out->fly_score = score(&fly);
 }
 
