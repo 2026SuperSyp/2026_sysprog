@@ -50,6 +50,18 @@ enum {
     MSG_RESULT,                        /* 스테이지->S  result_msg_t. 마지막 틱 뒤에 한 번 */
 };
 
+/* 서버 찾기(UDP). 클라이언트가 같은 망 전체에 "서버 있나요"를 보내면(브로드캐스트, 포트는 PROTO_PORT) 서버가 보낸
+ * 사람에게만 답한다. 그 답이 온 주소가 서버의 주소다. TCP 접속과는 따로 도는 한 번 묻고 한 번 답하는 대화다 */
+#define FIND_MAGIC 0x46505353u         /* "SSPF" */
+typedef struct {
+    uint32_t magic;                    /* FIND_MAGIC */
+    uint16_t version;                  /* PROTO_VERSION */
+    uint16_t port;                     /* 답: 게임이 도는 TCP 포트. 물음에서는 0 */
+    uint8_t  phase, n_seats;           /* 답: 지금 단계와 앉아 있는 사람 수 */
+    uint8_t  pad[2];
+    char     host[32];                 /* 답: 서버 컴퓨터의 이름 */
+} find_msg_t;
+
 /* 단계. 게임 마스터의 상태 기계와 같다. */
 enum { PH_LOBBY = 0, PH_CARD, PH_READY, PH_PLAY, PH_VERDICT, PH_BOSS, PH_RANK };
 

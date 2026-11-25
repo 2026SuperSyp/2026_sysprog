@@ -12,6 +12,10 @@
 - 훈련: `make boss-train`이 CPU 수만큼 프로세스를 띄워 보스전의 게임 규칙 수치를 봇과의 대전으로 맞추고 `boss/trained.ini`에 쓴다. 그 파일이 있으면 게임이 설정 위에 덧씌운다. 되돌리려면 그 파일을 지운다. 목표는 `TRAIN="--target-sec=45 --target-win=70 --gens=20"`처럼 준다.
 - 마우스 장치: 리눅스로 부팅한 컴퓨터에서는 `client --mouse-dev=/dev/input/eventN`으로 보스전의 시선을 마우스 장치에서 직접 읽을 수 있다(읽을 권한 필요. WSL에서는 안 된다).
 - 창 크기가 바뀌면 SIGWINCH로 알아채고, 랭킹 파일은 fsync와 rename으로 전원이 나가도 남게 쓴다.
+- 서버 찾기: `client --host=auto`가 같은 망에 UDP 브로드캐스트로 물어 서버의 주소를 알아낸다. 주소를 몰라도 된다.
+- 관리 창구: 서버가 뜨면 `/tmp/ssp_ctl_포트`라는 이름 있는 파이프가 생긴다. 다른 터미널에서 `echo status > /tmp/ssp_ctl_4620`처럼 쓴다. 명령은 `status`(상태를 로그에), `boss`(보스전으로 건너뜀), `lobby`(로비로), `quit`(끝냄)이다.
+- 데몬: `server --daemon [--log=파일] [--pid=파일]`은 터미널에서 떨어져 뒤에서 돈다. 로그는 `build/logs/server.log`, pid는 `build/server.pid`에 있다. 끝내려면 `echo quit > /tmp/ssp_ctl_포트` 또는 `kill $(cat build/server.pid)`.
+- 서버의 틱은 주기 타이머(setitimer, SIGALRM)가 박자를 준다. 한 판이 끝나면 쓴 CPU 시간과 메모리(getrusage)를 로그에 찍는다. `server --nice=N`은 우선순위를 낮춘다.
 
 ## 11/24에 바뀐 것 (스테이지를 만드는 사람은 꼭 읽기)
 

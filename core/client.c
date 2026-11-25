@@ -8,6 +8,7 @@
  *       --gfx=auto|sixel|cell: 화면을 픽셀 그림(Sixel)으로 보낼지 글자 칸으로 보낼지. auto(기본값)는 터미널에 물어서
  *       그림을 받으면 그림으로 보낸다. 그림은 창에 들어가는 가장 큰 배율로 그린다(10배 = 2400x1340까지).
  *       그때 --scale=N은 그 상한을 낮춘다
+ *   build/dev/client --host=auto              같은 망에서 서버를 찾아(UDP 브로드캐스트) 접속한다
  *   build/dev/client --mouse-dev=/dev/input/eventN [--mouse-turn=N]   보스전의 시선을 마우스 장치에서 직접 읽는다
  *                    (리눅스로 부팅한 컴퓨터, 읽을 권한 필요. N은 한 바퀴 도는 데 드는 마우스 움직임, 기본 2400)
  *   build/dev/client --bot [--wait=N] [...]   화면 없이 접속해 준비하고 무작위로 누른다(검사용).
@@ -1229,6 +1230,45 @@ static int run_bot(int wait_players, int drop_at)
     }
 }
 
+/* ---- 서버 찾기(--host=auto) -------------------------------------------------------------
+ * 같은 망 전체에 UDP로 "서버 있나요"를 보내고(브로드캐스트) 1초 동안 답을 모은다. 답이 온 주소가 서버다.
+ * 여러 개가 답하면 목록을 찍고 먼저 답한 것을 쓴다. 이 컴퓨터에 떠 있는 서버도 찾도록 127.0.0.1에도 묻는다 */
+static int find_server(int port, char *host_out, size_t cap, int *port_out)
+{
+    int fd = socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, 0), one = 1, found = 0;
+    if (fd < 0) return 0;
+    setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &one, sizeof one);      /* 이것 없이는 브로드캐스트 주소로 보낼 수 없다 */
+    find_msg_t q = { .magic = FIND_MAGIC, .version = PROTO_VERSION };
+    static const char *to[] = { "255.255.255.255", "127.0.0.1" };
+    for (int k = 0; k < 2; k++) {
+        struct sockaddr_in a = { .sin_family = AF_INET, .sin_port = htons((uint16_t)port) };
+        inet_pton(AF_INET, to[k], &a.sin_addr);
+        sendto(fd, &q, sizeof q, 0, (struct sockaddr *)&a, sizeof a);
+    }
+    int64_t until = now_ms() + 1000;
+    for (;;) {
+        int64_t left = until - now_ms();
+        struct pollfd pf = { fd, POLLIN, 0 };
+        if (left <= 0 || poll(&pf, 1, (int)left) <= 0) break;
+        find_msg_t r;
+        struct sockaddr_in from;
+        socklen_t flen = sizeof from;
+        if (recvfrom(fd, &r, sizeof r, 0, (struct sockaddr *)&from, &flen) != (ssize_t)sizeof r || r.magic != FIND_MAGIC) continue;
+        char ip[INET_ADDRSTRLEN] = "";
+        inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
+        r.host[sizeof r.host - 1] = '\0';
+        printf("찾은 서버: %s:%d (%s, %d명%s)%s\n", ip, r.port, r.host, r.n_seats, r.phase == PH_LOBBY ? ", 로비" : ", 게임 중",
+               r.version == PROTO_VERSION ? "" : "  버전이 달라 접속할 수 없습니다");
+        if (!found && r.version == PROTO_VERSION) {
+            snprintf(host_out, cap, "%s", ip);
+            *port_out = r.port;
+            found = 1;
+        }
+    }
+    close(fd);
+    return found;
+}
+
 int main(int argc, char **argv)
 {
     const char *host = "127.0.0.1", *name = "PLAYER";
@@ -1250,6 +1290,11 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--scale=", 8) == 0)  { view_scale = atoi(a + 8); scale_given = 1; }
         else if (strcmp(a, "--gfx=auto") == 0 || strcmp(a, "--gfx=cell") == 0 || strcmp(a, "--gfx=sixel") == 0) gfx = a + 6;
         else { printf("모르는 옵션: %s\n", a); return 2; }
+    }
+    static char found_host[64];
+    if (strcmp(host, "auto") == 0) {
+        if (!find_server(port, found_host, sizeof found_host, &port)) { printf("같은 망에서 서버를 찾지 못했습니다. --host=주소 로 직접 알려 주세요\n"); return 1; }
+        host = found_host;
     }
     if (view_scale < 1 || view_scale > PRESENT_MAX_SCALE) {
         printf("--scale은 1부터 %d까지, 또는 auto입니다\n", PRESENT_MAX_SCALE);
