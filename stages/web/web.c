@@ -1,62 +1,128 @@
 
-/* Spider web escape: fixed 2D obstacle field.
- * W/A/S/D: player movement in world coordinates.
- * Camera follows only when the character climbs upward.
- * Fly: automatic forward movement + brain-driven turning.
+/*
+ * SUPER SYP PARTY - Spider Web Escape
+ *
+ * Player: W/A/S/D movement.
+ * Fly: route planning + brain-controlled turning.
+ *
+ * Three deterministic maps:
+ * 0 = original map
+ * 1 = mirrored map
+ * 2 = alternate mirrored obstacles
+ *
+ * Existing movement, brain, camera, collision,
+ * progress and scoring rules are preserved.
  */
+
 #include "stage.h"
 #include "brain.h"
 
 #define BODY_H 9
+#define WORLD_HEIGHT 420
+#define LOOK_TICKS 45
+#define STEER_BAND 3.0f
+#define ESCAPE_COOLDOWN 8
 
 typedef struct {
     int x, y, w, h;
 } web_t;
 
 typedef struct {
-    float x, y, camera, best;
-    int lives, stun_until, safe_until, last_move;
-    int finished, finish_tick;
+    float x, y;
+    float camera;
+    float best;
+
+    int lives;
+    int stun_until;
+    int safe_until;
+    int last_move;
+
+    int finished;
+    int finish_tick;
 } actor_t;
 
-/* Fixed map data: y=0 is the top of the world. */
-static const web_t webs[] = {
+/* Original map, unchanged. */
+static const web_t base_webs[] = {
+    { 0,   0,  8, 420},
+    {86,   0,  8, 420},
 
-    /* 맵 양쪽 끝을 막는 세로 거미줄 벽 */
-    {0, 0, 8, 420},
-    {86, 0, 8, 420},
-
-
-
-    { 8, 340, 34, 10}, {66, 325, 23, 14},
+    { 8, 340, 34, 10},
+    {66, 325, 23, 14},
     {30, 288, 45,  9},
-    { 0, 257, 27, 15}, {51, 251, 39, 12},
-    {17, 215, 23, 18}, {56, 205, 22, 20},
-    { 0, 172, 50,  8}, {72, 159, 22, 14},
+    { 0, 257, 27, 15},
+    {51, 251, 39, 12},
+    {17, 215, 23, 18},
+    {56, 205, 22, 20},
+    { 0, 172, 50,  8},
+    {72, 159, 22, 14},
     {32, 139, 26, 14},
-    { 5, 105, 31, 18}, {60, 99, 32, 13},
+    { 5, 105, 31, 18},
+    {60,  99, 32, 13},
     {34,  71, 45, 10},
-    { 0,  42, 25, 10}, {60, 37, 25, 10}
+    { 0,  42, 25, 10},
+    {60,  37, 25, 10}
 };
 
-#define N_WEBS ((int)(sizeof(webs) / sizeof(webs[0])))
+#define N_WEBS \
+    ((int)(sizeof(base_webs) / sizeof(base_webs[0])))
 
-static actor_t players[STAGE_MAX_PLAYERS], fly;
-static int n_players, ticks, tick_no;
-static int lives_max, step_gap, stun_ticks, grace_ticks;
+/* Selected map for this match. */
+static web_t webs[N_WEBS];
 
-static float world_h, spawn_y, goal_y;
-static float body_w, move_px, fly_speed;
-static float sense_range, level_min, level_max;
-static float steer_px, deadzone;
-
-/* Fly steering: how many ticks ahead its path is checked, how close to
- * the chosen column it stops steering, and the column it is heading for
- * (negative: none yet).
+/*
+ * Map A: original.
+ * Map B: horizontally mirrored.
+ * Map C: alternating interior obstacles mirrored.
+ *
+ * Boundary walls remain in place.
  */
-#define LOOK_TICKS 45
-#define STEER_BAND 3.0f
+static void select_map(int variant)
+{
+    for (int i = 0; i < N_WEBS; i++) {
+        webs[i] = base_webs[i];
+
+        int mirror =
+            (variant == 1) ||
+            (variant == 2 &&
+             i >= 2 &&
+             (i % 2) != 0);
+
+        if (mirror) {
+            webs[i].x =
+                PANE_W - base_webs[i].x
+                - base_webs[i].w;
+        }
+    }
+}
+
+static actor_t players[STAGE_MAX_PLAYERS];
+static actor_t fly;
+
+static int n_players;
+static int ticks;
+static int tick_no;
+
+static int lives_max;
+static int step_gap;
+static int stun_ticks;
+static int grace_ticks;
+
+static float world_h;
+static float spawn_y;
+static float goal_y;
+
+static float body_w;
+static float move_px;
+static float fly_speed;
+
+static float sense_range;
+static float level_min;
+static float level_max;
+static float steer_px;
+static float deadzone;
+
 static float fly_goal;
+static int fly_escape_last_tick;
 
 static const stage_info_t info = {
     .title = "거미줄 탈출",
@@ -64,26 +130,35 @@ static const stage_info_t info = {
     .controls = "W A S D 이동"
 };
 
-const stage_info_t *stage_info(void) {
+const stage_info_t *stage_info(void)
+{
     return &info;
 }
 
-static float limit(float v, float lo, float hi) {
-    return v < lo ? lo : (v > hi ? hi : v);
+/* ---------- Helpers ---------- */
+
+static float limit(float v, float lo, float hi)
+{
+    if (v < lo) return lo;
+    if (v > hi) return hi;
+    return v;
 }
 
-static float absv(float v) {
-    return v < 0 ? -v : v;
+static float absv(float v)
+{
+    return v < 0.0f ? -v : v;
 }
 
-/* Rectangle collision between actor and fixed web objects. */
-static int hits_web(float x, float y) {
+/* ---------- Collision ---------- */
+
+static int hits_web(float x, float y)
+{
     float l = x - body_w * 0.5f;
     float r = x + body_w * 0.5f;
     float t = y - BODY_H * 0.5f;
     float b = y + BODY_H * 0.5f;
 
-    if (l < 2 || r > PANE_W - 2)
+    if (l < 2.0f || r > PANE_W - 2.0f)
         return 1;
 
     for (int i = 0; i < N_WEBS; i++) {
@@ -92,67 +167,95 @@ static int hits_web(float x, float y) {
         if (l < w->x + w->w &&
             r > w->x &&
             t < w->y + w->h &&
-            b > w->y)
+            b > w->y) {
             return 1;
+        }
     }
+
     return 0;
 }
 
-static void update_progress(actor_t *a) {
+/* ---------- Progress ---------- */
+
+static void update_progress(actor_t *a)
+{
     float p = limit(
         (spawn_y - a->y) / (spawn_y - goal_y),
         0.0f, 1.0f
     );
 
-    if (p > a->best)
-        a->best = p;
-
-    if (a->y <= goal_y &&
+    if (!a->finished &&
+        a->y <= goal_y &&
         a->x >= 31.0f &&
-        a->x <= 63.0f &&
-        !a->finished) {
+        a->x <= 63.0f) {
+
         a->finished = 1;
         a->finish_tick = tick_no;
     }
+
+    if (a->finished)
+        p = 1.0f;
+    else if (p > 0.99f)
+        p = 0.99f;
+
+    if (p > a->best)
+        a->best = p;
 }
 
-/* Substeps prevent tunneling through thin obstacles. */
+/* ---------- Movement ---------- */
+
 static void step_actor(
-    actor_t *a, int pane, float dx, float dy
-) {
+    actor_t *a,
+    int pane,
+    float dx,
+    float dy
+)
+{
     if (a->lives <= 0 ||
         a->finished ||
-        tick_no < a->stun_until)
+        tick_no < a->stun_until) {
         return;
+    }
 
-    float m = absv(dx) > absv(dy) ? absv(dx) : absv(dy);
+    float m = absv(dx) > absv(dy)
+        ? absv(dx) : absv(dy);
+
     int n = (int)m + 1;
-    if (n < 1) n = 1;
+
+    if (n < 1)
+        n = 1;
 
     for (int k = 0; k < n; k++) {
         float nx = limit(
             a->x + dx / (float)n,
-            body_w * 0.5f + 2,
-            PANE_W - body_w * 0.5f - 2
+            body_w * 0.5f + 2.0f,
+            PANE_W - body_w * 0.5f - 2.0f
         );
+
         float ny = limit(
             a->y + dy / (float)n,
-            goal_y, spawn_y
+            goal_y,
+            spawn_y
         );
 
         if (hits_web(nx, ny)) {
-            /* For a short while after a hit the web only blocks.
-             * Otherwise a held key walks into the same web again
-             * the moment the stun ends and takes every life in
-             * about half a second.
+            /*
+             * The web blocks movement even during
+             * the post-hit grace period.
              */
             if (tick_no >= a->safe_until) {
                 a->lives--;
-                a->stun_until = tick_no + stun_ticks;
-                a->safe_until = a->stun_until + grace_ticks;
+
+                a->stun_until =
+                    tick_no + stun_ticks;
+
+                a->safe_until =
+                    a->stun_until + grace_ticks;
+
                 fx_flash(pane, C_BAD, 70);
                 fx_shake(pane, 2, 140);
             }
+
             break;
         }
 
@@ -163,69 +266,139 @@ static void step_actor(
     update_progress(a);
 }
 
-/* Camera stays fixed until character reaches upper area. */
-static void camera_update(actor_t *a) {
-    float top = a->y - a->camera;
+/* ---------- Camera ---------- */
 
-    if (top < 29.0f) {
-        a->camera = limit(
-            a->y - 29.0f,
-            0.0f,
-            world_h - PANE_H
-        );
-    }
+static void camera_update(actor_t *a)
+{
+    float sy = a->y - a->camera;
+
+    const float upper = 29.0f;
+    const float lower = (float)PANE_H - 16.0f;
+
+    if (sy < upper)
+        a->camera = a->y - upper;
+    else if (sy > lower)
+        a->camera = a->y - lower;
+
+    a->camera = limit(
+        a->camera,
+        0.0f,
+        world_h - PANE_H
+    );
 }
 
-void stage_start(const stage_ctx_t *ctx) {
+/* ---------- Initialization ---------- */
+
+void stage_start(const stage_ctx_t *ctx)
+{
     n_players = ctx->n_players;
-    if (n_players < 1) n_players = 1;
+
+    if (n_players < 1)
+        n_players = 1;
+
     if (n_players > STAGE_MAX_PLAYERS)
         n_players = STAGE_MAX_PLAYERS;
 
-    ticks = ctx->n_ticks > 0 ? ctx->n_ticks : 400;
+    ticks = ctx->n_ticks > 0
+        ? ctx->n_ticks : 400;
+
     tick_no = 0;
 
-    world_h = 420.0f;
+    /*
+     * Same seed selects the same map.
+     * This keeps all participants on the same map.
+     */
+    stage_rng_t map_rng;
+    stage_rng_seed(&map_rng, ctx->seed);
+
+    int chosen_map =
+        stage_rng_range(&map_rng, 0, 2);
+
+    /*
+     * Optional test override:
+     * map_variant = 0, 1, or 2
+     */
+    int forced_map =
+        (int)cfg_get("map_variant", -1.0f);
+
+    if (forced_map >= 0 && forced_map <= 2)
+        chosen_map = forced_map;
+
+    select_map(chosen_map);
+
+    world_h = (float)WORLD_HEIGHT;
     spawn_y = world_h - 24.0f;
     goal_y = 22.0f;
 
     body_w = limit(
-        cfg_get("body_w", 10.0f), 4.0f, 14.0f
+        cfg_get("body_w", 10.0f),
+        4.0f, 14.0f
     );
+
     move_px = limit(
-        cfg_get("step", 7.0f), 1.0f, 12.0f
+        cfg_get("step", 7.0f),
+        1.0f, 12.0f
     );
+
     fly_speed = limit(
-        cfg_get("fly_speed", 1.1f), 0.0f, 4.0f
+        cfg_get("fly_speed", 1.1f),
+        0.0f, 4.0f
     );
 
-    step_gap = (int)cfg_get("move_gap_ticks", 1.0f);
-    if (step_gap < 1) step_gap = 1;
+    step_gap = (int)cfg_get(
+        "move_gap_ticks", 1.0f
+    );
 
-    stun_ticks = (int)cfg_get("stun_ticks", 6.0f);
-    if (stun_ticks < 0) stun_ticks = 0;
+    if (step_gap < 1)
+        step_gap = 1;
 
-    grace_ticks = (int)cfg_get("grace_ticks", 14.0f);
-    if (grace_ticks < 0) grace_ticks = 0;
+    stun_ticks = (int)cfg_get(
+        "stun_ticks", 6.0f
+    );
 
-    lives_max = (int)cfg_get("lives", 3.0f);
-    if (lives_max < 1) lives_max = 1;
-    if (lives_max > 9) lives_max = 9;
+    if (stun_ticks < 0)
+        stun_ticks = 0;
+
+    grace_ticks = (int)cfg_get(
+        "grace_ticks", 14.0f
+    );
+
+    if (grace_ticks < 0)
+        grace_ticks = 0;
+
+    lives_max = (int)cfg_get(
+        "lives", 3.0f
+    );
+
+    if (lives_max < 1)
+        lives_max = 1;
+
+    if (lives_max > 9)
+        lives_max = 9;
 
     sense_range = limit(
-        cfg_get("sense_range", 48.0f), 10.0f, 90.0f
+        cfg_get("sense_range", 48.0f),
+        10.0f, 90.0f
     );
+
     level_min = limit(
-        cfg_get("level_min", 0.3f), 0.0f, 1.0f
+        cfg_get("level_min", 0.3f),
+        0.0f, 1.0f
     );
+
     level_max = limit(
-        cfg_get("level_max", 0.6f), level_min, 1.0f
+        cfg_get("level_max", 0.6f),
+        level_min, 1.0f
     );
+
     steer_px = limit(
-        cfg_get("steer_px", 2.5f), 0.0f, 8.0f
+        cfg_get("steer_px", 2.5f),
+        0.0f, 8.0f
     );
+
     deadzone = limit(
-        cfg_get("turn_deadzone", 0.05f), 0.0f, 1.0f
+        cfg_get("turn_deadzone", 0.05f),
+        0.0f, 1.0f
     );
 
     float cam = world_h - PANE_H;
@@ -241,6 +414,8 @@ void stage_start(const stage_ctx_t *ctx) {
     }
 
     fly_goal = -1.0f;
+    fly_escape_last_tick = -100;
+
     fly = (actor_t){
         .x = 47.0f,
         .y = spawn_y,
@@ -250,7 +425,10 @@ void stage_start(const stage_ctx_t *ctx) {
     };
 }
 
-void stage_input(int player, int key, double t) {
+/* ---------- Player Input ---------- */
+
+void stage_input(int player, int key, double t)
+{
     (void)t;
 
     if (player < 0 || player >= n_players)
@@ -261,74 +439,80 @@ void stage_input(int player, int key, double t) {
     if (tick_no - a->last_move < step_gap)
         return;
 
-    float dx = 0, dy = 0;
+    float dx = 0.0f;
+    float dy = 0.0f;
 
-    if (key == SK_LEFT) dx = -move_px;
-    else if (key == SK_RIGHT) dx = move_px;
-    else if (key == SK_UP) dy = -move_px;
-    else if (key == SK_DOWN) dy = move_px;
-    else return;
+    if (key == SK_LEFT)
+        dx = -move_px;
+    else if (key == SK_RIGHT)
+        dx = move_px;
+    else if (key == SK_UP)
+        dy = -move_px;
+    else if (key == SK_DOWN)
+        dy = move_px;
+    else
+        return;
 
     step_actor(a, player, dx, dy);
     a->last_move = tick_no;
 }
 
-/* Walk the fly toward column x the way fly_tick moves it (sideways
- * steer_px per tick until it is inside the steering band, climbing
- * fly_speed per tick) and count the ticks before it would touch a web.
- * LOOK_TICKS means the whole path is clear.
- *
- * The earlier version only sampled points straight above each column.
- * It picked columns whose sideways path was still blocked by the web
- * the fly was passing, so the fly lost every life at the first web.
- */
-static int fly_clear_ticks(float x) {
-    float fx = fly.x, fy = fly.y;
+/* ---------- Fly Route Prediction ---------- */
+
+static int fly_clear_ticks(float x)
+{
+    float fx = fly.x;
+    float fy = fly.y;
 
     for (int k = 0; k < LOOK_TICKS; k++) {
         float off = x - fx;
 
         if (absv(off) > STEER_BAND) {
-            fx += off > 0 ? steer_px : -steer_px;
+            fx += off > 0.0f
+                ? steer_px : -steer_px;
 
             if (hits_web(fx, fy))
                 return k;
         }
 
-        fy = limit(fy - fly_speed, goal_y, spawn_y);
+        fy = limit(
+            fy - fly_speed,
+            goal_y,
+            spawn_y
+        );
 
         if (hits_web(fx, fy))
             return k;
 
-        /* The top row only counts inside the exit. */
-        if (fy <= goal_y && (fx < 31.0f || fx > 63.0f))
+        if (fy <= goal_y &&
+            (fx < 31.0f || fx > 63.0f)) {
             return k;
+        }
     }
 
     return LOOK_TICKS;
 }
 
-/* Find a free column in front of the fly.
- * The fly brain still determines actual turning.
- */
-static float fly_target(void) {
-    /* Keep the chosen column while its path stays clear. Changing
-     * sides every tick would make the fly act on the turn the brain
-     * produced for the previous side.
-     */
+static float fly_target(void)
+{
     if (fly_goal >= 0.0f &&
-        fly_clear_ticks(fly_goal) == LOOK_TICKS)
+        fly_clear_ticks(fly_goal) ==
+            LOOK_TICKS) {
         return fly_goal;
+    }
 
     float best_x = fly.x;
     float best_cost = 1.0e9f;
 
     for (int col = 9; col <= 85; col += 2) {
         float x = (float)col;
+
         float cost =
-            (float)(LOOK_TICKS - fly_clear_ticks(x)) * 10.0f +
-            absv(x - fly.x) * 0.06f +
-            absv(x - 47.0f) * 0.01f;
+            (float)(
+                LOOK_TICKS - fly_clear_ticks(x)
+            ) * 10.0f
+            + absv(x - fly.x) * 0.06f
+            + absv(x - 47.0f) * 0.01f;
 
         if (cost < best_cost) {
             best_cost = cost;
@@ -340,14 +524,27 @@ static float fly_target(void) {
     return best_x;
 }
 
-static void fly_tick(void) {
+/* ---------- Fly Brain and Movement ---------- */
+
+static void fly_tick(void)
+{
     if (fly.lives <= 0 ||
         fly.finished ||
-        tick_no < fly.stun_until)
+        tick_no < fly.stun_until) {
         return;
+    }
 
     float target = fly_target();
     float off = target - fly.x;
+
+    /*
+     * Brain outputs reflect prior stimulation.
+     */
+    float turn =
+        brain_rate(BR_TURN_R) -
+        brain_rate(BR_TURN_L);
+
+    int escape = brain_fired(BR_ESCAPE);
 
     if (absv(off) > STEER_BAND) {
         float intensity = limit(
@@ -360,28 +557,71 @@ static void fly_tick(void) {
             (level_max - level_min) * intensity;
 
         brain_stimulate(
-            off < 0 ? BR_LOOM_R : BR_LOOM_L,
+            off < 0.0f
+                ? BR_LOOM_R
+                : BR_LOOM_L,
             level
         );
 
-        float turn =
-            brain_rate(BR_TURN_R) -
-            brain_rate(BR_TURN_L);
-
         if (absv(turn) > deadzone) {
+            float dx =
+                turn > 0.0f
+                ? steer_px : -steer_px;
+
             step_actor(
-                &fly, PANE_FLY,
-                turn > 0 ? steer_px : -steer_px,
-                0
+                &fly,
+                PANE_FLY,
+                dx,
+                0.0f
             );
+
             fly.last_move = tick_no;
+        }
+
+        /*
+         * Additional escape step only if
+         * the brain fires and cooldown has ended.
+         */
+        if (escape &&
+            tick_no - fly_escape_last_tick >=
+                ESCAPE_COOLDOWN &&
+            fly.lives > 0 &&
+            !fly.finished &&
+            tick_no >= fly.stun_until) {
+
+            float dx =
+                off > 0.0f
+                ? steer_px : -steer_px;
+
+            if (!hits_web(
+                    fly.x + dx,
+                    fly.y
+                )) {
+                step_actor(
+                    &fly,
+                    PANE_FLY,
+                    dx,
+                    0.0f
+                );
+
+                fly_escape_last_tick = tick_no;
+                fly.last_move = tick_no;
+            }
         }
     }
 
-    step_actor(&fly, PANE_FLY, 0, -fly_speed);
+    step_actor(
+        &fly,
+        PANE_FLY,
+        0.0f,
+        -fly_speed
+    );
 }
 
-void stage_tick(double dt) {
+/* ---------- Stage Tick ---------- */
+
+void stage_tick(double dt)
+{
     (void)dt;
 
     fly_tick();
@@ -390,13 +630,18 @@ void stage_tick(double dt) {
         camera_update(&players[p]);
 
     camera_update(&fly);
+
     tick_no++;
 }
 
-/* Render crossed spiderweb threads inside each obstacle. */
+/* ---------- Spiderweb Rendering ---------- */
+
 static void draw_web(
-    canvas_t *c, const web_t *w, int cam
-) {
+    canvas_t *c,
+    const web_t *w,
+    int cam
+)
+{
     int y0 = w->y - cam;
     int y1 = y0 + w->h;
 
@@ -409,94 +654,162 @@ static void draw_web(
 
         int wy = sy + cam;
 
-        for (int x = w->x; x < w->x + w->w; x++) {
+        for (int x = w->x;
+             x < w->x + w->w;
+             x++) {
+
             if (x < 0 || x >= PANE_W)
                 continue;
 
             int a = (x + wy) % 8;
-            int b = ((x - wy) % 8 + 8) % 8;
+            int b =
+                ((x - wy) % 8 + 8) % 8;
 
-            int vertical = (x % 12) == 0;
-            int horizontal = (wy % 12) == 0;
+            int vertical =
+                (x % 12) == 0;
+
+            int horizontal =
+                (wy % 12) == 0;
 
             if ((a == 0 && b == 0) ||
                 (vertical && horizontal)) {
-                ui_px(c, x, sy, C_WHITE);
+                ui_px(
+                    c, x, sy, C_WHITE
+                );
             }
-            else if (a == 0 || b == 0 ||
-                     vertical || horizontal) {
-                ui_px(c, x, sy, C_WEB);
+            else if (a == 0 ||
+                     b == 0 ||
+                     vertical ||
+                     horizontal) {
+                ui_px(
+                    c, x, sy, C_WEB
+                );
             }
-            else if (((x / 5 + wy / 5) & 1) == 0) {
-                ui_px(c, x, sy, C_GRAY1);
+            else if (
+                ((x / 5 + wy / 5) & 1) == 0
+            ) {
+                ui_px(
+                    c, x, sy, C_GRAY1
+                );
             }
         }
     }
 
-    ui_rect(c, w->x, y0, w->w, 1, C_GRAY2);
-    ui_rect(c, w->x, y1 - 1, w->w, 1, C_GRAY2);
+    ui_rect(
+        c, w->x, y0,
+        w->w, 1, C_GRAY2
+    );
+
+    ui_rect(
+        c, w->x, y1 - 1,
+        w->w, 1, C_GRAY2
+    );
 }
 
+/* ---------- Actor Rendering ---------- */
+
 static void draw_actor(
-    canvas_t *c, const actor_t *a, int is_fly
-) {
+    canvas_t *c,
+    const actor_t *a,
+    int is_fly
+)
+{
     int sy = (int)(a->y - a->camera);
+
     int hit =
-        tick_no < a->stun_until || a->lives <= 0;
+        tick_no < a->stun_until ||
+        a->lives <= 0;
 
     if (is_fly) {
         sprite_id_t id =
             hit ? SPR_FLY_HIT : SPR_FLY_IDLE;
 
         ui_sprite(
-            c, id,
-            (int)a->x - ui_sprite_w(id) / 2,
+            c,
+            id,
+            (int)a->x -
+                ui_sprite_w(id) / 2,
             sy - ui_sprite_h(id) / 2,
             0
         );
     }
     else {
-        int l = (int)(a->x - body_w / 2);
+        int l = (int)(
+            a->x - body_w / 2.0f
+        );
 
         ui_rect(
-            c, l, sy - BODY_H / 2,
-            (int)body_w, BODY_H,
+            c,
+            l,
+            sy - BODY_H / 2,
+            (int)body_w,
+            BODY_H,
             hit ? C_BAD : C_GOOD
         );
 
-        ui_px(c, (int)a->x - 2, sy - 1, C_BLACK);
-        ui_px(c, (int)a->x + 2, sy - 1, C_BLACK);
+        ui_px(
+            c,
+            (int)a->x - 2,
+            sy - 1,
+            C_BLACK
+        );
+
+        ui_px(
+            c,
+            (int)a->x + 2,
+            sy - 1,
+            C_BLACK
+        );
     }
 }
 
+/* ---------- Scene Rendering ---------- */
+
 static void draw_scene(
-    canvas_t *c, const actor_t *a, int is_fly
-) {
+    canvas_t *c,
+    const actor_t *a,
+    int is_fly
+)
+{
     int cam = (int)a->camera;
+
     ui_clear(c, C_BG);
 
-    /* Background decoration, without marking a route. */
     for (int i = 0; i < 20; i++) {
         int wy = i * 23 + 8;
         int sy = wy - cam;
 
-        if (sy >= 0 && sy < PANE_H)
-            ui_px(c, 5 + (i * 17) % 84, sy, C_GRAY1);
+        if (sy >= 0 && sy < PANE_H) {
+            ui_px(
+                c,
+                5 + (i * 17) % 84,
+                sy,
+                C_GRAY1
+            );
+        }
     }
 
-    /* Stationary obstacles in world coordinates. */
     for (int i = 0; i < N_WEBS; i++)
         draw_web(c, &webs[i], cam);
 
-    /* Goal is visible only near the map top. */
     int gy = (int)goal_y - cam;
 
-    if (gy > -14 && gy < PANE_H + 10) {
-        ui_rect(c, 30, gy - 9, 34, 5, C_GOOD);
+    if (gy > -14 &&
+        gy < PANE_H + 10) {
+
+        ui_rect(
+            c,
+            30,
+            gy - 9,
+            34,
+            5,
+            C_GOOD
+        );
 
         ui_text(
             c,
-            (PANE_W - ui_text_w("GOAL")) / 2,
+            (PANE_W -
+                ui_text_w("GOAL")) / 2,
             gy - 20,
             "GOAL",
             C_WHITE
@@ -505,23 +818,43 @@ static void draw_scene(
 
     draw_actor(c, a, is_fly);
 
-    ui_bar(c, 4, 3, 40, a->best, C_GOOD);
+    /* Climbing progress */
+    ui_bar(
+        c,
+        4, 3, 40,
+        a->best,
+        C_GOOD
+    );
 
-    for (int i = 0; i < lives_max; i++) {
+    /* Remaining lives */
+    for (int i = 0;
+         i < lives_max;
+         i++) {
+
         ui_rect(
-            c, 4 + 8 * i, PANE_H - 8, 6, 5,
-            i < a->lives ? C_BAD : C_GRAY2
+            c,
+            4 + 8 * i,
+            PANE_H - 8,
+            6, 5,
+            i < a->lives
+                ? C_BAD : C_GRAY2
         );
     }
 
     if (a->finished) {
         ui_rect(
-            c, 7, 39, PANE_W - 14, 24, C_GREEN
+            c,
+            7,
+            39,
+            PANE_W - 14,
+            24,
+            C_GREEN
         );
 
         ui_text(
             c,
-            (PANE_W - ui_text_w("FINISH!")) / 2,
+            (PANE_W -
+                ui_text_w("FINISH!")) / 2,
             46,
             "FINISH!",
             C_WHITE
@@ -530,7 +863,8 @@ static void draw_scene(
     else if (a->lives <= 0) {
         ui_text(
             c,
-            (PANE_W - ui_text_w("탈락!")) / 2,
+            (PANE_W -
+                ui_text_w("탈락!")) / 2,
             43,
             "탈락!",
             C_BAD
@@ -538,23 +872,43 @@ static void draw_scene(
     }
 }
 
-void stage_draw(
-    int player, canvas_t *fly_canvas, canvas_t *me
-) {
-    draw_scene(fly_canvas, &fly, 1);
+/* ---------- Stage Drawing ---------- */
 
-    if (player >= 0 && player < n_players)
-        draw_scene(me, &players[player], 0);
-    else
+void stage_draw(
+    int player,
+    canvas_t *fly_canvas,
+    canvas_t *me
+)
+{
+    draw_scene(
+        fly_canvas,
+        &fly,
+        1
+    );
+
+    if (player >= 0 &&
+        player < n_players) {
+        draw_scene(
+            me,
+            &players[player],
+            0
+        );
+    }
+    else {
         ui_clear(me, C_BG);
+    }
 }
 
-static float score(const actor_t *a) {
+/* ---------- Scoring ---------- */
+
+static float score(const actor_t *a)
+{
     if (a->finished) {
         float t = limit(
             (float)(ticks - a->finish_tick) /
-            (float)ticks,
-            0.0f, 1.0f
+                (float)ticks,
+            0.0f,
+            1.0f
         );
 
         return 90.0f + 10.0f * t;
@@ -563,16 +917,17 @@ static float score(const actor_t *a) {
     return a->best * 80.0f;
 }
 
-
 void stage_result(stage_result_t *out)
 {
-    /* 참가자와 초파리를 같은 규칙으로 채점한다: 출구에 닿으면 90~100점(빨리 닿을수록 높다),
-     * 못 닿으면 올라간 만큼 0~80점. 출구에 닿은 쪽이 못 닿은 쪽을 항상 이기고, 못 닿은 사람도
-     * 올라간 만큼은 점수를 받는다. 초파리는 늘 조금은 올라가므로 가만히 있던 참가자와 0:0으로
-     * 비기지 않는다 */
-    for (int p = 0; p < STAGE_MAX_PLAYERS; p++)
-        out->score[p] = p < n_players ? score(&players[p]) : 0.0f;
+    for (int p = 0;
+         p < STAGE_MAX_PLAYERS;
+         p++) {
+
+        out->score[p] =
+            p < n_players
+                ? score(&players[p])
+                : 0.0f;
+    }
 
     out->fly_score = score(&fly);
 }
-
