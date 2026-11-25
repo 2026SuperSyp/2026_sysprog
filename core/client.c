@@ -8,6 +8,8 @@
  *       --gfx=auto|sixel|cell: 화면을 픽셀 그림(Sixel)으로 보낼지 글자 칸으로 보낼지. auto(기본값)는 터미널에 물어서
  *       그림을 받으면 그림으로 보낸다. 그림은 창에 들어가는 가장 큰 배율로 그린다(10배 = 2400x1340까지).
  *       그때 --scale=N은 그 상한을 낮춘다
+ *   build/dev/client --mouse-dev=/dev/input/eventN [--mouse-turn=N]   보스전의 시선을 마우스 장치에서 직접 읽는다
+ *                    (리눅스로 부팅한 컴퓨터, 읽을 권한 필요. N은 한 바퀴 도는 데 드는 마우스 움직임, 기본 2400)
  *   build/dev/client --bot [--wait=N] [...]   화면 없이 접속해 준비하고 무작위로 누른다(검사용).
  *                                             방장이면 참가자가 N명 이상일 때 시작한다
  *
@@ -35,6 +37,8 @@
 
 #include <arpa/inet.h>
 #include <errno.h>
+#include <fcntl.h>
+#include <linux/input.h>
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -46,6 +50,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <time.h>
@@ -458,6 +463,66 @@ static int held_send(void)
     return 0;
 }
 
+/* ---- 마우스를 장치에서 직접 읽기(--mouse-dev=/dev/input/eventN) -------------------------------
+ * 터미널이 알려 주는 마우스는 글자 칸 단위라서, 글자가 크면 시선이 뚝뚝 끊겨 돈다. 리눅스는 입력 장치를
+ * /dev/input/event* 파일로 내놓는다. 그 파일을 읽으면 마우스가 보낸 그대로의 움직임(struct input_event:
+ * 종류, 번호, 값)이 온다. 가로로 움직인 양(EV_REL, REL_X)을 보스전의 시선에 바로 쓴다. 왼쪽 버튼은 무기 쓰기,
+ * 오른쪽 버튼은 막기, 휠은 다음 무기다.
+ * 그 파일은 보통 root나 input 그룹만 읽을 수 있다(sudo usermod -aG input 사용자). WSL에는 이 장치가 없어서
+ * 리눅스로 부팅한 컴퓨터에서만 된다. 열지 못하면 알리고 터미널의 마우스를 그대로 쓴다.
+ * 입력 스레드가 터미널과 같이 poll로 지켜본다 */
+static int mouse_fd = -1;
+static double mouse_gain = 65536.0 / 2400.0;         /* 마우스가 2400만큼 움직이면 한 바퀴 돈다(--mouse-turn=N) */
+
+static void mouse_open(const char *path)
+{
+    char name[96] = "?";
+    unsigned long rel[(REL_MAX / (8 * sizeof(unsigned long))) + 1];
+    mouse_fd = open(path, O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    if (mouse_fd < 0) {
+        fprintf(stderr, "마우스 장치 %s 을 열 수 없습니다(%s). 터미널의 마우스를 씁니다\n", path, strerror(errno));
+        return;
+    }
+    /* 장치의 이름과, 가로 움직임을 보내는 장치인지 물어본다. 장치 파일이 아니면(검사용 파이프) 묻지 못하고 그대로 쓴다 */
+    memset(rel, 0, sizeof rel);
+    if (ioctl(mouse_fd, EVIOCGNAME(sizeof name - 1), name) >= 0 && ioctl(mouse_fd, EVIOCGBIT(EV_REL, sizeof rel), rel) >= 0 &&
+        !(rel[REL_X / (8 * sizeof(unsigned long))] & (1UL << (REL_X % (8 * sizeof(unsigned long)))))) {
+        fprintf(stderr, "장치 %s (%s)는 마우스가 아닙니다(가로 움직임을 보내지 않습니다). 터미널의 마우스를 씁니다\n", path, name);
+        close(mouse_fd);
+        mouse_fd = -1;
+        return;
+    }
+    fprintf(stderr, "마우스 장치: %s (%s)\n", path, name);
+}
+
+/* 장치가 보낸 사건을 있는 대로 읽어 쓴다. 보스전일 때만 쓰고, 아닐 때는 읽어서 버린다(쌓이지 않게) */
+static int mouse_read(int boss)
+{
+    struct input_event ev[32];
+    int moved = 0, bad = 0;
+    for (;;) {
+        ssize_t n = read(mouse_fd, ev, sizeof ev);
+        if (n < 0 && errno == EINTR) continue;
+        if (n == 0 || (n < 0 && errno != EAGAIN)) {          /* 장치가 뽑혔다 */
+            close(mouse_fd);
+            mouse_fd = -1;
+            break;
+        }
+        if (n < (ssize_t)sizeof ev[0]) break;
+        for (int i = 0; boss && i < (int)(n / (ssize_t)sizeof ev[0]); i++) {
+            if (ev[i].type == EV_REL && ev[i].code == REL_X) moved += ev[i].value;
+            else if (ev[i].type == EV_REL && ev[i].code == REL_WHEEL && ev[i].value != 0) bad |= send_boss_key('f');
+            else if (ev[i].type == EV_KEY && ev[i].code == BTN_LEFT && ev[i].value == 1) bad |= send_boss_key('e');
+            else if (ev[i].type == EV_KEY && ev[i].code == BTN_RIGHT && ev[i].value == 1) bad |= send_boss_key('r');
+        }
+    }
+    if (moved != 0) {
+        look_turn((double)moved * mouse_gain);
+        bad |= look_send(1);
+    }
+    return bad;
+}
+
 static void *input_main(void *arg)
 {
     uint8_t buf[512];
@@ -490,7 +555,10 @@ static void *input_main(void *arg)
             }
             if (look_send(0) != 0) { quit_with("서버와의 접속이 끊겼습니다"); return NULL; }
         }
-        if (poll(&pf, 1, boss ? 15 : 100) <= 0) continue;
+        struct pollfd pfs[2] = { pf, { mouse_fd, POLLIN, 0 } };      /* 장치가 없으면 fd가 -1이라 poll이 건너뛴다 */
+        if (poll(pfs, 2, boss ? 15 : 100) <= 0) continue;
+        if (mouse_fd >= 0 && pfs[1].revents) mouse_read(boss);
+        if (!(pfs[0].revents & POLLIN)) continue;
         ssize_t r = read(STDIN_FILENO, buf + len, sizeof buf - len);
         if (r <= 0) continue;
         len += (size_t)r;
@@ -1165,7 +1233,7 @@ int main(int argc, char **argv)
 {
     const char *host = "127.0.0.1", *name = "PLAYER";
     int port = PROTO_PORT, bot = 0, wait_players = 1, no_title = 0, auto_scale = 0, scale_given = 0, drop_at = 0;
-    const char *gfx = "auto";
+    const char *gfx = "auto", *mouse_dev = NULL;
     setvbuf(stdout, NULL, _IOLBF, 0);
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -1175,6 +1243,8 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--wait=", 7) == 0)   wait_players = atoi(a + 7);
         else if (strcmp(a, "--bot") == 0)         bot = 1;
         else if (strncmp(a, "--drop-at=", 10) == 0) drop_at = atoi(a + 10);
+        else if (strncmp(a, "--mouse-dev=", 12) == 0) mouse_dev = a + 12;
+        else if (strncmp(a, "--mouse-turn=", 13) == 0 && atof(a + 13) > 0.0) mouse_gain = 65536.0 / atof(a + 13);
         else if (strcmp(a, "--no-title") == 0)    no_title = 1;
         else if (strcmp(a, "--scale=auto") == 0)  auto_scale = 1;
         else if (strncmp(a, "--scale=", 8) == 0)  { view_scale = atoi(a + 8); scale_given = 1; }
@@ -1238,6 +1308,7 @@ int main(int argc, char **argv)
     if (msg_send(sock, MSG_HELLO, 0, 0, &hello, sizeof hello) != 0) { if (!bot) term_leave(); return 1; }
 
     if (bot) return run_bot(wait_players, drop_at);
+    if (mouse_dev) mouse_open(mouse_dev);
 
     S.fly = canvas_new(PANE_W, PANE_H);
     for (int p = 0; p < PROTO_PANES; p++) S.panes[p] = canvas_new(PANE_W, PANE_H);

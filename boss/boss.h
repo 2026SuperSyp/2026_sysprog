@@ -238,6 +238,8 @@ typedef struct {
 
 void boss_cfg_default(boss_cfg_t *c);
 void boss_cfg_load(boss_cfg_t *c, const char *path);    /* 기본값에서 시작해 파일에 있는 것만 바꾼다 */
+void boss_cfg_apply(boss_cfg_t *c, const char *path);   /* 파일에 적힌 줄만 바꾼다 */
+#define BOSS_TRAINED_FILE "trained.ini"   /* 훈련 결과. 설정 파일과 같은 폴더에 있으면 boss_cfg_load가 덧씌운다 */
 
 /* lives[i]는 참가자 i의 시작 체력(1 이상)이다. 서버는 모두에게 3을 준다(미니게임에서 남은 기회와 무관하다) */
 void boss_init(boss_state_t *s, const boss_cfg_t *c, uint32_t seed, int n_players, const int lives[]);

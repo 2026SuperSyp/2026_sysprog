@@ -98,7 +98,7 @@ endif
 
 ALL_SRC := $(KIT_SRC) $(HOST_SRC) $(NET_SRC) $(SCREEN_SRC) $(TEST_SRC) $(STAGE_SRC) $(wildcard tools/*.c)
 
-.PHONY: test-stage brain-table bossbot all test run bot screen log termbench brain-data brain-groups brain-check brainprobe server client demo-local clean need-stage need-screen test-fail release
+.PHONY: test-stage brain-table bossbot boss-train all test run bot screen log termbench brain-data brain-groups brain-check brainprobe server client demo-local clean need-stage need-screen test-fail release
 all: $(KIT_OBJ) $(STAGE_BIN) $(TOOL_BIN)
 
 # 발표용 빌드를 한 번에 만든다.
@@ -247,6 +247,12 @@ brain-table:
 bossbot:
 	@$(MAKE) --no-print-directory $(B)/bossbot
 	@$(B)/bossbot $(if $(filter real,$(BRAIN)),--brain=real)
+
+# 병렬 자가 대전 훈련: CPU 수만큼 프로세스를 띄워 보스전의 게임 규칙 수치를 봇과의 대전으로 맞춘다. 결과는 boss/trained.ini.
+# 옵션은 TRAIN="--gens=20 --target-sec=45" 처럼 준다. 되돌리려면 boss/trained.ini를 지운다
+boss-train:
+	@$(MAKE) --no-print-directory MODE=release build/release/bossbot
+	@build/release/bossbot --train $(if $(filter real,$(BRAIN)),--brain=real) $(TRAIN)
 
 brainprobe:
 	@$(MAKE) --no-print-directory $(B)/brainprobe

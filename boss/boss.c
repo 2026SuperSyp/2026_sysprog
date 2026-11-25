@@ -35,7 +35,9 @@
 #include "core/cfg.h"
 
 #include <math.h>
+#include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #define PI_F 3.14159265f
 #define BAIT_TOUCH 0.2f              /* 초파리의 몸이 먹이에 닿았다고 보는 틈(칸) */
@@ -87,6 +89,18 @@ void boss_cfg_default(boss_cfg_t *c)
 void boss_cfg_load(boss_cfg_t *c, const char *path)
 {
     boss_cfg_default(c);
+    boss_cfg_apply(c, path);
+    /* 훈련 결과(make boss-train이 만든 파일)가 설정 파일 옆에 있으면 그 위에 덧씌운다. 없으면 설정 파일 그대로다 */
+    char trained[512];
+    const char *slash = strrchr(path, '/');
+    int dir_len = slash ? (int)(slash - path) + 1 : 0;
+    if (snprintf(trained, sizeof trained, "%.*s%s", dir_len, path, BOSS_TRAINED_FILE) < (int)sizeof trained && access(trained, R_OK) == 0)
+        boss_cfg_apply(c, trained);
+}
+
+/* 파일에 적힌 줄만 바꾼다. 적히지 않은 수치는 지금 값 그대로다 */
+void boss_cfg_apply(boss_cfg_t *c, const char *path)
+{
     cfg_load(path);
 #define F(k) c->k = cfg_get(#k, c->k)
 #define I(k) c->k = (int)cfg_get(#k, (float)c->k)
