@@ -17,7 +17,14 @@
  *  - 파일은 O_APPEND로 열고 기록 하나를 write 한 번으로 쓴다.
  *  - 한 판의 기록은 잠금 하나 안에서 쓰므로 파일에서 서로 붙어 있다.
  *    쓰다가 실패하면 그 판의 기록을 모두 지워 원래 길이로 되돌린다.
- *  - 잠금은 2초까지만 기다린다. 못 잡으면 파일을 건드리지 않고 실패를 돌려준다. */
+ *  - 잠금은 2초까지만 기다린다. 못 잡으면 파일을 건드리지 않고 실패를 돌려준다.
+ *
+ * 전원이 나가도 남게 쓴다.
+ *  - 붙인 뒤 fsync로 디스크에 적힐 때까지 기다린다. 새로 만든 파일이면 폴더도 fsync한다.
+ *  - 파일이 ranking_compact_bytes보다 커지면 높은 순위 RANKING_KEEP개만 남긴다. 새 내용을 임시 파일(이름 뒤에 .tmp)에
+ *    쓰고 fsync한 뒤 rename으로 바꿔 치운다. rename은 한 번에 일어나므로 도중에 죽어도 파일은 옛 것 아니면 새 것이다.
+ *  - rename으로 파일이 바뀌면, 그 전에 열고 잠금을 기다리던 프로세스는 이름 없는 옛 파일을 잠근 것이 된다.
+ *    그래서 잠근 뒤에 그 이름의 파일과 같은지(inode) 확인하고 다르면 새로 연다. */
 #ifndef SSP_RANKING_H
 #define SSP_RANKING_H
 
@@ -25,9 +32,12 @@
 
 #define RANKING_PATH      "data/ranking.txt"
 #define RANKING_NAME_LEN  16
+#define RANKING_KEEP      200         /* 정리할 때 남기는 기록 수 */
 
 /* 잠금을 기다리는 한도(ms). 검사에서만 줄여 쓴다. */
 extern int ranking_lock_wait_ms;
+/* 파일이 이보다 커지면 정리한다(바이트). 검사에서만 줄여 쓴다. */
+extern int ranking_compact_bytes;
 
 typedef struct {
     char    name[RANKING_NAME_LEN];    /* 읽은 것은 '\0'으로 끝난다 */

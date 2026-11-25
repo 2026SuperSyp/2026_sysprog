@@ -313,6 +313,55 @@ static void test_rollback(void)
  * 한 판의 기록 세 줄은 서로 붙어 있어야 한다. */
 #define PROCS 4
 #define GAMES 150
+/* 파일이 커지면 높은 순위만 남기고 정리한다(임시 파일에 쓰고 rename). 정리 뒤에도 순위가 그대로이고,
+ * 임시 파일이 남지 않고, 여러 프로세스가 같이 붙이는 중에 정리가 일어나도 기록이 깨지지 않는다 */
+static void test_compact(void)
+{
+    char tmp[160];
+    struct stat sb;
+    rank_rec_t top[10];
+    int saved = ranking_compact_bytes;
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    unlink(path);
+    ranking_compact_bytes = 8000;                            /* 한 줄이 31바이트쯤이라 200줄이 6천 바이트 남짓이다 */
+    for (int g = 0; g < 400; g++) {
+        rank_rec_t one = rec("AAA", g, T0 + g);
+        T_EQ_INT(ranking_append(path, &one, 1), 0);
+    }
+    T_CHECK(stat(path, &sb) == 0 && sb.st_size <= 8000 + 64);  /* 넘으면 바로 줄인다 */
+    T_CHECK(stat(tmp, &sb) != 0);                            /* 임시 파일은 남지 않는다 */
+    T_EQ_INT(ranking_load_top(path, top, 10), 10);
+    for (int i = 0; i < 10; i++) T_EQ_INT(top[i].score, 399 - i);
+    size_t len = slurp();
+    T_CHECK(len > 0 && count_char(raw, len, '\n') < 300);    /* 400개를 붙였지만 정리해서 200개 남짓만 남았다 */
+
+    pid_t pid[PROCS];                                        /* 여러 프로세스가 붙이는 중에 정리가 일어난다 */
+    unlink(path);
+    fflush(stdout);
+    for (int p = 0; p < PROCS; p++) {
+        pid[p] = fork();
+        T_CHECK(pid[p] >= 0);
+        if (pid[p] != 0) continue;
+        int bad = 0;
+        for (int g = 0; g < 150; g++) {
+            char name[16];
+            snprintf(name, sizeof name, "P%d", p);
+            rank_rec_t one = rec(name, g * PROCS + p, T0 + g);
+            if (ranking_append(path, &one, 1) != 0) bad = 1;
+        }
+        _exit(bad);
+    }
+    for (int p = 0; p < PROCS; p++) {
+        int status = -1;
+        if (pid[p] > 0) waitpid(pid[p], &status, 0);
+        T_CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    }
+    T_EQ_INT(ranking_load_top(path, top, 10), 10);           /* 가장 높은 열 개가 하나도 빠지지 않았다 */
+    for (int i = 0; i < 10; i++) T_EQ_INT(top[i].score, 150 * PROCS - 1 - i);
+    T_CHECK(stat(tmp, &sb) != 0);
+    ranking_compact_bytes = saved;
+}
+
 static void test_processes(void)
 {
     pid_t pid[PROCS];
@@ -458,6 +507,7 @@ int main(void)
     test_lock();
     test_rollback();
     test_processes();
+    test_compact();
     test_toplist();
 
     unlink(path);
