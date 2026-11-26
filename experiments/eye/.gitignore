@@ -1,0 +1,11 @@
+eyeprobe
+eyeprobe2
+fv/
+*.npz
+*.bin
+*.pkl
+*.csv.gz
+stim_*.txt
+sched.txt
+watch.txt
+__pycache__/
