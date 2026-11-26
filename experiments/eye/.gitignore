@@ -9,3 +9,4 @@ stim_*.txt
 sched.txt
 watch.txt
 __pycache__/
+data_*/
