@@ -1,0 +1,342 @@
+/* 보트 탈출: 초파리에게서 노를 저어 달아나는 협동 스테이지
+ *
+ * 참가자 모두가 보트 한 척에 탄다. 초파리는 보트를 먹이로 보고 쫓아온다.
+ * 노는 차례대로 한 번씩 젓는다. k번째 차례는 참가자 (k % 인원)이 젓고, 노는 왼쪽(k가 짝수), 오른쪽(홀수)이
+ * 번갈아 온다. 2명이면 0번은 늘 왼쪽 노(A), 1번은 늘 오른쪽 노(D)다. 혼자이면 A와 D를 번갈아 누른다.
+ * 왼쪽 노를 저으면 보트는 앞으로 가며 오른쪽으로 꺾인다. 번갈아 저어야 곧게 간다.
+ * 스페이스는 젓지 않고 차례를 넘긴다(같은 쪽을 두 번 저어 방향을 틀 때 쓴다).
+ *
+ * 다른 스테이지와 다른 점 (팀장 확인 필요)
+ *  - 상태가 참가자마다 따로가 아니라 하나다. 점수도 모두 같다. include/stage.h의 "참가자의 결과는 다른
+ *    참가자의 입력에 영향받지 않는다"를 일부러 지키지 않는다. 그래서 make bot의 "혼자 돌린 판과 같은 점수"
+ *    검사는 config.ini가 아니라 tools/bot.sh의 협동 스테이지 목록으로 건너뛴다.
+ *  - 초파리의 걷기는 보스전과 같은 집단을 쓴다: 물체 자극(BR_OBJECT_L/R) -> 걷기(BR_WALK_L/R), 방향(BR_STEER_L/R).
+ *    냄새 집단은 두 뇌 모두 반응이 없어서 쓰지 않았다. */
+#include "stage.h"
+#include "brain.h"
+
+#include <math.h>
+#include <stdio.h>
+
+#define MAX_ROCKS  16
+#define BOAT_ROW   60            /* 내 칸에서 보트를 그리는 줄 */
+#define FLY_ROW    84            /* 초파리 칸에서 초파리를 그리는 줄 */
+#define BANK_W     4             /* 강둑의 폭 */
+#define HUD_H      17            /* 위쪽 안내 띠의 높이 */
+#define PI_F       3.14159265f
+
+enum { MSG_NONE, MSG_GOOD, MSG_EARLY, MSG_WRONG, MSG_PASS, MSG_TIMEOUT, MSG_ROCK, MSG_BANK };
+
+/* 보트와 초파리. 방향은 0이 상류(화면 위쪽)이고 오른쪽으로 돌수록 커진다. y는 상류로 갈수록 커진다. */
+static float bx, by, bh, bv;
+static float fx, fy, fh;
+static int   fly_side;           /* 마지막으로 물체 자극을 준 쪽. 0 왼쪽, 1 오른쪽 */
+static int   fly_moving;
+static int   turn_no, turn_start, last_stroke, last_side;
+static int   last_wrong[STAGE_MAX_PLAYERS];
+static int   caught, caught_tick, hit_rock = -1;
+static int   msg, msg_until;
+static int   n_players, n_ticks, tick_no;
+static float rock_x[MAX_ROCKS], rock_y[MAX_ROCKS];
+static int   n_rocks;
+
+static float stroke_power, stroke_turn, drag_keep, early_keep, wrong_keep, start_gap, catch_dist, gap_far;
+static float fly_speed, fly_turn, pursue_turn, see_level, center_band, rock_radius, rock_keep, bank_keep;
+static int   cooldown_ticks, wrong_gap_ticks, turn_limit_ticks;
+
+static const stage_info_t info = {
+    .title    = "보트 탈출",
+    .rule     = "차례대로 노를 저어\n초파리에게서 도망쳐요",
+    .controls = "A D 젓기 스페이스 넘김",
+};
+
+const stage_info_t *stage_info(void) { return &info; }
+
+static float clampf(float v, float lo, float hi) { return v < lo ? lo : (v > hi ? hi : v); }
+static float gap_now(void) { return sqrtf((bx - fx) * (bx - fx) + (by - fy) * (by - fy)); }
+
+static void say(int m) { msg = m; msg_until = tick_no + 14; }
+
+static void fx_all(void (*f)(int, int, int), int a, int b)
+{
+    for (int p = 0; p < n_players; p++) f(p, a, b);
+}
+
+void stage_start(const stage_ctx_t *ctx)
+{
+    n_players = ctx->n_players;
+    n_ticks   = ctx->n_ticks;
+
+    stroke_power     = cfg_get("stroke_power", 0.45f);
+    stroke_turn      = cfg_get("stroke_turn", 0.25f);
+    drag_keep        = cfg_get("drag_keep", 0.942f);
+    cooldown_ticks   = (int)cfg_get("cooldown_ticks", 6.0f);
+    early_keep       = cfg_get("early_keep", 0.8f);
+    wrong_keep       = cfg_get("wrong_keep", 0.9f);
+    wrong_gap_ticks  = (int)cfg_get("wrong_gap_ticks", 4.0f);
+    turn_limit_ticks = (int)cfg_get("turn_limit_ticks", 24.0f);
+    start_gap        = cfg_get("start_gap", 34.0f);
+    catch_dist       = cfg_get("catch_dist", 6.0f);
+    gap_far          = cfg_get("gap_far", 70.0f);
+    fly_speed        = cfg_get("fly_speed", 0.78f);
+    fly_turn         = cfg_get("fly_turn", 0.05f);
+    pursue_turn      = cfg_get("pursue_turn", 0.5f);
+    see_level        = cfg_get("see_level", 1.0f);
+    center_band      = cfg_get("center_band", 0.15f);
+    rock_radius      = cfg_get("rock_radius", 5.0f);
+    rock_keep        = cfg_get("rock_keep", 0.6f);
+    bank_keep        = cfg_get("bank_keep", 0.7f);
+    float rock_first = cfg_get("rock_first", 70.0f);
+    float rock_every = cfg_get("rock_every", 75.0f);
+    if (turn_limit_ticks < 1) turn_limit_ticks = 1;
+    if (gap_far < 1.0f) gap_far = 1.0f;
+    if (rock_every < 10.0f) rock_every = 10.0f;
+
+    /* 문제(바위 자리)는 씨앗에서만 만든다. */
+    stage_rng_t rng;
+    stage_rng_seed(&rng, ctx->seed);
+    n_rocks = MAX_ROCKS;
+    for (int i = 0; i < n_rocks; i++) {
+        rock_x[i] = (float)stage_rng_range(&rng, BANK_W + 8, PANE_W - BANK_W - 8);
+        rock_y[i] = rock_first + rock_every * (float)i;
+    }
+    fly_side = (int)(stage_rng_u32(&rng) & 1u);
+
+    bx = PANE_W / 2.0f;
+    by = 0.0f;
+    bh = -stroke_turn / 2.0f;      /* 첫 노(왼쪽) 뒤에 좌우로 똑같이 흔들리게 반 번만큼 왼쪽을 보고 시작한다 */
+    bv = 0.0f;
+    fx = PANE_W / 2.0f;
+    fy = -start_gap;
+    fh = 0.0f;
+    last_stroke = -1000;
+    last_side = -1;
+    for (int p = 0; p < STAGE_MAX_PLAYERS; p++) last_wrong[p] = -1000;
+}
+
+static void pass_turn(void)
+{
+    turn_no++;
+    turn_start = tick_no;
+}
+
+void stage_input(int player, int key, double t)
+{
+    if (caught) return;
+    int rower = turn_no % n_players;
+    int side  = turn_no % 2;                         /* 0: 왼쪽 노(A), 1: 오른쪽 노(D) */
+
+    if (key == SK_ACT) {
+        if (player == rower) { pass_turn(); say(MSG_PASS); }
+        return;
+    }
+    if (key != SK_LEFT && key != SK_RIGHT) return;
+
+    if (player != rower || (key == SK_RIGHT) != (side == 1)) {
+        /* 차례가 아니거나 반대쪽 노다. 키를 누르고 있어도 한 번씩만 깎이게 간격을 둔다. */
+        if (tick_no - last_wrong[player] >= wrong_gap_ticks) {
+            bv *= wrong_keep;
+            last_wrong[player] = tick_no;
+            say(MSG_WRONG);
+        }
+        return;
+    }
+    if (tick_no - last_stroke < cooldown_ticks) {    /* 엇박: 너무 빨리 저었다 */
+        bv *= early_keep;
+        say(MSG_EARLY);
+        return;
+    }
+
+    bv += stroke_power;
+    bh += side == 0 ? stroke_turn : -stroke_turn;
+    last_stroke = tick_no;
+    last_side = side;
+    say(MSG_GOOD);
+    /* 노가 물을 친 자리에 잔상. 칸마다 보트는 같은 자리에 그려진다. */
+    fx_all(fx_trail, (int)bx + (side == 0 ? -9 : 9), BOAT_ROW + 2);
+    pass_turn();
+}
+
+/* 초파리: 보트가 보이는 쪽에 물체 자극을 주고, 뇌의 걷기와 방향 반응대로 움직인다. */
+static void fly_think(void)
+{
+    float dx = bx - fx, dy = by - fy;
+    float bearing = atan2f(dx, dy) - fh;             /* 보트가 초파리의 정면에서 오른쪽으로 벗어난 각도 */
+    while (bearing > PI_F)  bearing -= 2.0f * PI_F;
+    while (bearing < -PI_F) bearing += 2.0f * PI_F;
+
+    /* 한쪽에만 준다. 진짜 뇌는 양쪽에 같이 주면 왼쪽 걷기만 켜진다(docs/brain-notes.md 6절).
+     * 정면 근처에서는 주던 쪽에 계속 줘서 틱마다 뒤집히지 않게 한다. */
+    if (bearing > center_band)       fly_side = 1;
+    else if (bearing < -center_band) fly_side = 0;
+    brain_stimulate(fly_side ? BR_OBJECT_R : BR_OBJECT_L, see_level);
+
+    float wl = brain_rate(BR_WALK_L), wr = brain_rate(BR_WALK_R);
+    float walk = wl > wr ? wl : wr;
+    float turn = (brain_rate(BR_STEER_R) - brain_rate(BR_STEER_L)) + (wr - wl) * pursue_turn;
+    fh += fly_turn * clampf(turn, -1.0f, 1.0f);
+    fx += sinf(fh) * fly_speed * walk;
+    fy += cosf(fh) * fly_speed * walk;
+    fly_moving = walk > 0.05f;
+}
+
+void stage_tick(double dt)
+{
+    if (!caught) {
+        if (tick_no - turn_start >= turn_limit_ticks) { pass_turn(); say(MSG_TIMEOUT); }
+
+        bv *= drag_keep;
+        bx += sinf(bh) * bv;
+        by += cosf(bh) * bv;
+
+        float lo = BANK_W + 5.0f, hi = PANE_W - BANK_W - 5.0f;
+        if (bx < lo || bx > hi) {
+            bx = clampf(bx, lo, hi);
+            bv *= bank_keep;
+            if (bv > 0.1f) say(MSG_BANK);
+        }
+        for (int i = 0; i < n_rocks; i++) {
+            float dx = bx - rock_x[i], dy = by - rock_y[i];
+            float r = rock_radius + 4.0f;
+            if (dx * dx + dy * dy >= r * r) continue;
+            /* 정면으로 박으면 그 자리에 걸려 버린다. 한쪽으로 살짝 밀어서 바위를 타고 돌아가게 한다. */
+            if (dx > -1.0f && dx < 1.0f) dx = (i % 2) ? 1.0f : -1.0f;
+            float d = sqrtf(dx * dx + dy * dy);
+            bx = rock_x[i] + dx / d * r;             /* 바위 밖으로 밀어낸다 */
+            by = rock_y[i] + dy / d * r;
+            if (hit_rock != i) {                     /* 바위 하나에 한 번만 느려진다 */
+                hit_rock = i;
+                bv *= rock_keep;
+                say(MSG_ROCK);
+                for (int p = 0; p < n_players; p++) fx_shake(p, 2, 150);
+            }
+        }
+
+        fly_think();
+
+        if (gap_now() < catch_dist) {
+            caught = 1;
+            caught_tick = tick_no;
+            bv = 0.0f;
+            for (int p = 0; p < n_players; p++) {
+                fx_shake(p, 3, 300);
+                fx_flash(p, C_BAD, 100);
+            }
+            fx_shockwave(PANE_FLY, PANE_W / 2, FLY_ROW);
+        }
+    }
+    tick_no++;
+}
+
+/* ---- 그리기 ---------------------------------------------------------------
+ * 강을 위에서 본 그림이다. 세계의 (wx, wy)는 칸의 (wx, row - (wy - cam))에 그린다. */
+static int to_row(float wy, float cam, int row) { return row - (int)lroundf(wy - cam); }
+
+static void draw_river(canvas_t *c, float cam, int row)
+{
+    ui_clear(c, C_BLUE);
+    for (int y = 0; y < PANE_H; y++) {
+        int wy = (int)floorf(cam) + (row - y);
+        int m = ((wy % 12) + 12) % 12;
+        if (m != 0) continue;
+        int k = ((wy / 12) % 5 + 5) % 5;             /* 물결. 보트가 가면 아래로 흘러서 속도가 보인다 */
+        for (int x = BANK_W + 4 + k * 5; x < PANE_W - BANK_W - 6; x += 26)
+            ui_rect(c, x, y, 6, 1, C_CYAN);
+    }
+    ui_rect(c, 0, 0, BANK_W, PANE_H, C_GREEN);
+    ui_rect(c, PANE_W - BANK_W, 0, BANK_W, PANE_H, C_GREEN);
+    for (int i = 0; i < n_rocks; i++) {
+        int y = to_row(rock_y[i], cam, row), r = (int)rock_radius;
+        if (y < -r || y > PANE_H + r) continue;
+        ui_rect(c, (int)rock_x[i] - r, y - r + 1, 2 * r, 2 * r - 2, C_GRAY2);
+        ui_rect(c, (int)rock_x[i] - r + 1, y - r, 2 * r - 2, 2 * r, C_GRAY2);
+        ui_rect(c, (int)rock_x[i] - r + 2, y - r + 1, 3, 2, C_GRAY3);
+    }
+}
+
+static void draw_boat(canvas_t *c, int cx, int cy)
+{
+    float fxv = sinf(bh), fyv = -cosf(bh);           /* 앞쪽(화면 좌표) */
+    float px = cosf(bh), py = sinf(bh);              /* 오른쪽 */
+    int side = turn_no % 2;
+    int rowing = tick_no - last_stroke < 4;
+
+    for (int s = 0; s < 2; s++) {                    /* 노: 0 왼쪽, 1 오른쪽 */
+        float sg = s == 0 ? -1.0f : 1.0f;
+        float back = (rowing && last_side == s) ? 5.0f : 0.0f;    /* 방금 저은 노는 뒤로 젖힌다 */
+        color_t col = (!caught && side == s) ? C_YELLOW : C_GRAY3;
+        ui_line(c, cx + (int)lroundf(px * sg * 3), cy + (int)lroundf(py * sg * 3),
+                cx + (int)lroundf(px * sg * 10 - fxv * back), cy + (int)lroundf(py * sg * 10 - fyv * back), col);
+    }
+    for (int o = -2; o <= 2; o++) {                  /* 선체 */
+        float len = o == -2 || o == 2 ? 5.0f : 7.0f;
+        int ox = cx + (int)lroundf(px * o), oy = cy + (int)lroundf(py * o);
+        ui_line(c, ox - (int)lroundf(fxv * len), oy - (int)lroundf(fyv * len),
+                ox + (int)lroundf(fxv * len), oy + (int)lroundf(fyv * len), C_BROWN);
+    }
+    ui_rect(c, cx + (int)lroundf(fxv * 7) - 1, cy + (int)lroundf(fyv * 7) - 1, 2, 2, C_ORANGE);   /* 뱃머리 */
+    ui_rect(c, cx + (int)lroundf(-px * 1.5f) - 1, cy + (int)lroundf(-py * 1.5f) - 1, 2, 2, C_WHITE);   /* 탄 사람들 */
+    ui_rect(c, cx + (int)lroundf(px * 1.5f) - 1, cy + (int)lroundf(py * 1.5f) - 1, 2, 2, C_PINK);
+}
+
+static void draw_fly(canvas_t *c, int cx, int cy)
+{
+    sprite_id_t id = caught ? SPR_FLY_EAT : (fly_moving ? SPR_FLY_JUMP : SPR_FLY_IDLE);
+    ui_sprite(c, id, cx - ui_sprite_w(id) / 2, cy - ui_sprite_h(id) / 2, tick_no / 3);
+}
+
+void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
+{
+    char buf[32];
+
+    /* 초파리 칸: 초파리를 따라가며 본다. 모두에게 같은 그림이다. */
+    draw_river(fly_canvas, fy, FLY_ROW);
+    draw_boat(fly_canvas, (int)bx, to_row(by, fy, FLY_ROW));
+    draw_fly(fly_canvas, (int)fx, FLY_ROW);
+    ui_rect(fly_canvas, 0, 0, PANE_W, HUD_H, C_BLACK);
+    ui_text(fly_canvas, 2, 1, caught ? "먹이 잡음!" : "먹이 추적", caught ? C_GOOD : C_TEXT);
+    ui_bar(fly_canvas, 2, HUD_H - 4, PANE_W - 4, clampf(1.0f - gap_now() / gap_far, 0.0f, 1.0f), C_RED);
+
+    /* 내 칸: 보트를 따라가며 본다. */
+    draw_river(me, by, BOAT_ROW);
+    int fr = to_row(fy, by, BOAT_ROW);
+    if (fr < PANE_H - 8) {
+        draw_fly(me, (int)fx, fr);
+    } else {                                         /* 초파리가 화면 아래로 벗어났다. 거리만 적는다 */
+        snprintf(buf, sizeof buf, "V %d", (int)gap_now());
+        ui_text(me, (int)clampf(fx - 12.0f, BANK_W, PANE_W - BANK_W - 30), PANE_H - 9, buf, C_RED);
+    }
+    draw_boat(me, (int)bx, BOAT_ROW);
+
+    ui_rect(me, 0, 0, PANE_W, HUD_H, C_BLACK);
+    if (caught) {
+        ui_text(me, 2, 1, "잡혔다!", C_BAD);
+    } else {
+        int rower = turn_no % n_players, side = turn_no % 2;
+        if (rower == player) {
+            ui_text(me, 2, 1, "내 차례", C_YELLOW);
+            ui_text(me, 2 + ui_text_w("내 차례") + 6, 3, side == 0 ? "A" : "D", C_WHITE);
+        } else {
+            ui_text(me, 2, 1, "기다려요", C_GRAY3);
+        }
+        float left = 1.0f - (float)(tick_no - turn_start) / (float)turn_limit_ticks;
+        ui_bar(me, 2, HUD_H - 4, PANE_W - 4, clampf(left, 0.0f, 1.0f), rower == player ? C_YELLOW : C_GRAY2);
+    }
+
+    if (!caught && tick_no < msg_until) {
+        static const char *const text[] = { "", "좋아요!", "엇박!", "차례 아님", "넘김", "시간 초과", "바위!", "강둑!" };
+        color_t col = msg == MSG_GOOD ? C_GOOD : (msg == MSG_PASS ? C_TEXT : C_WARN);
+        ui_text(me, (PANE_W - ui_text_w(text[msg])) / 2, HUD_H + 2, text[msg], col);
+    }
+}
+
+void stage_result(stage_result_t *out)
+{
+    /* 협동이라 모두 같은 점수다. 끝까지 달아나면 100, 잡히면 버틴 시간만큼(99 이하).
+     * 초파리는 잡으면 100, 못 잡으면 얼마나 가까이 왔는지(99 이하). 그래서 달아나면 이기고 잡히면 진다. */
+    float team = caught ? 99.0f * (float)caught_tick / (float)(n_ticks > 0 ? n_ticks : 1)
+                        : 100.0f * (float)tick_no / (float)(n_ticks > 0 ? n_ticks : 1);
+    for (int p = 0; p < n_players; p++)
+        out->score[p] = clampf(team, 0.0f, 100.0f);
+    out->fly_score = caught ? 100.0f : 99.0f * clampf(1.0f - gap_now() / gap_far, 0.0f, 1.0f);
+}
