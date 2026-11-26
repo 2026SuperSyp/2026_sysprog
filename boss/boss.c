@@ -84,6 +84,7 @@ void boss_cfg_default(boss_cfg_t *c)
     c->loom_range = 5.0f;  c->wall_sense = 1.5f; c->rush_level = 0.15f; c->wall_turn = 1.0f;
     c->loom_base = 0.08f;  c->loom_gain = 0.55f; c->loom_speed = 0.15f; c->loom_avg_ticks = 10;
     c->near_range = 1.5f;  c->near_gain = 0.12f; c->hurt_ticks = 20;
+    c->phase2_hp = 0.5f;   c->phase2_ticks = 600;
 }
 
 void boss_cfg_load(boss_cfg_t *c, const char *path)
@@ -128,6 +129,7 @@ void boss_cfg_apply(boss_cfg_t *c, const char *path)
     F(charge_range); F(charge_speed); I(charge_windup); I(charge_ticks); I(charge_cooldown);
     F(wave_radius); F(wave_push); I(wave_period);
     F(loom_range); F(wall_sense); F(rush_level); F(wall_turn); F(near_range); F(near_gain); I(hurt_ticks);
+    F(phase2_hp); I(phase2_ticks);
     F(loom_base); F(loom_gain); F(loom_speed); I(loom_avg_ticks);
 #undef F
 #undef I
