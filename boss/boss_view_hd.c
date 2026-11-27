@@ -450,6 +450,7 @@ static void shadow(image_t *im, const thing_t *t, float cx, float fy, float rx, 
 /* ---- 초파리 -------------------------------------------------------------------------- */
 /* 초파리는 상자 몇 개로 된 모형이다: 몸통, 눈 둘, 입, 더듬이 둘, 다리 여섯, 날개 둘. 처음 구상한 그림
  * (ui/assets/fly_idle.spr: 네모난 몸, 양옆의 붉은 눈, 위로 뻗은 날개, 배의 줄무늬)을 그대로 입체로 옮긴 것이다.
+ * 눈만은 상자가 아니라 둥근 알이다(머리의 앞쪽 양 모서리에 반쯤 박힌 겹눈).
  *
  * 그리는 법: 화면의 점마다 보는 방향으로 곧은 선을 긋고 가장 먼저 닿는 상자를 찾는다. 선들은 서로 나란하다(모형이
  * 작아서 원근을 넣지 않아도 어색하지 않다). 초파리가 향한 쪽과 내가 보는 쪽의 차이만큼 모형이 돌아가 있으므로 어느
@@ -549,6 +550,26 @@ static int fly_cast(const fly_job_t *j, int px, int py, float sx, float sy, fsam
     for (int k = 0; k < j->n; k++) {
         const fbox_t *B = &j->box[k];
         if (px < B->x0 || px >= B->x1 || py < B->y0 || py >= B->y1) continue;
+        if (B->kind == FK_EYE) {                     /* 눈은 상자가 아니라 둥근 알이다. h가 세 축의 반지름 */
+            float p[3], e[3], qa = 0.0f, qb = 0.0f, qc = -1.0f;
+            for (int i = 0; i < 3; i++) {
+                p[i] = (a * B->ra[i] + b * B->ub[i] + B->o[i]) / B->h[i];
+                e[i] = B->d[i] / B->h[i];
+                qa += e[i] * e[i];
+                qb += p[i] * e[i];
+                qc += p[i] * p[i];
+            }
+            float disc = qb * qb - qa * qc;
+            if (disc < 0.0f) continue;
+            float te = (-qb - sqrtf(disc)) / qa;
+            if (te < s->t) {
+                s->solid = k;
+                s->face = 0;
+                s->t = te;
+                for (int i = 0; i < 3; i++) s->q[i] = (p[i] + te * e[i]) * B->h[i];
+            }
+            continue;
+        }
         float o[3], tn = -1e9f, tf = 1e9f;
         int ax = 0, miss = 0;
         for (int i = 0; i < 3 && !miss; i++) {
@@ -597,7 +618,8 @@ static inline float within(float x, float a, float b, float fw)
 static acc_t fly_shade(const fly_job_t *j, const fsample_t *s)
 {
     static const col_t amber = { 218, 164, 86 }, cream = { 244, 218, 164 }, dark = { 60, 42, 32 }, pink = { 246, 150, 150 };
-    static const col_t red = { 216, 40, 46 }, red_rim = { 118, 16, 26 }, red_in = { 164, 22, 32 }, hot = { 255, 92, 52 };
+    static const col_t red = { 206, 36, 44 }, red_rim = { 96, 12, 22 }, red_in = { 150, 20, 32 }, hot = { 255, 92, 52 };
+    static const col_t red_hi = { 246, 96, 84 }, pupil = { 34, 6, 12 }, sheen = { 255, 170, 150 };
     static const col_t limb = { 50, 36, 30 }, lip = { 104, 64, 44 }, grey = { 128, 128, 136 }, white = { 255, 255, 255 };
     static const col_t glass = { 212, 234, 248 }, vein = { 146, 180, 208 };
     acc_t o = { 0, 0, 0, 0 };
@@ -621,21 +643,45 @@ static acc_t fly_shade(const fly_job_t *j, const fsample_t *s)
             if (j->stun) c = cmix(c, grey, 0.5f);
             c = cmul(c, 1.0f - 0.5f * clamp01(0.5f + (0.02f - e) / fw));              /* 모서리의 짙은 선 */
         } else if (B->kind == FK_EYE) {
-            c = red;
-            if (ax != 2) {                               /* 가운데가 짙고, 바깥 위쪽에 반짝이는 점 */
-                float in_u = ax == 0 ? y : x, sgn = ax == 0 ? (float)B->side : 1.0f;
-                float di = maxf(fabsf(in_u) - B->h[ua < va ? ua : va] * 0.55f, fabsf(z + 0.01f) - B->h[2] * 0.55f);
-                c = cmix(c, red_in, clamp01(0.5f - di / fw));
-                if (j->stun) {                           /* 붙었거나 막혔다: 눈이 X가 된다 */
-                    float k = B->h[2] / B->h[ua < va ? ua : va], cross = minf(fabsf(in_u * k - z), fabsf(in_u * k + z));
-                    c = cmix(grey, dark, clamp01(0.5f + (0.022f - cross * 0.7f) / fw));
-                } else {
-                    float dh = maxf(fabsf(in_u - sgn * 0.045f) - 0.032f, fabsf(z - 0.065f) - 0.036f);
-                    c = cmix(c, white, clamp01(0.5f - dh / fw) * 0.92f);
-                }
+            /* 겹눈: 둥근 알의 겉에 낱눈의 무늬를 깐다. 나를 똑바로 향한 곳은 어둡다(겹눈은 보는 쪽의 낱눈이 빛을
+             * 삼켜서, 검은 점이 보는 사람을 따라다니는 것처럼 보인다). 빛을 받는 곳에는 반짝이는 점을 둔다 */
+            float n[3], H[3], len = 0.0f, hl = 0.0f, nl = 0.0f, nv = 0.0f, nh = 0.0f, sa = 0.0f, sb = 0.0f;
+            for (int i = 0; i < 3; i++) { n[i] = s->q[i] / (B->h[i] * B->h[i]); len += n[i] * n[i]; }
+            len = sqrtf(len);
+            for (int i = 0; i < 3; i++) {
+                float L = -0.42f * B->ra[i] + 0.68f * B->ub[i] - 0.60f * B->d[i];    /* 빛이 오는 쪽(fly_light와 같다) */
+                n[i] /= len;
+                H[i] = L - B->d[i];
+                hl += H[i] * H[i];
+                nl += n[i] * L;
+                nv -= n[i] * B->d[i];
+                sa += s->q[i] * B->ra[i];                /* 화면에서 눈의 가운데로부터 오른쪽, 위로 얼마인가(칸) */
+                sb += s->q[i] * B->ub[i];
             }
-            if (!j->stun) c = cmix(c, hot, j->charge);
-            c = cmix(c, j->stun ? dark : red_rim, clamp01(0.5f + (0.024f - e) / fw));
+            hl = sqrtf(hl);
+            for (int i = 0; i < 3; i++) nh += n[i] * H[i] / hl;
+            light = 0.58f + 0.56f * maxf(nl, 0.0f);
+            if (j->stun) {                               /* 붙었거나 막혔다: 눈이 X가 된다 */
+                float cross = minf(fabsf(sa - sb), fabsf(sa + sb)), in = clamp01(0.5f + (0.105f - maxf(fabsf(sa), fabsf(sb))) / fw);
+                c = cmix(grey, dark, clamp01(0.5f + (0.020f - cross * 0.7f) / fw) * in);
+                c = cmix(dark, c, smooth(0.05f, 0.40f, nv));
+            } else {
+                const float cell = 0.21f;                /* 낱눈 하나의 크기(공으로 편 각도) */
+                float uz = z / B->h[2], lat = asinf(uz < -1.0f ? -1.0f : (uz > 1.0f ? 1.0f : uz));
+                float lon = atan2f(y / B->h[1] * (float)B->side, x / B->h[0]);
+                float row = floorf(lat / cell + 0.5f), fv = lat / cell - row;
+                float uu = lon * cosf(row * cell) / cell + (fmodf(fabsf(row), 2.0f) > 0.5f ? 0.5f : 0.0f);
+                float fu = uu - floorf(uu + 0.5f), r2 = fu * fu + fv * fv;
+                /* 낱눈이 몇 픽셀도 안 되게 작으면(멀리 있으면) 무늬를 그리지 않는다. 그리면 어른거린다 */
+                float show = clamp01((cell * B->h[0] / fw - 3.0f) / 4.0f) * smooth(0.20f, 0.60f, nv);
+                c = cmix(red, red_in, smooth(0.09f, 0.21f, r2) * 0.46f * show);
+                c = cmix(c, red_hi, (1.0f - smooth(0.0f, 0.07f, r2)) * 0.30f * show);
+                c = cmix(red_rim, c, smooth(0.02f, 0.42f, nv));                       /* 가장자리는 짙다 */
+                c = cmix(c, pupil, smooth(0.935f, 0.992f, nv) * 0.62f);
+                c = cmix(c, sheen, powf(maxf(nh, 0.0f), 7.0f) * 0.30f);
+                c = cmix(c, white, clamp01(powf(maxf(nh, 0.0f), 70.0f) * 1.3f) * 0.92f);
+                c = cmix(c, hot, j->charge);
+            }
             if (j->charge > 0.0f) light = light + (1.15f - light) * j->charge;       /* 돌진하려 할 때는 눈이 빛난다 */
         } else if (B->kind == FK_MOUTH) {
             c = lip;
@@ -765,7 +811,8 @@ static void draw_fly(image_t *im, const boss_snap_t *b, const boss_view_t *v, co
     if (!have_bc) { boss_cfg_t dc; boss_cfg_default(&dc); boss_body_cfg(&dc, &bc); have_bc = 1; }
     fly_box(&job, FK_BODY, 0, (float[3]){ 0.0f, 0.0f, bz }, (float[3]){ 0.50f, 0.40f, 0.34f }, 0.0f, rv, up, dir);
     for (int s = -1; s <= 1; s += 2)
-        fly_box(&job, FK_EYE, s, (float[3]){ 0.47f, (float)s * 0.27f, bz + 0.09f }, (float[3]){ 0.07f, 0.15f, 0.16f }, 0.0f, rv, up, dir);
+        /* 눈: 머리의 앞쪽 양 모서리에 반쯤 박힌 둥근 알. 앞에서도 옆에서도 불룩하게 보인다 */
+        fly_box(&job, FK_EYE, s, (float[3]){ 0.40f, (float)s * 0.33f, bz + 0.10f }, (float[3]){ 0.17f, 0.15f, 0.19f }, 0.0f, rv, up, dir);
     fly_box(&job, FK_MOUTH, 0, (float[3]){ 0.52f, 0.0f, bz - 0.18f }, (float[3]){ 0.03f, 0.07f, 0.055f }, 0.0f, rv, up, dir);
     for (int s = -1; s <= 1; s += 2)
         fly_box(&job, FK_FEELER, s, (float[3]){ 0.44f, (float)s * 0.11f, bz + 0.34f + 0.07f }, (float[3]){ 0.016f, 0.016f, 0.07f }, 0.0f, rv, up, dir);
