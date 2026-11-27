@@ -10,7 +10,8 @@
  *  - 물기: 초파리가 참가자에게 닿으면 단맛 자극(BR_SUGAR)을 준다. 먹기 반응(BR_FEED)이 feed_level 이상이면
  *          물린 것이고 그 참가자는 바로 탈락한다. 반응은 몇 틱 늦게 오므로 닿은 직후에 벌어지면 살 수 있다.
  *
- * 화면: 내 칸은 내 캐릭터의 뒤에서 본 통로다. 초파리 칸은 초파리의 눈(낱눈의 격자)에 비친 참가자들이다.
+ * 화면: 내 칸은 내 캐릭터의 뒤에서 본 통로다. 초파리 칸은 초파리의 자리에서 본 통로와 달아나는 참가자들이고,
+ *       그 위에 겹눈의 벌집 무늬를 얹는다.
  *
  * 다른 스테이지와 다른 점: 초파리 한 마리가 모두를 쫓으므로 한 사람의 결과가 다른 사람의 입력에 따라 달라진다
  * (include/stage.h의 약속을 일부러 지키지 않는다). config.ini의 coop = 1로 tools/bot.sh의 그 검사를 건너뛴다. */
@@ -374,38 +375,77 @@ static void draw_fly_back(canvas_t *cv, const cam_t *c)
     box(cv, c, fx - 0.5f, fx + 0.5f, 0.62f, 0.75f, dz, C_BLACK);
 }
 
-/* 초파리의 눈: 낱눈의 격자. 낱눈마다 그 방향에 보이는 것의 색을 찍는다. */
+/* 겹눈의 벌집 무늬. (x, y)에서 가장 가까운 낱눈의 가운데와 둘째로 가까운 가운데까지의 거리 차를 돌려준다.
+ * 0에 가까우면 두 낱눈의 경계 위에 있다. (*hx, *hy)에는 그 픽셀이 든 낱눈의 가운데를 넣는다 */
+#define HEX 5.2f                     /* 낱눈의 크기(가운데에서 꼭짓점까지, 픽셀) */
+static float hex_edge(int x, int y, float *hx, float *hy)
+{
+    const float w = 1.7320508f * HEX, h = 1.5f * HEX;
+    int r0 = (int)floorf((float)y / h);
+    float d1 = 1e9f, d2 = 1e9f;
+    for (int r = r0 - 1; r <= r0 + 2; r++) {
+        float off = (r & 1) ? 0.5f * w : 0.0f;               /* 줄마다 반 칸씩 어긋난다 */
+        int q0 = (int)floorf(((float)x - off) / w);
+        for (int q = q0; q <= q0 + 1; q++) {
+            float cx = (float)q * w + off, cy = (float)r * h;
+            float dx = (float)x - cx, dy = (float)y - cy, d = dx * dx + dy * dy;
+            if (d < d1) { d2 = d1; d1 = d; *hx = cx; *hy = cy; }
+            else if (d < d2) d2 = d;
+        }
+    }
+    return sqrtf(d2) - sqrtf(d1);
+}
+
+/* 초파리의 눈: 초파리의 자리에서 앞을 본 통로와 달아나는 참가자들을 그리고, 그 위에 겹눈의 벌집 무늬를 얹는다.
+ * 가운데는 또렷하고 가장자리로 갈수록 낱눈의 경계가 짙어지며, 눈 밖(네 귀퉁이)은 붉은 낱눈으로 덮인다.
+ * 쫓고 있는 참가자에게는 표시를 한다. */
 static void draw_fly_eye(canvas_t *cv)
 {
     cam_t c = { fx, fz + 0.3f, 0.8f };
-    ui_clear(cv, C_BLACK);
-    for (int row = 0; (HUD_H + 3 + row * 5) < PANE_H - 2; row++) {
-        int y = HUD_H + 3 + row * 5;
-        for (int col = 0; col < 19; col++) {
-            int x = 1 + col * 5 + ((row & 1) ? 2 : 0);       /* 줄마다 반 칸씩 어긋난다 */
-            if (x + 3 > PANE_W) continue;
-            int sx = x + 1, sy = y + 1;
-            color_t colr = sy > HOR ? C_GRAY1 : C_BLACK;     /* 바닥과 그 위 */
-            if (sy > HOR) {
-                float dz = FOCAL * c.h / (float)(sy - HOR);
-                float wx = c.x + (float)(sx - CX) * dz / FOCAL;
-                if (wx < -HALF || wx > HALF) colr = C_BROWN;
-            } else {
-                float dz = FOCAL * (CEIL - c.h) / (float)(HOR - sy + 1);
-                float wx = c.x + (float)(sx - CX) * dz / FOCAL;
-                if (wx < -HALF || wx > HALF) colr = C_BROWN;
+    int drawn[STAGE_MAX_PLAYERS] = { 0 };
+    float nearest = 1e9f;                                    /* 가장 가까운 참가자까지. 그보다 가까운 장애물은 그리지 않는다 */
+    for (int p = 0; p < n_players; p++)
+        if (pl[p].alive && pl[p].z < nearest) nearest = pl[p].z;
+    draw_corridor(cv, &c);
+    /* 먼 것부터: 장애물을 하나 그리기 전에 그보다 먼 참가자를 먼저 그린다. 초파리는 장애물에 걸리지 않으므로
+     * 참가자를 가리는 장애물(참가자보다 가까운 것)은 그리지 않는다. 아주 가까운 참가자는 화면에서 사라지지 않게
+     * 눈앞에 붙여 그린다(닿았을 때 화면을 가득 채운다) */
+    for (int k = n_ob; k >= 0; k--) {
+        float limit = k > 0 ? ob[k - 1].z : -1e9f;           /* 이보다 먼 참가자를 지금 그린다 */
+        if (k < n_ob && ob[k].z > nearest) draw_obstacle(cv, &c, k);
+        for (;;) {
+            int far = -1;
+            for (int p = 0; p < n_players; p++)
+                if (!drawn[p] && pl[p].alive && pl[p].z > limit && pl[p].z > c.z - 0.5f && (far < 0 || pl[p].z > pl[far].z)) far = p;
+            if (far < 0) break;
+            drawn[far] = 1;
+            runner_t r = pl[far];
+            if (r.z < c.z + 0.62f) r.z = c.z + 0.62f;
+            draw_runner(cv, &c, &r, far);
+            if (far == fly_target) {                         /* 쫓는 참가자: 네 귀에 꺾쇠 */
+                float dz = r.z - c.z;
+                int x0 = px_of(&c, r.x - 0.45f, dz) - 1, x1 = px_of(&c, r.x + 0.45f, dz) + 1;
+                int y0 = py_of(&c, jump_z(&r) + 1.6f, dz) - 1, y1 = py_of(&c, jump_z(&r), dz) + 1;
+                int len = (x1 - x0) / 4 + 1;
+                color_t col = fly_touch && (tick_no / 2) % 2 ? C_WARN : C_RED;
+                for (int s = 0; s < 4; s++) {
+                    int cx = (s & 1) ? x1 : x0, cy = (s & 2) ? y1 : y0;
+                    ui_rect(cv, (s & 1) ? cx - len + 1 : cx, cy, len, 1, col);
+                    ui_rect(cv, cx, (s & 2) ? cy - len + 1 : cy, 1, len, col);
+                }
             }
-            for (int p = 0; p < n_players; p++) {            /* 참가자: 가까울수록 낱눈을 많이 덮는다 */
-                const runner_t *r = &pl[p];
-                float dz = r->z - c.z;
-                if (!r->alive || dz < 0.25f || dz > VIEW_FAR) continue;
-                float yc = jump_z(r) + (sliding(r) ? 0.35f : 0.75f);
-                int cxp = px_of(&c, r->x, dz), cyp = py_of(&c, yc, dz);
-                float rad = FOCAL * (sliding(r) ? 0.4f : 0.75f) / dz;
-                float ddx = (float)(sx - cxp) / 0.55f, ddy = (float)(sy - cyp);     /* 사람은 세로로 길다 */
-                if (ddx * ddx + ddy * ddy <= rad * rad) colr = (p == fly_target) ? BODY[p % 3] : C_GRAY3;
-            }
-            ui_rect(cv, x, y, 3, 3, colr);
+        }
+    }
+    /* 겹눈의 무늬 */
+    const float ecx = (float)PANE_W * 0.5f, ecy = (float)(HUD_H + PANE_H) * 0.5f;
+    for (int y = HUD_H; y < PANE_H; y++) {
+        for (int x = 0; x < PANE_W; x++) {
+            float ux = ((float)x + 0.5f - ecx) / 49.0f, uy = ((float)y + 0.5f - ecy) / 48.0f, rr = ux * ux + uy * uy;
+            if (rr <= 0.34f) continue;                       /* 가운데는 그대로 둔다 */
+            float hx = 0.0f, hy = 0.0f, e = hex_edge(x, y, &hx, &hy);
+            float vx = (hx - ecx) / 49.0f, vy = (hy - ecy) / 48.0f;          /* 낱눈 하나는 통째로 눈 안이거나 밖이다 */
+            if (vx * vx + vy * vy >= 0.98f) ui_px(cv, x, y, e < 1.5f ? C_BLACK : C_FLY_EYE);
+            else if (e < 1.2f && (rr > 0.72f || ((x + y) & 1))) ui_px(cv, x, y, C_BLACK);
         }
     }
     ui_rect(cv, 0, 0, PANE_W, HUD_H, C_BLACK);
