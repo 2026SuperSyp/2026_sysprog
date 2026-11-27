@@ -24,6 +24,9 @@
 #define BIRD_HW    5                   /* 몸의 가로 반 */
 #define BIRD_HH    4                   /* 몸의 세로 반 */
 #define PIPE_W     10
+#define MARK_TICKS 6                   /* 초파리 머리 위의 "!", "?"를 보여 주는 틱 수 */
+#define GAIN_TICKS 10                  /* 통과할 때 "+N"을 보여 주는 틱 수 */
+#define STIM_H     12                  /* 자극 세기 1.0일 때 초파리 옆 막대의 높이 */
 
 typedef struct {
     float x;
@@ -39,9 +42,12 @@ typedef struct {
     int   invul_until;                 /* 이 틱까지 부딪혀도 괜찮다 */
     int   last_flap;
     int   n_pass, n_crash;
+    int   streak;                      /* 부딪히지 않고 이어서 통과한 기둥 수 */
+    int   pass_tick;                   /* 마지막으로 점수를 얻은 틱("+N"을 띄운다) */
+    float last_gain;                   /* 그때 얻은 점수 */
     float score;
     unsigned char passed[MAX_PIPES];
-    float danger_below, danger_above;  /* 초파리 칸에 보여 줄, 이번 틱에 준 자극 */
+    float danger_below, danger_above;  /* 초파리 칸에 보여 줄, 이번 틱에 잰 위험 */
 } side_t;
 
 static side_t pl[STAGE_MAX_PLAYERS];
@@ -49,10 +55,18 @@ static side_t fly;
 static pipe_t pipes[MAX_PIPES];
 static int    gap_seq[MAX_PIPES];      /* 씨앗에서 미리 만든 틈 위치(0~1) * 1000 */
 static int    n_pipes, next_pipe, n_players, tick_no, total_ticks;
+static int    n_score_pipes;           /* 판이 끝나기 전에 몸 뒤로 지나가서 점수가 나는 기둥 수 */
+
+/* 초파리 칸의 뇌 표시. stage_tick에서 적고 그리기는 읽기만 한다. */
+static float fly_stim_l, fly_stim_r;   /* 이번 틱에 준 왼쪽(아래 위험), 오른쪽(위 위험) 다가옴 */
+static float fly_escape;               /* 뇌의 달아남 반응 */
+static int   fly_act_tick = -100;      /* 뇌 때문에 날갯짓한 틱 */
+static int   fly_hold_tick = -100;     /* 달아남이 켜졌는데 날갯짓하지 않은 틱 */
 
 static float scroll_speed, gap_start, gap_end, gravity, flap_speed, max_fall;
-static float score_per_pipe, crash_penalty, look_ahead, danger_range, loom_gain, turn_margin;
-static int   pipe_every, flap_gap, respawn_ticks, invul_ticks, fly_flap_cooldown;
+static float score_per_pipe, combo_step, crash_penalty, look_ahead, danger_range, loom_gain, turn_margin;
+static float jump_start, jump_end;
+static int   pipe_every, flap_gap, respawn_ticks, invul_ticks, fly_flap_cooldown, combo_max;
 
 static const stage_info_t info = {
     .title    = "플래핑 플라이",
@@ -69,7 +83,13 @@ static sprite_id_t spr_trap, spr_spider; /* 아래 장애물의 파리지옥 머
 
 static void reset_side(side_t *s)
 {
-    *s = (side_t){ .y = (CEIL_Y + GROUND_Y) / 2.0f, .last_flap = -100 };
+    *s = (side_t){ .y = (CEIL_Y + GROUND_Y) / 2.0f, .last_flap = -100, .pass_tick = -100 };
+}
+
+/* i번째 기둥의 난이도(0~1). 첫 기둥이 0이고 점수가 나는 마지막 기둥이 1이다. */
+static float pipe_level(int i)
+{
+    return n_score_pipes > 1 ? clampf((float)i / (n_score_pipes - 1), 0.0f, 1.0f) : 1.0f;
 }
 
 void stage_start(const stage_ctx_t *ctx)
@@ -81,28 +101,42 @@ void stage_start(const stage_ctx_t *ctx)
     pipe_every        = (int)cfg_get("pipe_every_ticks", 34.0f);
     next_pipe         = (int)cfg_get("first_pipe_ticks", 20.0f);
     gap_start         = cfg_get("gap_start", 46.0f);
-    gap_end           = cfg_get("gap_end", 34.0f);
+    gap_end           = cfg_get("gap_end", 26.0f);
     gravity           = cfg_get("gravity", 0.22f);
     flap_speed        = cfg_get("flap_speed", 2.5f);
     max_fall          = cfg_get("max_fall", 3.2f);
     flap_gap          = (int)cfg_get("flap_gap_ticks", 2.0f);
     respawn_ticks     = (int)cfg_get("respawn_ticks", 16.0f);
     invul_ticks       = (int)cfg_get("invul_ticks", 24.0f);
-    score_per_pipe    = cfg_get("score_per_pipe", 10.0f);
+    score_per_pipe    = cfg_get("score_per_pipe", 7.0f);
+    combo_step        = cfg_get("combo_step", 1.0f);
+    combo_max         = (int)cfg_get("combo_max", 4.0f);
     crash_penalty     = cfg_get("crash_penalty", 5.0f);
+    jump_start        = cfg_get("jump_start", 250.0f);
+    jump_end          = cfg_get("jump_end", 450.0f);
     look_ahead        = cfg_get("look_ahead", 30.0f);
     danger_range      = cfg_get("danger_range", 16.0f);
     loom_gain         = cfg_get("loom_gain", 1.0f);
-    fly_flap_cooldown = (int)cfg_get("fly_flap_cooldown", 3.0f);
+    fly_flap_cooldown = (int)cfg_get("fly_flap_cooldown", 8.0f);
     turn_margin       = cfg_get("turn_margin", 0.1f);
 
-    /* 문제는 씨앗에서만 만든다. 틈이 너무 크게 오르내리지 않게 이전 틈 근처에서 고른다. */
+    if (pipe_every < 1) pipe_every = 1;
+
+    /* 기둥은 나온 뒤 pass_ticks 틱째에 몸 뒤로 완전히 지나간다(count_pass). 판이 끝나기
+     * 그만큼 전까지 나온 기둥만 점수가 나므로, 난이도는 그 마지막 기둥에서 끝 값이 되게 한다. */
+    int pass_ticks = (int)((PANE_W + 2 - (BIRD_X - BIRD_HW - PIPE_W)) / scroll_speed) + 1;
+    n_score_pipes = total_ticks - pass_ticks >= next_pipe
+                  ? (total_ticks - pass_ticks - next_pipe) / pipe_every + 1 : 1;
+
+    /* 문제는 씨앗에서만 만든다. 틈이 너무 크게 오르내리지 않게 이전 틈 근처에서 고르고,
+     * 뒤의 기둥일수록 오르내림의 폭을 키운다. */
     stage_rng_t rng;
     stage_rng_seed(&rng, ctx->seed);
     int prev = 500;
     for (int i = 0; i < MAX_PIPES; i++) {
-        int lo = prev - 350 < 0 ? 0 : prev - 350;
-        int hi = prev + 350 > 1000 ? 1000 : prev + 350;
+        int jump = (int)(jump_start + (jump_end - jump_start) * pipe_level(i));
+        int lo = prev - jump < 0 ? 0 : prev - jump;
+        int hi = prev + jump > 1000 ? 1000 : prev + jump;
         gap_seq[i] = stage_rng_range(&rng, lo, hi);
         prev = gap_seq[i];
     }
@@ -117,11 +151,13 @@ void stage_start(const stage_ctx_t *ctx)
 static int is_dead(const side_t *s)  { return tick_no < s->dead_until; }
 static int is_invul(const side_t *s) { return tick_no < s->invul_until; }
 
-static void flap(side_t *s, int gap)
+/* 날갯짓한다. 쉬는 중이거나 바로 전에 날갯짓했으면 하지 않고 0을 돌려준다. */
+static int flap(side_t *s, int gap)
 {
-    if (is_dead(s) || tick_no - s->last_flap < gap) return;
+    if (is_dead(s) || tick_no - s->last_flap < gap) return 0;
     s->vy = -flap_speed;
     s->last_flap = tick_no;
+    return 1;
 }
 
 void stage_input(int player, int key, double t)
@@ -154,6 +190,8 @@ static float danger(float dist)
 static void fly_think(void)
 {
     fly.danger_below = fly.danger_above = 0.0f;
+    fly_stim_l = fly_stim_r = 0.0f;
+    fly_escape = brain_rate(BR_ESCAPE);                         /* 보여 주려고 읽기만 한다 */
     if (is_dead(&fly)) return;
 
     float below = GROUND_Y - (fly.y + BIRD_HH);                 /* 바닥까지 */
@@ -169,18 +207,22 @@ static void fly_think(void)
     fly.danger_above = danger(above);
 
     /* 한 틱에 한쪽만 준다. 양쪽을 같이 주면 방향 반응이 꺼진다. */
-    if (fly.danger_below > fly.danger_above)      brain_stimulate(BR_LOOM_L, fly.danger_below);
-    else if (fly.danger_above > fly.danger_below) brain_stimulate(BR_LOOM_R, fly.danger_above);
+    if (fly.danger_below > fly.danger_above)      brain_stimulate(BR_LOOM_L, fly_stim_l = fly.danger_below);
+    else if (fly.danger_above > fly.danger_below) brain_stimulate(BR_LOOM_R, fly_stim_r = fly.danger_above);
 
     if (brain_fired(BR_ESCAPE)) {
         float turn = brain_rate(BR_TURN_R) - brain_rate(BR_TURN_L);
-        if (turn > turn_margin) flap(&fly, fly_flap_cooldown);   /* 아래 위험에서 멀어지기: 위로 */
+        if (turn > turn_margin && flap(&fly, fly_flap_cooldown)) /* 아래 위험에서 멀어지기: 위로 */
+            fly_act_tick = tick_no;
+        else                                                     /* 위가 위험해서 참았거나, 방금 날갯짓해서 아직 못 하는 틱 */
+            fly_hold_tick = tick_no;
     }
 }
 
 static void crash(side_t *s, int pane)
 {
     s->n_crash++;
+    s->streak = 0;
     s->score -= crash_penalty;
     if (s->score < 0) s->score = 0;
     s->dead_until = tick_no + respawn_ticks;
@@ -219,7 +261,8 @@ static void move_side(side_t *s, int pane)
     }
 }
 
-/* 지나간 기둥을 센다. 쉬는 중이나 무적일 때 지나간 것은 점수가 없다. */
+/* 지나간 기둥을 센다. 쉬는 중이나 무적일 때 지나간 것은 점수가 없다.
+ * 부딪히지 않고 이어서 통과할수록 combo_step씩 더 얻는다(combo_max번까지 늘어난다). */
 static void count_pass(side_t *s, int pane)
 {
     for (int i = 0; i < n_pipes; i++) {
@@ -227,7 +270,11 @@ static void count_pass(side_t *s, int pane)
         s->passed[i] = 1;
         if (is_dead(s) || is_invul(s)) continue;
         s->n_pass++;
-        s->score += score_per_pipe;
+        s->streak++;
+        int bonus = s->streak - 1 < combo_max ? s->streak - 1 : combo_max;
+        s->last_gain = score_per_pipe + combo_step * bonus;
+        s->score += s->last_gain;
+        s->pass_tick = tick_no;
         fx_trail(pane, BIRD_X, (int)s->y);
     }
 }
@@ -236,8 +283,7 @@ void stage_tick(double dt)
 {
     (void)dt;
     if (tick_no >= next_pipe && n_pipes < MAX_PIPES) {          /* 새 기둥. 갈수록 틈이 좁아진다 */
-        float p = total_ticks > 0 ? (float)tick_no / total_ticks : 0.0f;
-        int h = (int)(gap_start + (gap_end - gap_start) * p);
+        int h = (int)(gap_start + (gap_end - gap_start) * pipe_level(n_pipes));
         int lo = CEIL_Y + 6 + h / 2, hi = GROUND_Y - 6 - h / 2;
         pipes[n_pipes] = (pipe_t){ .x = PANE_W + 2, .gap_h = h, .alive = 1,
                                    .gap_y = lo + (hi - lo) * gap_seq[n_pipes] / 1000 };
@@ -332,6 +378,33 @@ static void draw_player(canvas_t *c, const side_t *s)
     ui_sprite(c, spr_person, BIRD_X - 8, (int)s->y - 6, frame);
 }
 
+/* 초파리 옆의 자극 막대. 아래에서 위로 자란다(바닥은 bottom 줄) */
+static void draw_stim(canvas_t *c, int x, int bottom, float level)
+{
+    if (level <= 0.0f) return;
+    int h = (int)(level * STIM_H + 0.5f);
+    if (h < 1) h = 1;
+    ui_rect(c, x, bottom - h + 1, 2, h, C_WARN);
+}
+
+/* 초파리 칸의 뇌 표시: 준 자극(옆 막대), 뇌의 달아남 반응(발밑 막대), 뇌 때문에 날갯짓했나(머리 위 "!", "?") */
+static void draw_brain(canvas_t *c, const side_t *s)
+{
+    int y = (int)s->y, w = ui_sprite_w(SPR_FLY_IDLE), h = ui_sprite_h(SPR_FLY_IDLE);
+    int left = BIRD_X - w / 2, top = y - h / 2;
+    draw_stim(c, left - 3, top + h - 1, fly_stim_l);                  /* 왼쪽 다가옴(아래 위험) */
+    draw_stim(c, left + w + 1, top + h - 1, fly_stim_r);              /* 오른쪽 다가옴(위 위험) */
+    ui_bar(c, left, top + h + 1, w, fly_escape, C_CYAN);
+
+    const char *mark = tick_no - 1 - fly_act_tick < MARK_TICKS ? "!"
+                     : tick_no - 1 - fly_hold_tick < MARK_TICKS ? "?" : NULL;
+    if (!mark) return;
+    color_t col = mark[0] == '!' ? C_WARN : C_GRAY3;
+    int mx = BIRD_X - ui_text_w(mark) / 2, my = top - UI_FONT_H - 1;
+    if (my < CEIL_Y) { mx = left - 4 - ui_text_w(mark); my = y - UI_FONT_H / 2; }  /* 천장에 붙으면 왼쪽에 */
+    ui_text(c, mx, my, mark, col);
+}
+
 static void draw_side(canvas_t *c, const side_t *s, int is_fly)
 {
     ui_clear(c, C_BG);
@@ -347,16 +420,27 @@ static void draw_side(canvas_t *c, const side_t *s, int is_fly)
             draw_player(c, s);
         }
     }
+    if (is_fly) draw_brain(c, s);
     if (is_dead(s)) ui_text(c, BIRD_X + 8, (int)s->y - 6, "쿵!", C_BAD);
 
     char buf[32];
+    int age = tick_no - 1 - s->pass_tick;                              /* 통과한 뒤 지난 틱 */
+    if (!is_dead(s) && age < GAIN_TICKS) {                             /* 얻은 점수가 몸 옆에서 떠오른다 */
+        snprintf(buf, sizeof buf, "+%d", (int)s->last_gain);
+        int gy = (int)s->y - 10 - age;
+        ui_text(c, BIRD_X + 12, gy < CEIL_Y ? CEIL_Y : gy, buf, C_GOOD);
+    }
+
     snprintf(buf, sizeof buf, "%d", (int)s->score);
     ui_text(c, PANE_W - ui_text_w(buf) - 2, 2, buf, C_TEXT);
-    if (is_fly) {                                                      /* 이번 틱에 준 자극 */
+    if (is_fly) {                                                      /* 이번 틱에 잰 아래, 위 위험 */
         ui_text(c, 2, 0, "↓", C_TEXT);
         ui_bar(c, 15, 4, 18, s->danger_below, C_WARN);
         ui_text(c, 36, 0, "↑", C_TEXT);
         ui_bar(c, 49, 4, 18, s->danger_above, C_WARN);
+    } else if (s->streak >= 2) {                                       /* 이어서 통과한 수 */
+        snprintf(buf, sizeof buf, "연속 %d", s->streak);
+        ui_text(c, 2, 0, buf, C_GOOD);
     } else {
         snprintf(buf, sizeof buf, "통과 %d", s->n_pass);
         ui_text(c, 2, 0, buf, C_GRAY3);
