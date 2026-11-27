@@ -3,7 +3,7 @@
  *   위 띠 14줄   : 게임 이름, 남은 시간, 라운드
  *   가운데 108줄 : 초파리 칸 | 내 칸 | 오른쪽 위: 다른 참가자 한 명(절반 크기)
  *                                      오른쪽 아래: 초파리 뇌 표시
- *   아래 띠 12줄 : 내 점수, 초파리 점수, 남은 기회 */
+ *   아래 띠 12줄 : 내 점수, 초파리 점수, 남은 기회. 판이 시작하고 5초 동안은 점수 대신 조작 키 */
 #include "ui/ui_internal.h"
 #include "brain.h"
 #include "brain/brain_host.h"
@@ -16,6 +16,7 @@
 #define OTHER_X  193
 #define OTHER_W  (PANE_W / 2)
 #define OTHER_H  (PANE_H / 2)
+#define KEYS_TICKS 100        /* 판이 시작하고 아래 띠에 조작 키를 보여 주는 틱 수(5초) */
 
 static void frame_rect(canvas_t *c, int x, int y, int w, int h, color_t col)
 {
@@ -201,6 +202,12 @@ void compose_stage_frame(canvas_t *full, const canvas_t *fly, canvas_t *const pa
     /* 아래 띠 */
     int by = TOP_H + PANE_H + 1;
     ui_rect(full, 0, by, SCREEN_W, SCREEN_H - by, C_GRAY1);
+    if (hud->controls && hud->controls[0] && hud->tick < KEYS_TICKS) {
+        /* 판이 막 시작했다: 규칙 설명에 나왔던 조작 키를 한 번 더 보여 준다(그동안 점수는 아직 0 근처다) */
+        snprintf(buf, sizeof buf, "조작: %s", hud->controls);
+        ui_text(full, 3, by + (ui_text_h(buf) > UI_FONT_H ? 2 - UI_KFONT_LATIN_DY : 2), buf, C_YELLOW);
+        return;                                      /* 조작 키가 길면 띠를 다 쓰므로 남은 기회는 잠깐 감춘다 */
+    }
     snprintf(buf, sizeof buf, "YOU %d   FLY %d", hud->my_score, hud->fly_score);
     ui_text(full, 3, by + 2, buf, hud->my_score >= hud->fly_score ? C_GOOD : C_BAD);
     snprintf(buf, sizeof buf, "LIVES %d", hud->lives);

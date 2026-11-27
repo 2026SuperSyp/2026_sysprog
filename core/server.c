@@ -98,7 +98,7 @@ static struct {
     float phase2;                    /* 2페이즈로 넘어가는 초파리 체력의 비율. 음수이면 boss/config.ini의 값(phase2_hp), 0이면 2페이즈가 없다 */
     int idle_ms;                     /* 말이 없는 접속을 끊는 시간. 검사에서 --idle-ms=N 으로 줄인다 */
     int rejoin_ms;                   /* 끊긴 사람의 자리를 남겨 두는 시간. 0이면 끊기는 즉시 나간 것으로 한다(--rejoin-ms=N) */
-} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 3000, 2000, 2000, 6000, 0, 0, -1, -1.0f, IDLE_WAIT_MS, REJOIN_WAIT_MS };
+} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 5000, 2000, 2000, 6000, 0, 0, -1, -1.0f, IDLE_WAIT_MS, REJOIN_WAIT_MS };
 
 static int64_t now_ms(void)
 {

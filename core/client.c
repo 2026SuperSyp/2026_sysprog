@@ -869,6 +869,8 @@ static void draw(canvas_t *full)
             .my_score = S.head.score[view],
             .fly_score = S.head.fly_score,
             .lives = (ph->me >= 0) ? ph->lives[ph->me] : 0,
+            .controls = ph->controls,
+            .tick = S.head.tick,
             .watch = S.watch,
             .brain_stim = stim,
             .brain_rate = rate,
