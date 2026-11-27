@@ -11,7 +11,10 @@
  *   kite    3.5~7칸 거리를 지키며 스프레이를 쏜다. 다 쓰면 rush처럼 한다
  *   random  아무 키나 누른다
  *   mix     sneak, kite, sneak (3명일 때)
- * 초파리는 뇌가 움직인다: 기본은 같은 프로세스 안의 가짜 뇌(fast), --brain=real이면 진짜 배선(data/). */
+ * 초파리는 뇌가 움직인다: 기본은 같은 프로세스 안의 가짜 뇌(fast), --brain=real이면 진짜 배선(data/).
+ *
+ * 여기서는 초파리의 체력이 0이 될 때까지 싸운다. 실제 게임은 체력이 phase2_hp배 이하가 되면 2페이즈(초파리 추격)로
+ * 넘어가므로, 표의 "2페이즈까지"가 실제 게임에서 1페이즈가 이어지는 시간이다(거기까지 간 판만 평균한다). */
 #include "boss/boss.h"
 #include "brain/brain_host.h"
 
@@ -69,8 +72,8 @@ static int bot_key(const boss_state_t *s, int i, int strat, bot_t *b, stage_rng_
 }
 
 typedef struct {
-    int games, wins;
-    double ticks, dealt, taken, charges, hits, escape, backward, near_wall, stuck_turns, takeoffs, descends;
+    int games, wins, half_games;     /* half_games: 초파리의 체력이 2페이즈 기준까지 내려간 판 수 */
+    double ticks, half_ticks, dealt, taken, charges, hits, escape, backward, near_wall, stuck_turns, takeoffs, descends;
 } stat_t;
 
 static int near_wall(const boss_state_t *s)
@@ -125,6 +128,7 @@ static void play(const boss_cfg_t *c, brain_mode_t mode, int strat, int n, uint3
     stage_rng_seed(&r, seed * 2654435761u + 1u);
     boss_init(&s, c, seed, n, lives);
     brain_host_reset(seed, mode);
+    int half_at = -1;                /* 체력이 2페이즈 기준 이하가 된 틱 */
     while (s.outcome == BOSS_GOING) {
         if (s.tick % 3 == 0) {
             for (int i = 0; i < n; i++) {
@@ -162,7 +166,9 @@ static void play(const boss_cfg_t *c, brain_mode_t mode, int strat, int n, uint3
             st->backward += rate[BR_BACKWARD] >= 0.5f;
         }
         st->near_wall += near_wall(&s);
+        if (half_at < 0 && c->phase2_hp > 0.0f && (float)s.fly.hp <= (float)s.fly.hp_max * c->phase2_hp) half_at = s.tick;
     }
+    if (half_at >= 0) { st->half_games++; st->half_ticks += half_at; }
     st->games++;
     st->wins += s.outcome == BOSS_PLAYERS_WIN;
     st->ticks += s.tick;
@@ -172,9 +178,10 @@ static void play(const boss_cfg_t *c, brain_mode_t mode, int strat, int n, uint3
 static void row(const char *brain, int strat, int n, const stat_t *st)
 {
     double g = st->games, t = st->ticks;
-    printf("%-5s %-6s %d명 %4d판  승률 %5.1f%%  평균 %5.1f초  준 피해/명 %6.1f  받은 피해/명 %4.2f  "
+    printf("%-5s %-6s %d명 %4d판  승률 %5.1f%%  평균 %5.1f초  2페이즈까지 %5.1f초(%d판)  준 피해/명 %6.1f  받은 피해/명 %4.2f  "
            "돌진/판 %5.1f  맞힘/판 %4.1f  도약/판 %5.1f  착지 명령/판 %5.1f  | 달아남 %4.1f%%  뒤로 %4.1f%%  벽 옆 %4.1f%%  끼어서 돎/판 %4.1f\n",
-           brain, strat_name[strat], n, st->games, 100.0 * st->wins / g, t / g / 20.0, st->dealt / g / n, st->taken / g / n,
+           brain, strat_name[strat], n, st->games, 100.0 * st->wins / g, t / g / 20.0,
+           st->half_games ? st->half_ticks / st->half_games / 20.0 : 0.0, st->half_games, st->dealt / g / n, st->taken / g / n,
            st->charges / g, st->hits / g, st->takeoffs / g, st->descends / g, 100.0 * st->escape / t, 100.0 * st->backward / t, 100.0 * st->near_wall / t,
            st->stuck_turns / g);
 }
