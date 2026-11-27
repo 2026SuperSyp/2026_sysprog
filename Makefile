@@ -171,6 +171,7 @@ test: $(TEST_BIN) $(STAGE_BIN) $(B)/server $(B)/client $(B)/brain_proc
 	@SSP_BUILD=$(B) sh tests/brain.sh
 	@SSP_BUILD=$(B) sh tests/fallback.sh
 	@SSP_BUILD=$(B) sh tests/boss.sh
+	@SSP_BUILD=$(B) sh tests/phase2.sh
 	@SSP_BUILD=$(B) sh tests/rejoin.sh
 
 need-stage:

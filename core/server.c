@@ -1,7 +1,7 @@
 /* 서버. 접속을 받고, 게임의 단계를 진행하고, 라운드마다 스테이지 프로세스를 띄운다.
  *
  *   build/dev/server [--port=N] [--order=이름,이름,...] [--rounds=N] [--seed=N]
- *                    [--brain=fast|slow|real] [--fast] [--once] [--brain-inproc] [--brain-strict] [--boss=초]
+ *                    [--brain=fast|slow|real] [--fast] [--once] [--brain-inproc] [--brain-strict] [--boss=초] [--phase2=비율]
  *   검사용: [--tick-ms=N] 틱 사이를 N ms로 한다(--fast여도 지킨다), [--ticks=N] 한 판을 N틱으로 한다,
  *           [--idle-ms=N] 말이 없는 접속을 N ms 뒤에 끊는다(기본 10초)
  *
@@ -26,7 +26,9 @@
  * --brain-inproc을 주면 전처럼 스테이지 안에서 계산한다.
  * 뇌가 뜨지 못하면 규칙으로 움직이는 뇌(fast)로 바꿔 이어 간다. --brain-strict를 주면 바꾸지 않는다(core/brain_sup.h).
  *
- * 마지막 라운드 뒤에 살아남은 사람이 있으면 보스전을 한다(아래 "보스전"). --boss=초 로 길이를 바꾸고, 0이면 건너뛴다. */
+ * 마지막 라운드 뒤에 살아남은 사람이 있으면 보스전을 한다(아래 "보스전"). --boss=초 로 길이를 바꾸고, 0이면 건너뛴다.
+ * 보스전에서 초파리의 체력이 처음의 절반(boss/config.ini의 phase2_hp) 이하가 되면 2페이즈(stages/run)로 넘어간다.
+ * --phase2=비율 로 그 기준을 바꾼다. 1이면 보스전이 시작되자마자 넘어가고, 0이면 2페이즈가 없다. */
 #include "boss/boss.h"
 #include "brain/brain_host.h"
 #include "core/brain_sup.h"
@@ -91,9 +93,10 @@ static struct {
     int card_ms, ready_ms, verdict_ms, rank_ms;
     int tick_ms, ticks;              /* 검사용. 0이면 쓰지 않는다 */
     int boss_sec;                    /* 보스전 길이(초). 음수이면 boss/config.ini의 값, 0이면 보스전을 건너뛴다 */
+    float phase2;                    /* 2페이즈로 넘어가는 초파리 체력의 비율. 음수이면 boss/config.ini의 값(phase2_hp), 0이면 2페이즈가 없다 */
     int idle_ms;                     /* 말이 없는 접속을 끊는 시간. 검사에서 --idle-ms=N 으로 줄인다 */
     int rejoin_ms;                   /* 끊긴 사람의 자리를 남겨 두는 시간. 0이면 끊기는 즉시 나간 것으로 한다(--rejoin-ms=N) */
-} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 3000, 2000, 2000, 6000, 0, 0, -1, IDLE_WAIT_MS, REJOIN_WAIT_MS };
+} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 3000, 2000, 2000, 6000, 0, 0, -1, -1.0f, IDLE_WAIT_MS, REJOIN_WAIT_MS };
 
 static int64_t now_ms(void)
 {
@@ -599,6 +602,8 @@ static void reap_children(void)
     }
 }
 
+static int spawn_ticks;                  /* 0보다 크면 다음에 띄우는 스테이지의 틱 수(검사용 --ticks가 있으면 그쪽이 먼저다) */
+
 static int stage_spawn(const char *name, uint32_t seed, int n_players)
 {
     char path[SELFDIR_MAX + 64], a_pipe[48], a_seed[32], a_players[32], a_brain[32], a_ticks[32], log_path[128];
@@ -618,8 +623,10 @@ static int stage_spawn(const char *name, uint32_t seed, int n_players)
     snprintf(a_players, sizeof a_players, "--players=%d", n_players);
     snprintf(a_brain, sizeof a_brain, "--brain=%s", brain_sup_model() ? brain_sup_model() : opt.brain);
     snprintf(log_path, sizeof log_path, "build/logs/stage_%s.log", name);
-    snprintf(a_ticks, sizeof a_ticks, "--ticks=%d", opt.ticks);
-    char *argv[] = { path, a_pipe, a_seed, a_players, a_brain, opt.ticks > 0 ? a_ticks : NULL, NULL };
+    int ticks = opt.ticks > 0 ? opt.ticks : spawn_ticks;
+    spawn_ticks = 0;
+    snprintf(a_ticks, sizeof a_ticks, "--ticks=%d", ticks);
+    char *argv[] = { path, a_pipe, a_seed, a_players, a_brain, ticks > 0 ? a_ticks : NULL, NULL };
     mkdir("build/logs", 0755);
     int log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
 
@@ -675,6 +682,9 @@ static int game_over;                        /* 한 판이 랭킹까지 갔다(-
 static uint8_t stage_buf[PROTO_MAX_LEN];
 
 static void start_round(void);
+static int phase2_on;                        /* 지금 도는 스테이지는 보스전의 2페이즈다(아래 "보스전") */
+static int phase2_done;                      /* 이번 보스전에서 2페이즈를 이미 했다(또는 하지 못했다) */
+static void phase2_abort(void);
 
 /* 그 자리에 사람이 있는 것으로 치는가. 접속해 있거나, 끊겼지만 아직 기다려 주는 중이다 */
 static int present(int s)
@@ -696,7 +706,7 @@ static void send_phase(void)
     memset(&m, 0, sizeof m);
     int64_t now = now_ms();
     m.phase = (uint8_t)phase;
-    m.round = phase == PH_LOBBY ? 0 : (uint8_t)(round_no + 1);
+    m.round = phase == PH_LOBBY ? 0 : (uint8_t)(phase2_on ? opt.n_rounds : round_no + 1);
     m.n_rounds = (uint8_t)opt.n_rounds;
     m.ms_left = deadline > now ? (uint32_t)(deadline - now) : 0;
     if (phase == PH_PLAY) m.ms_left = (uint32_t)((st.info.n_ticks - st.ticks_sent) * TICK_MS);
@@ -790,6 +800,7 @@ static void to_lobby(void)
     stage_kill();
     if (opt.once && game_over) exit(0);
     memset(&st.info, 0, sizeof st.info);
+    phase2_on = 0;
     phase = PH_LOBBY;
     deadline = 0;
     for (int s = 0; s < PROTO_SEATS; s++) {
@@ -818,6 +829,12 @@ static void finish_game(void)
 /* 스테이지가 결과 없이 죽거나 멈췄다. 그 라운드는 무효로 하고 다른 스테이지로 다시 한다. */
 static void stage_failed(const char *why)
 {
+    if (phase2_on) {                             /* 2페이즈의 스테이지가 고장 났다. 1페이즈로 돌아가 끝까지 싸운다 */
+        fprintf(stderr, "서버: 2페이즈 스테이지가 %s. 보스전을 이어 갑니다\n", why);
+        stage_kill();
+        phase2_abort();
+        return;
+    }
     fprintf(stderr, "서버: 스테이지가 %s. 이 라운드는 무효입니다\n", why);
     stage_kill();
     if (++void_count > 3) finish_game();
@@ -958,6 +975,7 @@ static void start_boss(void)
     stage_kill();
     boss_cfg_load(&c, "boss/config.ini");
     if (opt.boss_sec > 0) c.ticks = opt.boss_sec * 20;
+    if (opt.phase2 >= 0.0f) c.phase2_hp = opt.phase2;
     for (int s = 0; s < PROTO_SEATS; s++) {
         seats[s].passed = seats[s].score = 0;
         seats[s].pane = -1;
@@ -970,6 +988,7 @@ static void start_boss(void)
     }
     if (n == 0) { finish_game(); return; }
     boss_over = 0;
+    phase2_done = phase2_on = 0;
     boss_init(&boss, &c, game_seed ^ 0xB055u, n, lives);
     brain_host_reset(game_seed, boss_brain);
     memset(&st.info, 0, sizeof st.info);
@@ -981,6 +1000,71 @@ static void start_boss(void)
     deadline = now_ms() + (opt.fast ? 100 : BOSS_INTRO_MS);
     send_phase();
     boss_send(NULL, NULL);
+}
+
+/* ---- 보스전 2페이즈 ----------------------------------------------------------
+ * 초파리의 체력이 기준(boss/config.ini의 phase2_hp) 이하가 되면 싸움을 멈추고 스테이지 stages/run(초파리 추격)을
+ * 한 판 돌린다. 규칙 설명, READY GO, 판정까지 미니게임 한 라운드와 같은 길로 간다. 판정이 끝나면 보스전의 승패를 정한다:
+ * 한 명이라도 물리지 않았으면 참가자가 이기고, 물린 사람은 쓰러진 것으로 친다.
+ * 스테이지의 칸 번호는 0부터 빈 번호 없이 줘야 하므로, 살아 있는 사람에게 새로 매기고 보스전의 번호는 적어 둔다 */
+static int phase2_p[PROTO_SEATS];                        /* 자리마다 보스전에서의 참가자 번호(없으면 -1) */
+
+static void phase2_restore(void)
+{
+    for (int s = 0; s < PROTO_SEATS; s++) seats[s].pane = phase2_p[s];
+    phase2_on = 0;
+}
+
+static void phase2_abort(void)
+{
+    phase2_restore();
+    memset(&st.info, 0, sizeof st.info);
+    snprintf(st.info.title, sizeof st.info.title, "보스전");
+    fly_score = boss.fly.hp;
+    phase = PH_BOSS;
+    deadline = now_ms();
+    send_phase();
+}
+
+static void start_phase2(void)
+{
+    int n = 0;
+    for (int s = 0; s < PROTO_SEATS; s++) {
+        int p = seats[s].used ? seats[s].pane : -1;
+        phase2_p[s] = p;
+        seats[s].pane = (p >= 0 && boss.p[p].alive && present(s)) ? n++ : -1;
+    }
+    phase2_done = 1;
+    spawn_ticks = boss.cfg.phase2_ticks;
+    if (n == 0 || stage_spawn("run", game_seed ^ 0x2F1Eu, n) != 0) {
+        fprintf(stderr, "서버: 2페이즈 스테이지(stage_run)를 띄우지 못했습니다. 보스전을 이어 갑니다\n");
+        spawn_ticks = 0;
+        for (int s = 0; s < PROTO_SEATS; s++) seats[s].pane = phase2_p[s];
+        return;
+    }
+    fprintf(stderr, "서버: 보스전 2페이즈 시작 (참가자 %d명, 초파리 체력 %d/%d)\n", n, boss.fly.hp, boss.fly.hp_max);
+    phase2_on = 1;
+    fly_score = 0;
+    phase = PH_CARD;
+    deadline = now_ms() + opt.card_ms;
+    send_phase();
+}
+
+/* 2페이즈의 판정이 끝났다. 보스전의 승패로 옮긴다 */
+static void finish_phase2(void)
+{
+    int any = 0;
+    for (int s = 0; s < PROTO_SEATS; s++) {
+        int p = phase2_p[s];
+        if (p < 0) continue;
+        int passed = seats[s].used && seats[s].pane >= 0 && seats[s].passed;
+        boss.p[p].alive = passed;
+        if (passed) any = 1;
+    }
+    phase2_restore();
+    boss.outcome = any ? BOSS_PLAYERS_WIN : BOSS_FLY_WINS;
+    if (any) boss.fly.hp = 0;                            /* 놓친 초파리는 지쳐 쓰러진 것으로 한다 */
+    finish_boss();
 }
 
 static void boss_step(void)
@@ -996,6 +1080,8 @@ static void boss_step(void)
     /* 승패가 났으면 여기서 멈춘다. 방금 보낸 상태에 결과가 들어 있어서 클라이언트가 그것을 그린다.
      * 점수를 매기고 랭킹으로 넘어가는 일(finish_boss)은 BOSS_END_MS 뒤에 한다 */
     if (boss.outcome != BOSS_GOING) boss_over = 1;
+    else if (!phase2_done && boss.cfg.phase2_hp > 0.0f && (float)boss.fly.hp <= (float)boss.fly.hp_max * boss.cfg.phase2_hp)
+        start_phase2();
 }
 
 static void on_stage_readable(void)
@@ -1076,6 +1162,7 @@ static void on_deadline(void)
         break;
     case PH_VERDICT: {
         int alive = 0;
+        if (phase2_on) { finish_phase2(); break; }       /* 보스전 2페이즈의 판정이었다 */
         round_no++;
         for (int s = 0; s < PROTO_SEATS; s++)
             if (present(s) && seats[s].lives > 0) alive++;
@@ -1087,6 +1174,7 @@ static void on_deadline(void)
     case PH_BOSS:
         if (boss_over) { finish_boss(); break; }         /* 결과를 보여 준 시간이 지났다. 랭킹으로 간다 */
         boss_step();
+        if (phase != PH_BOSS) break;                     /* 2페이즈로 넘어갔다 */
         if (boss_over) { deadline = now + (opt.fast ? 100 : BOSS_END_MS); break; }
         if (opt.tick_ms > 0 || opt.fast) deadline = opt.tick_ms > 0 ? now + opt.tick_ms : now;
         else tick_by_timer(now);
@@ -1202,6 +1290,7 @@ static void on_input(const event_t *e)
      * 미니게임 도중에도 된다. 건너뛴 라운드의 점수는 없다 */
     if (ie.kind == IN_KEY && (ie.code == 'b' || ie.code == 'B') && s == host_seat() && opt.boss_sec != 0) {
         if (phase == PH_LOBBY) { skip_to_boss = 1; start_game(); return; }
+        if (phase2_on) return;                           /* 이미 보스전(2페이즈)이다 */
         if (phase == PH_CARD || phase == PH_READY || phase == PH_PLAY) { round_no = opt.n_rounds; start_boss(); return; }
     }
 
@@ -1268,7 +1357,7 @@ static void on_ctl(const char *cmd)
             if (seats[s].used) fprintf(stderr, "서버:   자리 %d %s %s 기회 %d 점수 %d\n", s, seats[s].name,
                                        seats[s].connected ? "접속" : "끊김", seats[s].lives, seats[s].total);
     } else if (strcmp(cmd, "boss") == 0) {
-        if ((phase == PH_CARD || phase == PH_READY || phase == PH_PLAY) && opt.boss_sec != 0) { round_no = opt.n_rounds; start_boss(); }
+        if (!phase2_on && (phase == PH_CARD || phase == PH_READY || phase == PH_PLAY) && opt.boss_sec != 0) { round_no = opt.n_rounds; start_boss(); }
     } else if (strcmp(cmd, "lobby") == 0) {
         if (phase != PH_LOBBY) { to_lobby(); send_phase(); }
     } else if (strcmp(cmd, "quit") == 0) {
@@ -1335,6 +1424,7 @@ int main(int argc, char **argv)
         else if (strncmp(a, "--tick-ms=", 10) == 0) opt.tick_ms = atoi(a + 10);
         else if (strncmp(a, "--ticks=", 8) == 0)   opt.ticks = atoi(a + 8);
         else if (strncmp(a, "--boss=", 7) == 0)    opt.boss_sec = atoi(a + 7);
+        else if (strncmp(a, "--phase2=", 9) == 0)  opt.phase2 = (float)atof(a + 9);
         else if (strncmp(a, "--idle-ms=", 10) == 0) opt.idle_ms = atoi(a + 10);
         else if (strncmp(a, "--rejoin-ms=", 12) == 0) opt.rejoin_ms = atoi(a + 12);
         else if (strcmp(a, "--daemon") == 0)       as_daemon = 1;

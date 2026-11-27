@@ -140,6 +140,10 @@ typedef struct {
     int   loom_avg_ticks;
     float near_range, near_gain;                 /* 이 거리 안의 참가자는 서 있기만 해도 자극이 된다(가장 가까울 때 near_gain만큼 더한다) */
     int   hurt_ticks;                            /* 맞은 뒤 이만큼은 때린 쪽에서 강한 자극이 들어오고, 돌진하지 않는다 */
+    /* 2페이즈(초파리 추격). 계산부는 쓰지 않고 서버가 읽는다: 초파리의 체력이 처음의 phase2_hp배 이하가 되면 싸움을 멈추고
+     * 스테이지 stages/run을 phase2_ticks 동안 돌린다. 거기서 한 명이라도 살아남으면 참가자가 이긴다. 0이면 2페이즈가 없다 */
+    float phase2_hp;
+    int   phase2_ticks;
 } boss_cfg_t;
 
 typedef struct {
