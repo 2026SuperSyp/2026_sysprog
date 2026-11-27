@@ -204,7 +204,7 @@ termbench:
 
 # 서버는 스테이지 실행 파일을 직접 띄우므로 먼저 전부 빌드한다.
 server: all brain-check
-	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example,swat,web) --brain=$(or $(BRAIN),fast)
+	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example,swat,web,food,flap,boat) --brain=$(or $(BRAIN),fast)
 
 client: all
 	@$(B)/client --host=$(or $(HOST),127.0.0.1) --port=$(or $(PORT),4620) --name=$(or $(NAME),PLAYER); \
@@ -212,7 +212,7 @@ client: all
 
 demo-local: all brain-check
 	@mkdir -p build/logs
-	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example,swat,web) --brain=$(or $(BRAIN),fast) \
+	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example,swat,web,food,flap,boat) --brain=$(or $(BRAIN),fast) \
 	    > build/logs/server.log 2>&1 & sv=$$!; sleep 0.5; \
 	 $(B)/client --bot --wait=3 --port=$(or $(PORT),4620) --name=BOT1 > build/logs/bot1.log 2>&1 & \
 	 sleep 0.2; $(B)/client --bot --wait=3 --port=$(or $(PORT),4620) --name=BOT2 > build/logs/bot2.log 2>&1 & \

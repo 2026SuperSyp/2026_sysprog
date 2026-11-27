@@ -1451,7 +1451,7 @@ int main(int argc, char **argv)
         }
     }
     if (opt.n_order == 0) {                          /* --order가 없을 때의 순서 */
-        static const char *const usual[] = { "example", "swat", "web" };
+        static const char *const usual[] = { "example", "swat", "web", "food", "flap", "boat" };
         for (size_t i = 0; i < sizeof usual / sizeof usual[0]; i++) snprintf(opt.order[opt.n_order++], 32, "%s", usual[i]);
     }
     if (opt.n_rounds < 1) opt.n_rounds = 1;
