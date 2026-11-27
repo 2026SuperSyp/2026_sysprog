@@ -21,19 +21,26 @@
 #define FLOOR_Y   (PANE_H - 14)
 #define BODY_H    12
 #define HEAD_H    14
+#define POP_Y     (FLOOR_Y - 26)   /* 결과 글자의 윗줄 */
+
+/* 파리채가 닿은 틱에 캐릭터 위에 띄우는 결과 글자의 종류 */
+enum { POP_NONE, POP_DODGE, POP_NEAR, POP_HIT };
 
 typedef struct {
     float x;
     int last_move;
     int stun_until;
-    int hit_now;
     int lives;
+    int dodges;     /* 피한 파리채 수 */
+    int pop_tick;   /* 결과 글자를 띄운 틱 */
+    int pop_kind;   /* POP_* */
     float score;
 } side_t;
 
 typedef struct {
     int start;
     int x;
+    int appr;   /* 이 파리채가 내려오는 틱 수. 뒤에 나올수록 짧다 */
 } swat_t;
 
 static side_t pl[STAGE_MAX_PLAYERS];
@@ -44,15 +51,22 @@ static int n_sw, n_players, tick_no, max_lives;
 
 static int warn_t, appr_t, slam_t, lift_t;
 static int stun_t, move_gap, hop_cooldown;
+static int pop_t, mark_t;
 
 static float head_w, body_w, step;
 static float hit_penalty, score_per_dodge;
+static float near_px, near_bonus;
 static float loom_gain, warn_level, fly_hop;
 static float wall_gain, wall_range, sense_margin;
 
+/* 초파리 칸의 뇌 표시. stage_tick에서 적고 그리기는 읽기만 한다 */
+static float fly_stim_l, fly_stim_r;   /* 이번 틱에 준 다가옴 자극 */
+static int fly_mark_tick;              /* 달아남이 켜진 틱 */
+static int fly_mark_blocked;           /* 1이면 켜졌는데 막혀서 못 뛰었다 */
+
 static const stage_info_t info = {
     .title = "파리채 피하기",
-    .rule = "그림자 자리를 피하세요\n초파리보다 많이 피하기",
+    .rule = "그림자 자리를 피하세요\n바로 옆에서 피하면 보너스",
     .controls = "A D 좌우 이동",
 };
 
@@ -106,7 +120,7 @@ void stage_start(const stage_ctx_t *ctx)
         (int)cfg_get("move_gap_ticks", 2.0f);
 
     hop_cooldown =
-        (int)cfg_get("hop_cooldown_ticks", 8.0f);
+        (int)cfg_get("hop_cooldown_ticks", 16.0f);
 
     head_w = cfg_get("head_w", 28.0f);
     body_w = cfg_get("body_w", 14.0f);
@@ -116,7 +130,13 @@ void stage_start(const stage_ctx_t *ctx)
         cfg_get("hit_penalty", 6.0f);
 
     score_per_dodge =
-        cfg_get("score_per_dodge", 8.5f);
+        cfg_get("score_per_dodge", 6.5f);
+
+    near_px = cfg_get("near_px", 8.0f);
+    near_bonus = cfg_get("near_bonus", 2.0f);
+
+    pop_t = (int)cfg_get("pop_ticks", 10.0f);
+    mark_t = (int)cfg_get("mark_ticks", 6.0f);
 
     loom_gain =
         cfg_get("loom_gain", 1.3f);
@@ -125,7 +145,7 @@ void stage_start(const stage_ctx_t *ctx)
         cfg_get("warn_level", 0.5f);
 
     fly_hop =
-        cfg_get("fly_hop", 22.0f);
+        cfg_get("fly_hop", 12.0f);
 
     wall_gain =
         cfg_get("wall_gain", 0.5f);
@@ -145,8 +165,15 @@ void stage_start(const stage_ctx_t *ctx)
     int rest_max =
         (int)cfg_get("rest_max_ticks", 12.0f);
 
+    int appr_end =
+        (int)cfg_get("approach_end_ticks", 6.0f);
+
     if (warn_t < 1) warn_t = 1;
     if (appr_t < 1) appr_t = 1;
+    if (appr_end < 1) appr_end = 1;
+    if (appr_end > appr_t) appr_end = appr_t;
+    if (near_px < 0.0f) near_px = 0.0f;
+    if (near_bonus < 0.0f) near_bonus = 0.0f;
     if (slam_t < 1) slam_t = 1;
     if (lift_t < 0) lift_t = 0;
     if (stun_t < 0) stun_t = 0;
@@ -182,32 +209,38 @@ void stage_start(const stage_ctx_t *ctx)
     stage_rng_t rng;
     stage_rng_seed(&rng, ctx->seed);
 
-    int len =
-        warn_t + appr_t + slam_t + lift_t;
+    int n_ticks = ctx->n_ticks > 0 ? ctx->n_ticks : 1;
 
     int t = first_delay;
     n_sw = 0;
 
-    while (n_sw < MAX_SWATS &&
-           t + warn_t + appr_t + slam_t <
-               ctx->n_ticks) {
+    while (n_sw < MAX_SWATS) {
+        /* 판이 흐를수록 내려오는 틱 수가 appr_end 쪽으로 준다 */
+        int appr = appr_t -
+            (appr_t - appr_end) * t / n_ticks;
+
+        if (t + warn_t + appr + slam_t >= ctx->n_ticks)
+            break;
 
         sw[n_sw].start = t;
+        sw[n_sw].appr = appr;
         sw[n_sw].x = stage_rng_range(
             &rng, 6, PANE_W - 7
         );
 
         n_sw++;
 
-        t += len + stage_rng_range(
-            &rng, rest_min, rest_max
-        );
+        t += warn_t + appr + slam_t + lift_t +
+            stage_rng_range(
+                &rng, rest_min, rest_max
+            );
     }
 
     for (int p = 0; p < STAGE_MAX_PLAYERS; p++) {
         pl[p] = (side_t){
             .x = PANE_W / 2.0f,
             .last_move = -100,
+            .pop_tick = -1000,
             .lives = max_lives
         };
     }
@@ -215,8 +248,11 @@ void stage_start(const stage_ctx_t *ctx)
     fly = (side_t){
         .x = PANE_W / 2.0f,
         .last_move = -100,
+        .pop_tick = -1000,
         .lives = max_lives
     };
+
+    fly_mark_tick = -1000;
 }
 
 void stage_input(int player, int key, double t)
@@ -256,7 +292,7 @@ static int active_swat(void)
 
         if (tick_no >= t0 &&
             tick_no <
-                t0 + warn_t + appr_t + slam_t) {
+                t0 + warn_t + sw[k].appr + slam_t) {
             return k;
         }
     }
@@ -275,6 +311,9 @@ static int active_swat(void)
  */
 static void fly_think(void)
 {
+    fly_stim_l = 0.0f;
+    fly_stim_r = 0.0f;
+
     if (fly.lives <= 0)
         return;
 
@@ -286,7 +325,7 @@ static void fly_think(void)
 
     if (k >= 0 &&
         tick_no <
-            sw[k].start + warn_t + appr_t) {
+            sw[k].start + warn_t + sw[k].appr) {
 
         float dx =
             (float)sw[k].x - fly.x;
@@ -305,7 +344,7 @@ static void fly_think(void)
                 : warn_level +
                   (1.0f - warn_level) *
                   (float)(since - warn_t + 1) /
-                  (float)appr_t;
+                  (float)sw[k].appr;
 
             float level = clampf(
                 loom_gain * p,
@@ -347,27 +386,30 @@ static void fly_think(void)
     int stimulated = 0;
 
     if (from_left > from_right) {
-        brain_stimulate(
-            BR_LOOM_L,
-            clampf(from_left, 0.0f, 1.0f)
-        );
+        fly_stim_l = clampf(from_left, 0.0f, 1.0f);
+
+        brain_stimulate(BR_LOOM_L, fly_stim_l);
 
         stimulated = 1;
     }
     else if (from_right > from_left) {
-        brain_stimulate(
-            BR_LOOM_R,
-            clampf(from_right, 0.0f, 1.0f)
-        );
+        fly_stim_r = clampf(from_right, 0.0f, 1.0f);
+
+        brain_stimulate(BR_LOOM_R, fly_stim_r);
 
         stimulated = 1;
     }
 
-    if (stimulated &&
+    int escape = stimulated &&
+        brain_fired(BR_ESCAPE);
+
+    if (escape &&
         tick_no >= fly.stun_until &&
-        brain_fired(BR_ESCAPE) &&
         tick_no - fly.last_move >=
             hop_cooldown) {
+
+        /* 실제로 뛰면 0이 된다. 남으면 머리 위에 "?"를 띄운다 */
+        int blocked = 1;
 
         float turn =
             brain_rate(BR_TURN_R) -
@@ -415,27 +457,53 @@ static void fly_think(void)
 
                 move_side(&fly, dx);
                 fly.last_move = tick_no;
+                blocked = 0;
             }
+        }
+
+        /* 뛰었으면 그 틱부터 "!"를 띄운다. "?"는 막혀 있는 동안 이어진다 */
+        if (!blocked || tick_no - fly_mark_tick >= mark_t ||
+            fly_mark_blocked) {
+            fly_mark_tick = tick_no;
+            fly_mark_blocked = blocked;
         }
     }
 }
 
+/* 파리채가 바닥에 닿은 틱에 맞았는지, 피했는지를 정한다.
+ * 초파리와 참가자에게 같은 규칙을 쓴다. */
 static void judge_hit(
     side_t *s, int pane, float swat_x
 )
 {
-    s->hit_now = 0;
-
     if (s->lives <= 0)
         return;
 
-    s->hit_now =
-        absf(swat_x - s->x) <
-            (head_w + body_w) / 2.0f;
+    float dist = absf(swat_x - s->x);
+    float reach = (head_w + body_w) / 2.0f;
 
-    if (!s->hit_now)
+    s->pop_tick = tick_no;
+
+    if (dist >= reach) {
+        s->dodges++;
+        s->score += score_per_dodge;
+        s->pop_kind = POP_DODGE;
+
+        /* 맞는 자리 바로 옆에서 버티면 더 준다 */
+        if (dist < reach + near_px) {
+            s->score += near_bonus;
+            s->pop_kind = POP_NEAR;
+        }
+
+        fx_shockwave(
+            pane,
+            (int)swat_x,
+            FLOOR_Y + BODY_H
+        );
         return;
+    }
 
+    s->pop_kind = POP_HIT;
     s->lives--;
 
     s->score = clampf(
@@ -449,25 +517,6 @@ static void judge_hit(
     fx_flash(pane, C_BAD, 50);
 }
 
-static void judge_end(
-    side_t *s, int pane, float swat_x
-)
-{
-    if (s->lives > 0 &&
-        !s->hit_now) {
-
-        s->score += score_per_dodge;
-
-        fx_shockwave(
-            pane,
-            (int)swat_x,
-            FLOOR_Y + BODY_H
-        );
-    }
-
-    s->hit_now = 0;
-}
-
 void stage_tick(double dt)
 {
     (void)dt;
@@ -476,9 +525,7 @@ void stage_tick(double dt)
 
     for (int k = 0; k < n_sw; k++) {
         int t_hit =
-            sw[k].start + warn_t + appr_t;
-
-        int t_end = t_hit + slam_t;
+            sw[k].start + warn_t + sw[k].appr;
 
         if (tick_no == t_hit) {
             judge_hit(
@@ -491,23 +538,6 @@ void stage_tick(double dt)
                  p++) {
 
                 judge_hit(
-                    &pl[p], p,
-                    (float)sw[k].x
-                );
-            }
-        }
-
-        if (tick_no == t_end) {
-            judge_end(
-                &fly, PANE_FLY,
-                (float)sw[k].x
-            );
-
-            for (int p = 0;
-                 p < n_players;
-                 p++) {
-
-                judge_end(
                     &pl[p], p,
                     (float)sw[k].x
                 );
@@ -538,7 +568,7 @@ static void draw_swatter(canvas_t *c)
         if (shown_tick >= sw[i].start &&
             shown_tick <
                 sw[i].start +
-                warn_t + appr_t +
+                warn_t + sw[i].appr +
                 slam_t + lift_t) {
 
             k = i;
@@ -551,13 +581,14 @@ static void draw_swatter(canvas_t *c)
 
     int sx = sw[k].x;
     int t = shown_tick - sw[k].start;
+    int appr = sw[k].appr;
 
     int y_floor = FLOOR_Y + BODY_H;
     int y_slam = y_floor - HEAD_H;
     int hw = (int)head_w;
 
     /* Warning shadow */
-    if (t < warn_t + appr_t + slam_t) {
+    if (t < warn_t + appr + slam_t) {
         int on =
             t >= warn_t ||
             ((t / 2) & 1) == 0;
@@ -583,18 +614,18 @@ static void draw_swatter(canvas_t *c)
      * The first fully landed frame is the
      * same processed tick as judge_hit().
      */
-    if (t < appr_t) {
+    if (t < appr) {
         y = -HEAD_H +
             (y_slam + HEAD_H) *
-            t / appr_t;
+            t / appr;
     }
-    else if (t < appr_t + slam_t) {
+    else if (t < appr + slam_t) {
         y = y_slam;
     }
     else {
         y = y_slam -
             (y_slam + HEAD_H) *
-            (t - appr_t - slam_t + 1) /
+            (t - appr - slam_t + 1) /
             (lift_t + 1);
     }
 
@@ -660,6 +691,80 @@ static void draw_player(
     );
 }
 
+/* 초파리의 뇌 표시: 준 자극은 그 쪽 옆의 세로 막대,
+ * 달아남이 켜져서 뛰면 머리 위의 "!", 막혀서 못 뛰면 "?" */
+static void draw_brain(canvas_t *c, int fx)
+{
+    int half = ui_sprite_w(SPR_FLY_IDLE) / 2;
+    int floor_y = FLOOR_Y + BODY_H;
+
+    float lv[2] = { fly_stim_l, fly_stim_r };
+    int bx[2] = { fx - half - 3, fx + half + 1 };
+
+    for (int i = 0; i < 2; i++) {
+        if (lv[i] <= 0.0f)
+            continue;
+
+        int h = (int)(lv[i] * 12.0f + 0.5f);
+        if (h < 1) h = 1;
+
+        int x = bx[i];
+        if (x < 0) x = 0;
+        if (x > PANE_W - 2) x = PANE_W - 2;
+
+        /* 같은 색의 그림자(높이 4)에 묻히지 않게 그 위에 세운다 */
+        ui_rect(c, x, floor_y - 4 - h, 2, h, C_WARN);
+    }
+
+    int since = tick_no - 1 - fly_mark_tick;
+
+    if (since >= 0 && since < mark_t) {
+        const char *m = fly_mark_blocked ? "?" : "!";
+
+        ui_text(
+            c,
+            fx - ui_text_w(m) / 2,
+            floor_y - ui_sprite_h(SPR_FLY_IDLE) - 9,
+            m,
+            fly_mark_blocked ? C_GRAY3 : C_WARN
+        );
+    }
+}
+
+/* 파리채가 닿은 틱부터 잠깐 캐릭터 위에 결과 글자를 띄운다 */
+static void draw_pop(canvas_t *c, const side_t *s)
+{
+    int since = tick_no - 1 - s->pop_tick;
+
+    if (since < 0 || since >= pop_t ||
+        s->pop_kind == POP_NONE)
+        return;
+
+    char buf[16];
+    color_t col;
+
+    if (s->pop_kind == POP_HIT) {
+        snprintf(buf, sizeof buf, "-%g", (double)hit_penalty);
+        col = C_BAD;
+    }
+    else if (s->pop_kind == POP_NEAR) {
+        snprintf(buf, sizeof buf, "아슬!");
+        col = C_YELLOW;
+    }
+    else {
+        snprintf(buf, sizeof buf, "+%g", (double)score_per_dodge);
+        col = C_GOOD;
+    }
+
+    int w = ui_text_w(buf);
+    int x = (int)clampf(
+        s->x - (float)w / 2.0f,
+        1.0f, (float)(PANE_W - 1 - w)
+    );
+
+    ui_text(c, x, POP_Y, buf, col);
+}
+
 static void draw_side(
     canvas_t *c,
     const side_t *s,
@@ -673,6 +778,18 @@ static void draw_side(
         FLOOR_Y + BODY_H,
         PANE_W, 2,
         C_GRAY2
+    );
+
+    /* 피한 수. 파리채가 앞을 지나가도록 먼저 그린다 */
+    char buf[24];
+    snprintf(buf, sizeof buf, "피함 %d", s->dodges);
+
+    ui_text(
+        c,
+        PANE_W - 2 - ui_text_w(buf),
+        2,
+        buf,
+        C_TEXT
     );
 
     draw_swatter(c);
@@ -706,6 +823,11 @@ static void draw_side(
             hit
         );
     }
+
+    if (is_fly)
+        draw_brain(c, (int)s->x);
+
+    draw_pop(c, s);
 
     /* Remaining lives */
     for (int i = 0;
