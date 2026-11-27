@@ -8,7 +8,7 @@
 #   make screen SCREEN=이름      화면 하나를 예시 상태로 띄움 (CASE=)
 #   make log STAGE=이름          스테이지 로그를 따라 읽음
 #   make termbench               터미널 속도 측정
-#   make server                  서버를 띄움 (PORT=, ORDER=이름,이름, BRAIN=)
+#   make server                  서버를 띄움 (PORT=, ORDER=이름,이름, BRAIN=. ORDER를 빼면 서버의 기본 순서: 여섯 게임 가운데 네 개가 섞여 나옴)
 #   make client                  서버에 접속 (HOST=, PORT=, NAME=)
 #   make demo-local              한 컴퓨터에서 서버, 봇 2명, 사람 1명으로 한 판
 #   make brain-data              진짜 뇌에 필요한 자료를 받아 data/ 에 준비 (한 번만)
@@ -206,7 +206,7 @@ termbench:
 
 # 서버는 스테이지 실행 파일을 직접 띄우므로 먼저 전부 빌드한다.
 server: all brain-check
-	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example,swat,web,food,flap,boat) --brain=$(or $(BRAIN),fast)
+	@$(B)/server --port=$(or $(PORT),4620) $(if $(ORDER),--order=$(ORDER)) --brain=$(or $(BRAIN),fast)
 
 client: all
 	@$(B)/client --host=$(or $(HOST),127.0.0.1) --port=$(or $(PORT),4620) --name=$(or $(NAME),PLAYER); \
@@ -214,7 +214,7 @@ client: all
 
 demo-local: all brain-check
 	@mkdir -p build/logs
-	@$(B)/server --port=$(or $(PORT),4620) --order=$(or $(ORDER),example,swat,web,food,flap,boat) --brain=$(or $(BRAIN),fast) \
+	@$(B)/server --port=$(or $(PORT),4620) $(if $(ORDER),--order=$(ORDER)) --brain=$(or $(BRAIN),fast) \
 	    > build/logs/server.log 2>&1 & sv=$$!; sleep 0.5; \
 	 $(B)/client --bot --wait=3 --port=$(or $(PORT),4620) --name=BOT1 > build/logs/bot1.log 2>&1 & \
 	 sleep 0.2; $(B)/client --bot --wait=3 --port=$(or $(PORT),4620) --name=BOT2 > build/logs/bot2.log 2>&1 & \
