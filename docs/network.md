@@ -27,19 +27,20 @@
    wsl --shutdown
    ```
 
-3. **관리자 권한** 파워셸에서 들어오는 접속을 허용한다(포트 4620만).
+3. **관리자 권한** 파워셸에서 들어오는 접속을 허용한다(포트 4620만). 첫 줄은 게임 접속(TCP)이고, 둘째 줄은 서버 찾기(UDP, 아래 "서버를 스스로 찾기")다.
 
    ```
    New-NetFirewallHyperVRule -Name "SuperSypParty" -DisplayName "Super Syp Party" -Direction Inbound -VMCreatorId '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -Protocol TCP -LocalPorts 4620
+   New-NetFirewallHyperVRule -Name "SuperSypPartyFind" -DisplayName "Super Syp Party (find)" -Direction Inbound -VMCreatorId '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}' -Protocol UDP -LocalPorts 4620
    ```
 
 4. 우분투에서 `make server`를 띄운다.
 
-되돌리려면 `.wslconfig`의 두 줄을 지우고 `wsl --shutdown`을 한 뒤, 관리자 파워셸에서 `Remove-NetFirewallHyperVRule -Name "SuperSypParty"`를 한다.
+되돌리려면 `.wslconfig`의 두 줄을 지우고 `wsl --shutdown`을 한 뒤, 관리자 파워셸에서 `Remove-NetFirewallHyperVRule -Name "SuperSypParty"`와 `Remove-NetFirewallHyperVRule -Name "SuperSypPartyFind"`를 한다.
 
 ## 서버 컴퓨터: 방법 2 포트 전달
 
-미러 방식을 쓸 수 없을 때 쓴다. WSL의 주소는 컴퓨터를 다시 켜면 바뀌므로 그때마다 1번을 다시 해야 한다.
+미러 방식을 쓸 수 없을 때 쓴다. WSL의 주소는 컴퓨터를 다시 켜면 바뀌므로 그때마다 1번을 다시 해야 한다. 이 방법은 TCP만 넘겨주므로 서버 찾기(`--host=auto`)는 되지 않는다. 접속하는 쪽에서 주소를 직접 적는다.
 
 1. **관리자 권한** 파워셸에서:
 
@@ -63,6 +64,20 @@
    make client HOST=192.168.0.12 NAME=YEONWOO
    ```
 
+## 서버를 스스로 찾기 (`--host=auto`)
+
+주소를 적지 않고 `make client HOST=auto NAME=이름`(또는 `build/dev/client --host=auto`)으로 띄우면, 클라이언트가 같은 망에 "서버 있나요"를 UDP로 뿌리고(브로드캐스트, 포트는 게임과 같은 4620) 답한 서버에 붙는다. 1초 동안 답이 없으면 주소를 직접 적으라고 알려 준다.
+
+| 경우 | 되는가 |
+|---|---|
+| 서버와 클라이언트가 같은 컴퓨터 | 된다(설정 없음) |
+| 서로 다른 컴퓨터, 둘 다 미러 방식 | 서버 쪽에 위 3번의 UDP 줄까지 넣었으면 될 것으로 본다. **아직 해 보지 않았다** |
+| 서버가 방법 2(포트 전달) | 안 된다. 포트 전달은 TCP만 넘긴다 |
+| 클라이언트가 기본(NAT) 방식의 WSL | 안 될 수 있다. 뿌린 물음이 WSL 안쪽 망에만 퍼지고 Wi-Fi로 나가지 않는다 |
+
+- 안 되면 주소를 직접 적는다(`HOST=192.168.0.12`). 게임 접속 자체는 찾기와 상관없이 된다.
+- 학교나 카페의 Wi-Fi는 브로드캐스트도 막는 경우가 많다. 휴대폰 핫스팟에서는 대개 된다.
+
 ## 안 될 때
 
 | 증상 | 볼 것 |
@@ -71,6 +86,7 @@
 | 같은 Wi-Fi인데도 안 됨 | 학교나 카페의 Wi-Fi는 기기끼리의 접속을 막는 경우가 많다. 휴대폰 핫스팟에 두 컴퓨터를 붙여서 다시 해 본다 |
 | 서버 컴퓨터 안에서는 되는데 밖에서 안 됨 | 위 방법 1의 3번 또는 방법 2의 방화벽 줄을 했는가. 관리자 권한이었는가 |
 | 방법 2에서 어제는 됐는데 오늘 안 됨 | WSL 주소가 바뀌었다. 포트 전달을 지우고 다시 건다 |
+| `--host=auto`가 서버를 못 찾음 | 위 "서버를 스스로 찾기"의 표를 본다. 급하면 주소를 직접 적는다 |
 | 현장에서 끝내 안 됨 | 노트북 한 대에서 `make demo-local`로 시연한다(서버, 봇 2명, 사람 1명) |
 
 포트를 바꾸려면 서버와 클라이언트 양쪽에 `PORT=번호`를 주고, 위 명령의 4620도 같은 번호로 바꾼다.

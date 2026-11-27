@@ -80,7 +80,7 @@ build/release/client --host=서버주소 --name=이름
  ┌────────────────────────┐   TCP    ┌──────────────────────────────────────────┐
  │ 수신 스레드             │◄────────►│ 접속마다: 읽기 스레드, 쓰기 스레드          │
  │ 입력 스레드(터미널, 마우스)│          │ 접속 받기 스레드                           │
- │ 그리기, 내보내기 스레드   │   UDP    │ 시그널 스레드 (SIGCHLD, SIGALRM, SIGINT)   │
+ │ 그리기, 내보내기 스레드   │   UDP    │ 시그널 스레드 (SIGCHLD, SIGALRM, SIGINT 등)│
  └────────────────────────┘◄ ─ ─ ─ ─►│ 서버 찾기 스레드                           │
                              (찾기)   │ 관리 창구 스레드 ◄── 이름 있는 파이프        │
                                       │ 뇌 감시 스레드                             │
@@ -107,7 +107,7 @@ build/release/client --host=서버주소 --name=이름
 | 초파리 뇌와의 대결 | 뇌는 따로 도는 프로세스다. 자극과 반응을 공유 메모리로 주고받는다 | `shm_open` `mmap` `ftruncate`, 세마포어, seqlock(원자 연산) |
 | 장애 복구 | 뇌가 멈추거나 죽으면 감시 스레드가 알아채 다시 띄우고, 계속 실패하면 가짜 뇌로 바꾼다. 스테이지가 죽으면 그 라운드만 무효로 한다 | 감시 스레드, `kill`, `waitpid`, 시간 한도가 있는 세마포어 대기 |
 | 보스전 2페이즈 | 보스전 도중에 서버가 스테이지 프로세스(`stage_run`)를 띄워 미니게임 한 라운드처럼 돌리고, 그 판정으로 보스전의 승패를 정한다. 띄우지 못하거나 도중에 죽으면 보스전(1페이즈)으로 돌아가 끝까지 간다(`tests/phase2.sh`) | `fork` `execv` `pipe`, `waitpid`, `kill`, `SIGCHLD` |
-| 3D 보스전 | 클라이언트는 수신, 입력, 그리기 스레드와 터미널에 내보내는 스레드로 나뉜다. 벽은 광선을 쏘아 그리고 터미널에 픽셀 그림(Sixel)이나 글자 칸으로 내보낸다 | pthread, mutex, `termios` 원시 입력, `ioctl(TIOCGWINSZ)`, `SIGWINCH`, `poll` |
+| 3D 보스전 | 클라이언트는 수신, 입력, 그리기 스레드와 터미널에 내보내는 스레드로 나뉜다. 픽셀 그림은 줄 단위로 잘라 일꾼 스레드들이 같이 그린다. 벽은 광선을 쏘아 그리고 터미널에 픽셀 그림(Sixel)이나 글자 칸으로 내보낸다 | pthread, mutex, `termios` 원시 입력, `ioctl(TIOCGWINSZ)`, `SIGWINCH`, `poll` |
 | 랭킹 저장 | 여러 서버가 같은 파일에 써도 깨지지 않고, 전원이 나가도 남는다 | `open(O_APPEND)` `write` `fsync` `rename` `flock` `fstat` `ftruncate` |
 | 관전 | 늦게 온 사람은 관전자로 들어와 누구의 화면이든 본다 | 접속자별 보내기 큐(느린 접속자는 최신 화면만) |
 | 재접속 | 게임 도중에 끊겨도 10초 안에 다시 붙으면 점수와 기회를 이어받는다 | 세션 토큰(`getrandom`), 소켓 바꿔 끼우기 |
@@ -132,7 +132,7 @@ build/release/client --host=서버주소 --name=이름
 | 뉴런 발화 계산 | `brain/lif.c` |
 | 랭킹 파일 (잠금, fsync, rename) | `core/ranking.c`의 `ranking_append`, `compact`, `open_locked` |
 | 터미널 원시 입력, 창 크기 (SIGWINCH) | `ui/term.c` |
-| 클라이언트의 스레드 | `core/client.c`의 `recv_main`(수신), `input_main`(입력), `run_screen`(그리기), `writer_main`(터미널에 내보내기) |
+| 클라이언트의 스레드 | `core/client.c`의 `recv_main`(수신), `input_main`(입력), `run_screen`(그리기), `writer_main`(터미널에 내보내기), `ui/par.c`의 `par_for`(그리기를 나눠 하는 일꾼들) |
 | 재접속 | `core/server.c`의 `on_join`, `away_check`, `core/client.c`의 `rejoin` |
 | 서버 찾기 (UDP) | `core/server.c`의 `find_main`, `core/client.c`의 `find_server` |
 | 관리 창구 (FIFO), 데몬, 자원 사용량 | `core/server.c`의 `ctl_main`, `daemonize`, `log_rusage` |
@@ -207,7 +207,8 @@ build/release/client --host=서버주소 --name=이름
 | `ui/` | 터미널, 입력, 글자와 그림, 화면 내보내기 |
 | `stages/` | 미니게임. 폴더 하나가 게임 하나다 |
 | `include/` | 미니게임이 쓰는 헤더 네 개와 통신 규격 |
-| `tools/` | 뇌 자료 준비, 뇌 반응 표, 보스전 봇과 훈련 |
+| `tools/` | 뇌 자료 준비, 뇌 탐침과 반응 표, 문서의 뇌 그림, 보스전 봇과 훈련, 터미널 속도 측정, 스테이지 검사, 글꼴 변환 |
+| `screens/` | 로비, 결과, 랭킹, 관전 화면을 따로 만들 때 넣는 자리. 비어 있으면 코어의 기본 화면을 쓴다 |
 | `tests/` | 자동 검사 |
 | `docs/` | 문서 |
 

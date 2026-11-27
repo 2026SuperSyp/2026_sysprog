@@ -156,8 +156,9 @@ static color_t fly_pixel(float u, float v, int face, int turn, color_t body, int
     if (face == 2) {                                  /* 옆모습: 머리가 한쪽 끝에 있다 */
         float hu = u - 0.55f * (float)turn, bu = u + 0.1f * (float)turn;
         if (hu * hu / 0.06f + (v + 0.1f) * (v + 0.1f) / 0.06f < 1.0f) {
-            float eu = hu - 0.06f * (float)turn;
-            return eu * eu + (v + 0.14f) * (v + 0.14f) < 0.02f ? C_FLY_EYE : C_BROWN;
+            float eu = hu - 0.06f * (float)turn, gu = eu - 0.05f * (float)turn;      /* 눈과, 눈 위쪽의 반짝이는 점 */
+            if (gu * gu + (v + 0.2f) * (v + 0.2f) < 0.0022f) return C_WHITE;
+            return eu * eu + (v + 0.14f) * (v + 0.14f) < 0.026f ? C_FLY_EYE : C_BROWN;
         }
         if (bu * bu / 0.36f + (v - 0.12f) * (v - 0.12f) / 0.09f < 1.0f) return body;
         float wu = u + 0.25f * (float)turn;
@@ -167,8 +168,10 @@ static color_t fly_pixel(float u, float v, int face, int turn, color_t body, int
     }
     /* 정면과 뒤: 머리, 몸통, 날개, 다리 */
     if (face == 0) {
-        float e = (au - 0.17f) * (au - 0.17f) + (v + 0.45f) * (v + 0.45f);
-        if (e < 0.017f) return C_FLY_EYE;
+        /* 겹눈은 머리의 양옆으로 불룩하게 나온다. 바깥 위쪽에 반짝이는 점을 둔다 */
+        float e = (au - 0.19f) * (au - 0.19f) + (v + 0.45f) * (v + 0.45f);
+        if ((au - 0.24f) * (au - 0.24f) + (v + 0.51f) * (v + 0.51f) < 0.0022f) return C_WHITE;
+        if (e < 0.024f) return C_FLY_EYE;
         if (u * u + (v + 0.42f) * (v + 0.42f) < 0.068f) return C_BROWN;
     }
     if (u * u / 0.14f + (v - 0.15f) * (v - 0.15f) / 0.25f < 1.0f) {
