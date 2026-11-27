@@ -4,6 +4,7 @@
  * A, D(또는 ←, →)로 움직인다. 머리에 닿은 것은 저절로 먹는다.
  * 단 음식은 받아먹고, 쓴 것, 짠 것, 썩은 것, 먹을 수 없는 것(의자, 돌 등)은 피해야 한다.
  * 먹은 음식은 발밑에 탑으로 쌓이고, 나쁜 음식을 먹으면 하트가 깎이고 탑이 무너진다.
+ * 내 머리 쪽으로 오던 나쁜 음식을 피하면 점수를 조금 준다(다른 줄로 떨어진 것은 주지 않는다).
  * 하트를 다 잃으면 그 자리에서 멈추고 점수가 고정된다(판은 끝까지 간다).
  *
  * 초파리
@@ -111,6 +112,8 @@ typedef struct {
     unsigned char dec[MAX_FOODS];      /* 음식마다 먹었는지, 보냈는지 */
     unsigned char tasted[MAX_FOODS];   /* 초파리: 다리로 맛을 봤는지 */
     unsigned char dodged[MAX_FOODS];   /* 초파리: 다가오는 물건을 보고 피했는지(그 물건 줄로는 다시 안 간다) */
+    unsigned char came[MAX_FOODS];     /* 나쁜 음식이 내 머리 쪽으로 왔었는지(피하면 점수를 준다) */
+    unsigned char hit[MAX_FOODS];      /* 먹지 않은 음식이 몸에 닿았었는지(지나간 뒤 머리에 맞고 튕기게 그린다) */
     int   spit_until;                  /* 초파리: 이 틱까지 "퉤!"(맛보고 거부함) */
     unsigned char layer[MAX_LAYERS];   /* 탑에 쌓인 음식 종류 */
     int   n_layers;
@@ -125,6 +128,8 @@ typedef struct {
     int   combo;
     int   eaten[CAT_COUNT];            /* 갈래마다 먹은 개수 */
     int   last_cat, last_until;        /* 방금 먹은 갈래를 이 틱까지 밝게 */
+    int   last_kind;                   /* 마지막에 먹은 음식 종류(웩의 이유를 띄운다) */
+    int   pop_pts, pop_until, pop_side;   /* 이 틱까지 머리 옆(pop_side: -1 왼쪽, +1 오른쪽)에 "+점수"를 띄운다 */
     float score;
 } side_t;
 
@@ -135,9 +140,19 @@ static int    n_foods, next_spawn, n_players, tick_no, total_ticks;
 
 static int    kind_seq[MAX_FOODS], lane_seq[MAX_FOODS];   /* 씨앗에서 미리 만든 음식 순서와 줄 */
 static float  fall_speed, eat_zone, touch_w, score_good, score_bad, score_skip_bad, feed_threshold, run_speed;
-static float  loom_px, escape_threshold;
+static float  loom_px, escape_threshold, near_px;
 static int    spit_ticks, gap_start, gap_end, yuck_ticks, max_hearts, crumble_layers, tower_max, move_gap, fly_notice_y;
 static sprite_id_t spr_person, spr_trash;
+
+#define POP_TICKS   10                 /* "+점수" 글자가 떠 있는 틱 수 */
+#define TASTE_HOLD  8                  /* 맛보기가 끝난 뒤에도 뇌 막대를 남겨 두는 틱 수(넘었는지 보이게) */
+#define REACT_TICKS 6                  /* 반응 표시("!", "?")가 떠 있는 틱 수 */
+
+/* 초파리 칸의 뇌 표시. fly_think(stage_tick 안)에서만 적고, 그리기는 읽기만 한다. */
+static float  fly_loom_l, fly_loom_r;  /* 이번 틱에 준 다가옴 자극(왼쪽, 오른쪽) */
+static float  fly_taste, fly_feed;     /* 맛을 보는 동안 준 맛 자극(가장 센 것)과 그때의 먹기 반응 */
+static int    fly_taste_until;         /* 이 틱까지 맛 막대를 그린다 */
+static int    fly_react_until, fly_react_ok;   /* 이 틱까지 "!"(반응해서 움직임) 또는 "?"(반응했지만 막힘) */
 
 static const stage_info_t info = {
     .title    = "음식 골라 먹기",
@@ -160,20 +175,21 @@ void stage_start(const stage_ctx_t *ctx)
     next_spawn     = (int)cfg_get("first_food_ticks", 10.0f);
     eat_zone       = cfg_get("eat_zone", 10.0f);
     touch_w        = cfg_get("touch_w", 10.0f);
-    score_good     = cfg_get("score_good", 10.0f);
+    score_good     = cfg_get("score_good", 8.0f);
     score_bad      = cfg_get("score_bad", 10.0f);
-    score_skip_bad = cfg_get("score_skip_bad", 2.0f);
+    score_skip_bad = cfg_get("score_skip_bad", 4.0f);
     yuck_ticks     = (int)cfg_get("yuck_ticks", 16.0f);
-    spit_ticks     = (int)cfg_get("fly_spit_ticks", 12.0f);
+    spit_ticks     = (int)cfg_get("fly_spit_ticks", 20.0f);
     max_hearts     = (int)cfg_get("hearts", 3.0f);
     crumble_layers = (int)cfg_get("crumble_layers", 2.0f);
-    tower_max      = (int)cfg_get("tower_max_layers", 8.0f);
+    tower_max      = (int)cfg_get("tower_max_layers", 4.0f);
     run_speed      = cfg_get("run_speed", 5.0f);
     move_gap       = (int)cfg_get("move_gap_ticks", 3.0f);
     fly_notice_y   = (int)cfg_get("fly_notice_y", 40.0f);
     feed_threshold = cfg_get("feed_threshold", 0.5f);
     loom_px        = cfg_get("fly_loom_px", 24.0f);
     escape_threshold = cfg_get("escape_threshold", 0.5f);
+    near_px          = cfg_get("dodge_near_px", 16.0f);
     float bad_ratio  = cfg_get("bad_ratio", 0.45f);
     float trap_ratio = cfg_get("trap_ratio", 0.35f);
     int   max_traps  = (int)cfg_get("max_traps", 2.0f);
@@ -239,9 +255,14 @@ static void eat(side_t *s, int i, int pane)
     s->eaten[category(k)]++;
     s->last_cat = category(k);
     s->last_until = tick_no + 10;
+    s->last_kind = k;
     if (KIND[k].good) {
         s->combo++;
-        s->score += score_good + (s->combo >= 3 ? score_good * 0.5f : 0.0f);   /* 3연속부터 보너스 */
+        float gain = score_good + (s->combo >= 3 ? score_good * 0.5f : 0.0f);  /* 3연속부터 보너스 */
+        s->score += gain;
+        s->pop_pts = (int)(gain + 0.5f);
+        s->pop_until = tick_no + POP_TICKS;
+        s->pop_side = +1;
         if (s->n_layers < MAX_LAYERS) s->layer[s->n_layers++] = (unsigned char)k;  /* 탑이 한 층 오른다 */
         if (s->combo >= 3) {
             s->combo_until = tick_no + 12;
@@ -289,7 +310,30 @@ static void catch_food(side_t *s, int pane)
     if (i >= 0) eat(s, i, pane);
 }
 
-/* 머리를 지나간 음식을 정리한다. 나쁜 음식을 잘 보냈으면 조금 준다. */
+/* 머리에 맞고 지나간 음식이 튕겨 나가는 쪽(-1 왼쪽, +1 오른쪽). 가장자리 줄에서는 칸 밖으로 나간다 */
+static int bounce_dir(int i)
+{
+    if (foods[i].lane == 0) return -1;
+    if (foods[i].lane == N_LANES - 1) return +1;
+    return i % 2 ? +1 : -1;
+}
+
+/* 나쁜 음식이 내 머리 쪽으로 오고 있나: 가로로 몸에 닿는 거리 안이고, 닿기 전 near_px 안이다.
+ * 이렇게 한 번이라도 다가왔던 것을 먹지 않고 보내야 "잘 피함" 점수를 준다.
+ * 이미 머리를 지나는 중인 것에 뛰어든 것은 치지 않는다.
+ * 먹지 않았는데 몸에 닿아 있는 것(웩, 탈락, 초파리의 맛보기)은 머리에 맞은 것으로 적는다.
+ * 이것은 피한 것이 아니므로 다가왔던 것도 지운다(초파리가 맛을 보고 거부한 것은 settle에서 따로 센다). */
+static void watch(side_t *s, int i)
+{
+    const food_t *f = &foods[i];
+    if (s->dec[i] != D_NONE) return;
+    if (in_mouth(s, f)) { s->hit[i] = 1; s->came[i] = 0; return; }
+    if (KIND[f->kind].good) return;
+    float dx = lane_x(f->lane) - s->x, top = head_y(s) - eat_zone;
+    if (dx < touch_w && dx > -touch_w && f->y >= top - near_px && f->y < top) s->came[i] = 1;
+}
+
+/* 머리를 지나간 음식을 정리한다. 내 쪽으로 오던 나쁜 음식을 피했으면 조금 준다. */
 static void settle(side_t *s, int i)
 {
     if (s->dec[i] != D_NONE || foods[i].y <= head_y(s) + 4) return;
@@ -300,7 +344,12 @@ static void settle(side_t *s, int i)
     }
     if (is_out(s)) return;
     if (KIND[foods[i].kind].good) s->combo = 0;
-    else                          s->score += score_skip_bad;
+    else if (s->came[i] || s->tasted[i]) {             /* 초파리가 맛을 보고 거부한 것도 피한 것이다 */
+        s->score += score_skip_bad;
+        s->pop_pts = (int)(score_skip_bad + 0.5f);
+        s->pop_until = tick_no + POP_TICKS;
+        s->pop_side = -bounce_dir(i);                  /* 머리에서 튕겨 나가는 음식과 반대쪽에 띄운다 */
+    }
 }
 
 /* 달려가는 중이면 목표 줄 쪽으로 다가간다 */
@@ -331,11 +380,21 @@ static int looming_object(const side_t *s, float *closeness)
     return -1;
 }
 
+/* 뇌의 반응이 기준을 넘었다. ok면 그대로 움직였고("!"), 아니면 막혀서 못 했다("?").
+ * "?"는 떠 있는 "!"를 덮지 않는다. 그리기는 tick_no가 하나 오른 뒤이므로 +1 한다. */
+static void fly_react(int ok)
+{
+    if (!ok && fly_react_ok && tick_no + 1 < fly_react_until) return;
+    fly_react_ok = ok;
+    fly_react_until = tick_no + 1 + REACT_TICKS;
+}
+
 /* 초파리: 다음 음식의 줄로 날아가고(규칙), 머리 위 음식의 맛을 느껴 뇌가 먹자고 하면 먹는다.
  * 맛이 없는 물건은 다가오는 그림자(looming)로 뇌에 준다. 도망 뉴런이 켜지면 옆 줄로 피하고,
  * 못 피하면 머리에 맞아 하트를 잃는다. */
 static void fly_think(void)
 {
+    fly_loom_l = fly_loom_r = 0.0f;
     if (is_out(&fly)) return;
 
     float close = 0.0f;
@@ -344,12 +403,15 @@ static void fly_think(void)
         /* 가장자리 줄에서는 열린 쪽으로 돌도록 반대편에서 다가오는 것으로 준다(L을 주면 오른쪽으로 돈다) */
         int from_left = fly.lane == 0 ? 1 : (fly.lane == N_LANES - 1 ? 0 : (obj % 2));
         brain_stimulate(from_left ? BR_LOOM_L : BR_LOOM_R, close);
+        if (from_left) fly_loom_l = close;
+        else           fly_loom_r = close;
         if (brain_rate(BR_ESCAPE) >= escape_threshold) {
             int dir = brain_rate(BR_TURN_R) >= brain_rate(BR_TURN_L) ? +1 : -1;
             if (fly.lane + dir < 0 || fly.lane + dir >= N_LANES) dir = -dir;
             int before = fly.lane;
             step(&fly, dir);
-            if (fly.lane != before) fly.dodged[obj] = 1;
+            if (fly.lane != before)      { fly.dodged[obj] = 1; fly_react(1); }
+            else if (!fly.dodged[obj])   fly_react(0);            /* 걸음 간격이나 웩, 퉤에 막혔다 */
         }
     }
 
@@ -374,8 +436,16 @@ static void fly_think(void)
     if (k->bitter > 0) brain_stimulate(BR_BITTER, k->bitter);
     if (k->salt   > 0) brain_stimulate(BR_SALT,   k->salt);
 
-    if (tick_no >= fly.yuck_until && brain_rate(BR_FEED) >= feed_threshold)
-        eat(&fly, i, PANE_FLY);
+    /* 그리기용으로 이번 틱의 맛 자극과 먹기 반응을 적어 둔다(뇌 값은 읽기만 한다) */
+    fly_taste = k->sugar > k->bitter ? k->sugar : k->bitter;
+    if (k->salt > fly_taste) fly_taste = k->salt;
+    fly_feed = brain_rate(BR_FEED);
+    fly_taste_until = tick_no + 1 + TASTE_HOLD;
+
+    if (fly_feed >= feed_threshold) {
+        if (tick_no >= fly.yuck_until) { eat(&fly, i, PANE_FLY); fly_react(1); }
+        else                            fly_react(0);           /* 먹고 싶지만 웩 하는 중이라 못 먹는다 */
+    }
 }
 
 void stage_tick(double dt)
@@ -394,9 +464,11 @@ void stage_tick(double dt)
     run(&fly, PANE_FLY);
     for (int p = 0; p < n_players; p++) { run(&pl[p], p); catch_food(&pl[p], p); }
 
-    /* 음식을 떨어뜨리고, 머리를 지나간 음식을 모두에게 정리한다 */
+    /* 내 쪽으로 오는 나쁜 음식을 적고, 음식을 떨어뜨리고, 머리를 지나간 음식을 모두에게 정리한다 */
     for (int i = 0; i < n_foods; i++) {
         if (!foods[i].alive) continue;
+        watch(&fly, i);
+        for (int p = 0; p < n_players; p++) watch(&pl[p], i);
         foods[i].y += fall_speed;
         settle(&fly, i);
         for (int p = 0; p < n_players; p++) settle(&pl[p], i);
@@ -472,6 +544,47 @@ static void draw_tally(canvas_t *c, const side_t *s)
     }
 }
 
+/* 나쁜 것을 먹었을 때 띄우는 이유. 단짠은 짠맛이지만 따로 알린다(단맛에 속았다) */
+static const char *bad_reason(int kind)
+{
+    if (kind == F_CARAMEL) return "단짠!";
+    switch (category(kind)) {
+    case CAT_BITTER: return "쓴맛!";
+    case CAT_SALTY:  return "짠맛!";
+    default:         return "못 먹음!";
+    }
+}
+
+/* 가운데를 x에 맞춰 글자를 쓰되 칸 밖으로 나가지 않게 한다 */
+static void draw_msg(canvas_t *c, int x, int y, const char *msg, color_t col)
+{
+    int w = ui_text_w(msg), tx = x - w / 2;
+    if (tx > PANE_W - 1 - w) tx = PANE_W - 1 - w;
+    if (tx < 1) tx = 1;
+    ui_text(c, tx, y, msg, col);
+}
+
+/* 초파리 칸의 뇌 표시(stage_tick에서 적어 둔 값을 읽기만 한다)
+ *  - 다가옴 자극: 그 쪽 옆에 세로 막대(높이 = 세기 x 12)
+ *  - 맛을 보는 동안: 머리 위에 맛 자극 막대(위)와 먹기 반응 막대(아래). 흰 선이 먹는 기준이다
+ *  - 반응해서 움직이면 "!", 반응했는데 막혀서 못 하면 "?" */
+static void draw_brain(canvas_t *c, const side_t *s)
+{
+    int x = (int)s->x, hy = head_y(s);
+    if (fly_loom_l > 0.0f) { int h = (int)(fly_loom_l * 12); if (h < 1) h = 1; ui_rect(c, x - 11, hy + 12 - h, 2, h, C_WARN); }
+    if (fly_loom_r > 0.0f) { int h = (int)(fly_loom_r * 12); if (h < 1) h = 1; ui_rect(c, x + 10, hy + 12 - h, 2, h, C_WARN); }
+
+    /* 맛 막대는 맛보는 음식보다 위에 둔다. 콤보 글자가 떠 있으면 그것을 가리지 않게 감춘다 */
+    if (tick_no < fly_taste_until && tick_no >= s->combo_until) {
+        int bx = x - 10 < 1 ? 1 : (x + 10 > PANE_W - 1 ? PANE_W - 21 : x - 10);
+        ui_bar(c, bx, hy - 38, 20, fly_taste, C_WARN);
+        ui_bar(c, bx, hy - 33, 20, fly_feed, fly_feed >= feed_threshold ? C_GOOD : C_GRAY3);
+        ui_rect(c, bx + (int)(20 * feed_threshold + 0.5f), hy - 34, 1, 6, C_WHITE);
+    }
+    if (tick_no < fly_react_until)
+        ui_text(c, x - ui_text_w("!") / 2, hy - 10, fly_react_ok ? "!" : "?", fly_react_ok ? C_WARN : C_GRAY3);
+}
+
 static void draw_side(canvas_t *c, const side_t *s, int is_fly)
 {
     int hy = head_y(s), fy = feet_y(s), x = (int)s->x;
@@ -482,11 +595,10 @@ static void draw_side(canvas_t *c, const side_t *s, int is_fly)
     for (int i = 0; i < n_foods; i++) {
         if (!foods[i].alive || s->dec[i] == D_EATEN || foods[i].y > GROUND_Y) continue;
         int fx = lane_x(foods[i].lane), y = (int)foods[i].y;
-        float near = lane_x(foods[i].lane) - s->x;
-        if (s->dec[i] == D_PASSED && near < touch_w + 8 && near > -touch_w - 8) {
+        if (s->dec[i] == D_PASSED && s->hit[i]) {
             /* 몸 위로 떨어졌는데 못 먹은 것(웩, 탈락 중)은 머리에 맞고 옆으로 튕겨 나간다 */
             float d = foods[i].y - (hy + 4);
-            fx += (int)((i % 2 ? 1 : -1) * d * 3.0f);
+            fx += (int)(bounce_dir(i) * d * 3.0f);
             y = hy + 4 - (int)(d * 0.4f);
         }
         draw_food(c, foods[i].kind, fx, y);
@@ -514,9 +626,20 @@ static void draw_side(canvas_t *c, const side_t *s, int is_fly)
         ui_rect(c, cx - 18, cy - 3, 36, 20, C_YELLOW);
         ui_text(c, cx - ui_text_w("콤보!") / 2, cy + 1, "콤보!", C_RED);
     }
-    if (yuck && !is_out(s)) ui_text(c, x + 8 > PANE_W - 24 ? x - 32 : x + 8, hy - 2, "웩!", C_BAD);
-    else if (tick_no < s->spit_until)                          /* 초파리가 맛보고 거부함 */
-        ui_text(c, x + 8 > PANE_W - 24 ? x - 32 : x + 8, hy - 2, "퉤!", C_GRAY3);
+    /* 머리 위: 웩의 이유, 또는 초파리가 맛보고 거부함. 머리에서 튕겨 나가는 음식보다 조금 위에 쓴다 */
+    if (yuck && !is_out(s))           draw_msg(c, x, hy - 27, bad_reason(s->last_kind), C_BAD);
+    else if (tick_no < s->spit_until) draw_msg(c, x, hy - 27, "퉤!", C_GRAY3);
+
+    if (tick_no < s->pop_until) {                               /* 머리 옆에 "+점수"가 떠오른다 */
+        char buf[8];
+        snprintf(buf, sizeof buf, "+%d", s->pop_pts);
+        int w = ui_text_w(buf), right = s->pop_side >= 0;
+        if (right && x + 9 + w > PANE_W - 1) right = 0;           /* 칸 밖으로 나가면 반대쪽에 쓴다 */
+        if (!right && x - 9 - w < 1)         right = 1;
+        int tx = right ? x + 9 : x - 9 - w;
+        ui_text(c, tx, hy - 2 - (POP_TICKS - (s->pop_until - tick_no)) / 2, buf, C_YELLOW);
+    }
+    if (is_fly) draw_brain(c, s);
 
     draw_tally(c, s);
     draw_hud(c, s);
