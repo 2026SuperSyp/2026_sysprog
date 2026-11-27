@@ -39,6 +39,9 @@ typedef struct {
 
     int finished;
     int finish_tick;
+
+    /* Player only: was ahead of the fly last tick. */
+    int ahead;
 } actor_t;
 
 /* Original map, unchanged. */
@@ -121,12 +124,28 @@ static float level_max;
 static float steer_px;
 static float deadzone;
 
+static float finish_base;
+static float time_bonus;
+static float climb_max;
+static float hit_penalty;
+
 static float fly_goal;
 static int fly_escape_last_tick;
 
+/*
+ * Brain display for the fly pane.
+ * Written in fly_tick, only read while drawing.
+ */
+static int stim_side;          /* -1 left, +1 right, 0 none */
+static float stim_level;       /* loom level given this tick */
+static int escape_act_tick;    /* escape fired and the fly jumped */
+static int escape_miss_tick;   /* escape fired but a web blocked it */
+
+#define REACT_SHOW_TICKS 6
+
 static const stage_info_t info = {
     .title = "거미줄 탈출",
-    .rule = "거미줄을 피해 올라가요\n위쪽 출구에 도착하기",
+    .rule = "거미줄을 피해 위로 탈출\n닿으면 감점, 빠를수록 고득점",
     .controls = "W A S D 이동"
 };
 
@@ -254,6 +273,13 @@ static void step_actor(
 
                 fx_flash(pane, C_BAD, 70);
                 fx_shake(pane, 2, 140);
+
+                /* Ring where the body touched the web. */
+                fx_shockwave(
+                    pane,
+                    (int)nx,
+                    (int)(ny - a->camera)
+                );
             }
 
             break;
@@ -341,7 +367,7 @@ void stage_start(const stage_ctx_t *ctx)
     );
 
     fly_speed = limit(
-        cfg_get("fly_speed", 1.1f),
+        cfg_get("fly_speed", 1.5f),
         0.0f, 4.0f
     );
 
@@ -392,7 +418,7 @@ void stage_start(const stage_ctx_t *ctx)
     );
 
     steer_px = limit(
-        cfg_get("steer_px", 2.5f),
+        cfg_get("steer_px", 3.4f),
         0.0f, 8.0f
     );
 
@@ -400,6 +426,31 @@ void stage_start(const stage_ctx_t *ctx)
         cfg_get("turn_deadzone", 0.05f),
         0.0f, 1.0f
     );
+
+    finish_base = limit(
+        cfg_get("finish_base", 75.0f),
+        0.0f, 100.0f
+    );
+
+    time_bonus = limit(
+        cfg_get("time_bonus", 30.0f),
+        0.0f, 100.0f
+    );
+
+    climb_max = limit(
+        cfg_get("climb_max", 70.0f),
+        0.0f, 100.0f
+    );
+
+    hit_penalty = limit(
+        cfg_get("hit_penalty", 5.0f),
+        0.0f, 50.0f
+    );
+
+    stim_side = 0;
+    stim_level = 0.0f;
+    escape_act_tick = -100;
+    escape_miss_tick = -100;
 
     float cam = world_h - PANE_H;
 
@@ -528,6 +579,9 @@ static float fly_target(void)
 
 static void fly_tick(void)
 {
+    stim_side = 0;
+    stim_level = 0.0f;
+
     if (fly.lives <= 0 ||
         fly.finished ||
         tick_no < fly.stun_until) {
@@ -563,6 +617,9 @@ static void fly_tick(void)
             level
         );
 
+        stim_side = off < 0.0f ? 1 : -1;
+        stim_level = level;
+
         if (absv(turn) > deadzone) {
             float dx =
                 turn > 0.0f
@@ -582,9 +639,12 @@ static void fly_tick(void)
          * Additional escape step only if
          * the brain fires and cooldown has ended.
          */
-        if (escape &&
+        int escape_ready =
+            escape &&
             tick_no - fly_escape_last_tick >=
-                ESCAPE_COOLDOWN &&
+                ESCAPE_COOLDOWN;
+
+        if (escape_ready &&
             fly.lives > 0 &&
             !fly.finished &&
             tick_no >= fly.stun_until) {
@@ -606,7 +666,15 @@ static void fly_tick(void)
 
                 fly_escape_last_tick = tick_no;
                 fly.last_move = tick_no;
+                escape_act_tick = tick_no;
             }
+            else {
+                escape_miss_tick = tick_no;
+            }
+        }
+        else if (escape_ready && !fly.finished) {
+            /* Stunned by the turn step this tick. */
+            escape_miss_tick = tick_no;
         }
     }
 
@@ -625,6 +693,16 @@ void stage_tick(double dt)
     (void)dt;
 
     fly_tick();
+
+    /* Flash my pane the moment the fly passes me. */
+    for (int p = 0; p < n_players; p++) {
+        actor_t *a = &players[p];
+
+        if (a->ahead && a->best < fly.best)
+            fx_flash(p, C_WARN, 60);
+
+        a->ahead = a->best > fly.best;
+    }
 
     for (int p = 0; p < n_players; p++)
         camera_update(&players[p]);
@@ -720,9 +798,18 @@ static void draw_actor(
         tick_no < a->stun_until ||
         a->lives <= 0;
 
+    /* Blink while webs cannot take a life. */
+    int blink =
+        !hit &&
+        tick_no < a->safe_until &&
+        (tick_no / 2) % 2 != 0;
+
     if (is_fly) {
         sprite_id_t id =
             hit ? SPR_FLY_HIT : SPR_FLY_IDLE;
+
+        if (blink)
+            return;
 
         ui_sprite(
             c,
@@ -737,6 +824,17 @@ static void draw_actor(
         int l = (int)(
             a->x - body_w / 2.0f
         );
+
+        if (blink) {
+            int t = sy - BODY_H / 2;
+            int w = (int)body_w;
+
+            ui_rect(c, l, t, w, 1, C_WHITE);
+            ui_rect(c, l, t + BODY_H - 1, w, 1, C_WHITE);
+            ui_rect(c, l, t, 1, BODY_H, C_WHITE);
+            ui_rect(c, l + w - 1, t, 1, BODY_H, C_WHITE);
+            return;
+        }
 
         ui_rect(
             c,
@@ -759,6 +857,59 @@ static void draw_actor(
             (int)a->x + 2,
             sy - 1,
             C_BLACK
+        );
+    }
+}
+
+/* ---------- Fly Brain Display ---------- */
+
+/*
+ * Stimulus bar on the side the loom came from,
+ * and "!" (jumped) or "?" (blocked) above the head
+ * for a few ticks after the escape reaction.
+ */
+static void draw_fly_brain(canvas_t *c)
+{
+    int sy = (int)(fly.y - fly.camera);
+    int fx = (int)fly.x;
+    int hw = ui_sprite_w(SPR_FLY_IDLE) / 2;
+    int hh = ui_sprite_h(SPR_FLY_IDLE) / 2;
+
+    if (stim_side != 0) {
+        int h = (int)(stim_level * 12.0f);
+
+        if (h < 1)
+            h = 1;
+
+        int bx = stim_side > 0
+            ? fx + hw + 1
+            : fx - hw - 3;
+
+        ui_rect(c, bx, sy - h / 2, 2, h, C_WARN);
+    }
+
+    int since_act = tick_no - escape_act_tick;
+    int since_miss = tick_no - escape_miss_tick;
+
+    const char *mark = 0;
+    color_t col = C_WARN;
+
+    if (since_act <= REACT_SHOW_TICKS &&
+        since_act <= since_miss) {
+        mark = "!";
+    }
+    else if (since_miss <= REACT_SHOW_TICKS) {
+        mark = "?";
+        col = C_GRAY3;
+    }
+
+    if (mark) {
+        ui_text(
+            c,
+            fx - ui_text_w(mark) / 2,
+            sy - hh - UI_FONT_H - 1,
+            mark,
+            col
         );
     }
 }
@@ -818,13 +969,33 @@ static void draw_scene(
 
     draw_actor(c, a, is_fly);
 
-    /* Climbing progress */
+    if (is_fly)
+        draw_fly_brain(c);
+
+    /*
+     * Climbing progress, bottom right next to the lives.
+     * At the top it ran into the GOAL text.
+     */
+    int bar_x = PANE_W - 48;
+    int bar_y = PANE_H - 7;
+
     ui_bar(
         c,
-        4, 3, 40,
+        bar_x, bar_y, 40,
         a->best,
         C_GOOD
     );
+
+    /* Where the fly is on my progress bar. */
+    if (!is_fly) {
+        ui_rect(
+            c,
+            bar_x + (int)(fly.best * 40.0f) - 1,
+            bar_y - 2,
+            2, 8,
+            C_WING
+        );
+    }
 
     /* Remaining lives */
     for (int i = 0;
@@ -903,6 +1074,8 @@ void stage_draw(
 
 static float score(const actor_t *a)
 {
+    float s;
+
     if (a->finished) {
         float t = limit(
             (float)(ticks - a->finish_tick) /
@@ -911,10 +1084,17 @@ static float score(const actor_t *a)
             1.0f
         );
 
-        return 90.0f + 10.0f * t;
+        s = finish_base + time_bonus * t;
+    }
+    else {
+        s = a->best * climb_max;
     }
 
-    return a->best * 80.0f;
+    /* Every web hit costs points, so clean climbs win. */
+    s -= hit_penalty *
+        (float)(lives_max - a->lives);
+
+    return s > 0.0f ? s : 0.0f;
 }
 
 void stage_result(stage_result_t *out)
