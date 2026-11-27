@@ -1,0 +1,19 @@
+; 음식 골라 먹기: cookie (새 그림판에서 변환, 16x16)
+size 16 16
+palette . C_NONE  a C_WARN  d C_BAD  f C_FLY_BODY  n C_BROWN  o C_ORANGE
+................
+.....ffffff.....
+...fnaaaaaoff...
+..naaaaffaaaon..
+.naaaaaffoaaoof.
+.naafaaaaoaffof.
+foaafaaaaoaanoof
+naaaaaaaaoaaaoof
+naaaaaaoaaaaofof
+naaffoaoaanfooof
+naaffaaaaaf.ooon
+.naaoonnooaooof.
+.noaaaffofoooof.
+..foooaooofdof..
+...fnooooooff...
+.....fnfnnf.....

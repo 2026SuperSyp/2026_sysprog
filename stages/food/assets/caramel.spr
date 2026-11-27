@@ -1,0 +1,19 @@
+; 음식 골라 먹기: caramel (새 그림판에서 변환, 16x16)
+size 16 16
+palette . C_NONE  3 C_GRAY3  a C_WARN  d C_BAD  i C_WING  o C_ORANGE  t C_TEXT  w C_WHITE
+................
+................
+................
+................
+................
+................
+.............ii3
+i3i...dddd..www3
+wwi..otwaod.wwtt
+wwttowwwaaooitwt
+twwiawwaaawi3t3.
+twwtowwaaoti3w3.
+.wt3ttooowtoiwwt
+www3.oootto.wwwt
+wwii..dddd...3ti
+3ii...........33

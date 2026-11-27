@@ -1,0 +1,19 @@
+; 음식 골라 먹기: cannedham (새 그림판에서 변환, 16x16)
+size 16 16
+palette . C_NONE  1 C_GRAY1  2 C_GRAY2  3 C_GRAY3  b C_BLUE  d C_BAD  e C_FLY_EYE  i C_WING  o C_ORANGE  p C_PINK  t C_TEXT  v C_PURPLE  w C_WHITE  y C_YELLOW
+..222i2i2233....
+.2ii2222222ii2..
+2t223iiiiii2222.
+3w221i2332222i3.
+13ttw3333331111.
+bbbb13333311111.
+13bbyyyyyyyybb1.
+13bbbyyyybbbbb1.
+13bbbpdppbbbbb1.
+13bpppppppbpbb1.
+13bppepppppobb1.
+13bbpppppbbobb1.
+3bbbbvvbbbbbbb3.
+1ttibbbbbbbb332.
+.132tiiiiiii21..
+....22222222....
