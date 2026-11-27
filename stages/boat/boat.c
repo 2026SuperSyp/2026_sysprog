@@ -35,6 +35,7 @@
 #define FLY_ROW    84            /* 초파리 칸에서 초파리를 그리는 줄 */
 #define BANK_W     4             /* 강둑의 폭 */
 #define HUD_H      17            /* 위쪽 안내 띠의 높이 */
+#define PHEW_GAP   20            /* 빠져나옴 번쩍임 사이의 최소 틱 수. 초파리 칸에 먹기 반응을 남기는 틱 수 */
 #define PI_F       3.14159265f
 
 enum { MSG_NONE, MSG_GOOD, MSG_EARLY, MSG_PASS, MSG_TIMEOUT, MSG_ROCK, MSG_BANK, MSG_SPLASH, MSG_BITTER, MSG_SPIT, MSG_STARTLE, MSG_RAPID };
@@ -51,6 +52,8 @@ static int   last_early = -1000;             /* 엇박으로 감속된 틱 */
 static int   caught, caught_tick, hit_rock = -1;
 static int   touching, touch_ticks;          /* 초파리가 보트에 닿아 있다, 닿은 뒤 지난 틱 */
 static float feed_now;                       /* 이번 틱의 먹기 반응(그리기용) */
+static float touch_feed, phew_feed;          /* 이번에 닿아 있는 동안 가장 컸던 먹기 반응, 빠져나왔을 때의 그 값 */
+static int   phew_at = -1000, phew_flash_at = -1000, touch_at = -1000;   /* 물리지 않고 빠져나온 틱, 그때 번쩍인 틱, 마지막으로 닿기 시작한 틱 */
 static int   splash_until, splash_side, splash_ready_at;   /* 물을 튀기는 중인 마지막 틱, 튀긴 노, 다시 튀길 수 있는 틱 */
 static int   bitter_left, bitter_until;      /* 남은 쓴 열매, 쓴맛이 남아 있는 마지막 틱 */
 static int   fly_hop_at = -1000, fly_spit_at = -1000;      /* 초파리가 놀라 튄 틱, 뱉고 물러난 틱 */
@@ -64,6 +67,7 @@ static float rock_x[MAX_ROCKS], rock_y[MAX_ROCKS];
 static int   n_rocks;
 
 static float stroke_power, stroke_turn, drag_keep, early_keep, wrong_keep, start_gap, gap_far;
+static float safe_base, safe_far, fly_miss_max;
 static float fly_speed, fly_turn, pursue_turn, see_level, center_band, rock_radius, rock_keep, bank_keep;
 static int   cooldown_ticks, wrong_gap_ticks, turn_limit_ticks;
 static float contact_dist, sugar_level, feed_level, bitter_level, bitter_push;
@@ -105,6 +109,9 @@ void stage_start(const stage_ctx_t *ctx)
     turn_limit_ticks = (int)cfg_get("turn_limit_ticks", 24.0f);
     start_gap        = cfg_get("start_gap", 34.0f);
     gap_far          = cfg_get("gap_far", 70.0f);
+    safe_base        = cfg_get("safe_base", 80.0f);
+    safe_far         = cfg_get("safe_far", 20.0f);
+    fly_miss_max     = cfg_get("fly_miss_max", 79.0f);
     fly_speed        = cfg_get("fly_speed", 0.78f);
     fly_turn         = cfg_get("fly_turn", 0.05f);
     pursue_turn      = cfg_get("pursue_turn", 0.5f);
@@ -131,7 +138,7 @@ void stage_start(const stage_ctx_t *ctx)
     side_hold_ticks  = (int)cfg_get("side_hold_ticks", 12.0f);
     rapid_at         = cfg_get("rapid_at", 150.0f);
     rapid_len        = cfg_get("rapid_len", 90.0f);
-    rapid_flow       = cfg_get("rapid_flow", 0.3f);
+    rapid_flow       = cfg_get("rapid_flow", 0.12f);
     rapid_drift      = cfg_get("rapid_drift", 0.14f);
     rapid_limit_ticks = (int)cfg_get("rapid_limit_ticks", 16.0f);
     if (rapid_limit_ticks < 1) rapid_limit_ticks = 1;
@@ -139,6 +146,7 @@ void stage_start(const stage_ctx_t *ctx)
     float rock_every = cfg_get("rock_every", 75.0f);
     if (turn_limit_ticks < 1) turn_limit_ticks = 1;
     if (gap_far < 1.0f) gap_far = 1.0f;
+    if (fly_miss_max > safe_base - 1.0f) fly_miss_max = safe_base - 1.0f;   /* 달아난 팀이 초파리보다 낮아지지 않게 */
     if (rock_every < 10.0f) rock_every = 10.0f;
 
     /* 문제(바위 자리)는 씨앗에서만 만든다. */
@@ -257,6 +265,7 @@ static void fly_think(void)
      * 닿아 있는 동안에는 물체 자극을 주지 않는다. 둘을 같이 오래 주면 진짜 뇌의 먹기 반응이 기준 언저리에 머물고,
      * 폭주한 판이 있었다(한 틱에 41,022번 발화) */
     int bitter_on = tick_no <= bitter_until;
+    int was_touching = touching;
     touching = d <= contact_dist;
     touch_ticks = touching ? touch_ticks + 1 : 0;
     if (!touching) brain_stimulate(fly_side ? BR_OBJECT_R : BR_OBJECT_L, see_level);
@@ -278,6 +287,19 @@ static void fly_think(void)
 
     /* 반응 읽기 */
     feed_now = brain_rate(BR_FEED);
+    if (!was_touching) touch_feed = 0.0f;
+    if (touching && !was_touching) touch_at = tick_no;
+    if (touching && feed_now > touch_feed) touch_feed = feed_now;
+    /* 빠져나옴: 닿아 있다가 물리지 않고 떨어졌다. 뱉거나 놀라 튀어서 떨어진 것은 이미 안내가 있어서 뺀다.
+     * 붙었다 떨어졌다를 되풀이할 때 틱마다 번쩍이지 않게 번쩍임은 PHEW_GAP 틱에 한 번만 한다 */
+    if (was_touching && !touching && tick_no - fly_spit_at > 1 && tick_no - fly_hop_at > 1) {
+        phew_at = tick_no;
+        phew_feed = touch_feed;
+        if (tick_no - phew_flash_at >= PHEW_GAP) {
+            phew_flash_at = tick_no;
+            for (int p = 0; p < n_players; p++) fx_flash(p, C_GOOD, 100);
+        }
+    }
     if (touching && feed_now >= feed_level) {        /* 물었다 */
         caught = 1;
         caught_tick = tick_no;
@@ -331,8 +353,9 @@ static void fly_think(void)
     fx += sinf(fh) * step;
     fy += cosf(fh) * step;
     fly_moving = walk > 0.05f;
-    if (fly_moving && !was_moving && step > 0.0f) react_at = tick_no;   /* 걷기 시작 */
-    else if (fly_moving && step <= 0.0f)          block_at = tick_no;   /* 걸으려는데 보트에 막혔다 */
+    /* 걷기 시작. 보트에 붙어 걷지 못하는 것은 "?"로 띄우지 않는다. 닿아 있는 동안 늘 그래서
+     * 보트가 빠져나갔을 때의 "?"(먹기 반응은 넘었는데 놓침)와 구별되지 않는다 */
+    if (fly_moving && !was_moving && step > 0.0f) react_at = tick_no;
 }
 
 void stage_tick(double dt)
@@ -421,6 +444,12 @@ static void draw_river(canvas_t *c, float cam, int row)
     }
 }
 
+/* 빠져나옴 표시를 len 틱 동안 띄운다. 그 사이에 다시 닿으면 끝낸다(뒤이어 뱉거나 놀라 튄 안내와 겹치지 않게) */
+static int phew_shown(int len)
+{
+    return !caught && !touching && touch_at < phew_at && tick_no - phew_at < len;
+}
+
 /* 젓기 준비: 앞 노질에서 cooldown_ticks가 지났으면 노랗게 깜빡이고, 아직이면(지금 저으면 엇박) 회색이다 */
 static color_t ready_color(void)
 {
@@ -503,12 +532,16 @@ void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
     draw_fly(fly_canvas, (int)fx, FLY_ROW);
     draw_brain(fly_canvas, (int)fx, FLY_ROW);
     ui_rect(fly_canvas, 0, 0, PANE_W, HUD_H, C_BLACK);
-    /* 위 띠: 닿기 전에는 거리, 닿으면 뇌의 먹기 반응. 세로줄(기준)을 넘으면 문 것이다 */
+    /* 위 띠: 닿기 전에는 거리, 닿으면 뇌의 먹기 반응. 세로줄(기준)을 넘으면 문 것이다.
+     * 물리지 않고 빠져나온 뒤 잠깐은 닿아 있는 동안 가장 컸던 먹기 반응을 남겨서 기준에 못 미친 것을 보인다 */
+    int phew = phew_shown(PHEW_GAP);
+    snprintf(buf, sizeof buf, "먹기 %d%%", (int)lroundf(clampf(phew_feed, 0.0f, 1.0f) * 100.0f));
     if (caught)        ui_text(fly_canvas, 2, 1, "먹이 잡음!", C_GOOD);
     else if (touching) ui_text(fly_canvas, 2, 1, tick_no <= bitter_until ? "쓰다!" : "먹을까?", tick_no <= bitter_until ? C_PURPLE : C_WARN);
+    else if (phew)     ui_text(fly_canvas, 2, 1, buf, C_GOOD);
     else               ui_text(fly_canvas, 2, 1, "먹이 추적", C_TEXT);
-    if (touching || caught) {
-        ui_bar(fly_canvas, 2, HUD_H - 4, PANE_W - 4, clampf(feed_now, 0.0f, 1.0f), C_ORANGE);
+    if (touching || caught || phew) {
+        ui_bar(fly_canvas, 2, HUD_H - 4, PANE_W - 4, clampf(phew ? phew_feed : feed_now, 0.0f, 1.0f), C_ORANGE);
         ui_rect(fly_canvas, 2 + (int)((PANE_W - 4) * feed_level), HUD_H - 5, 1, 5, C_WHITE);
     } else {
         ui_bar(fly_canvas, 2, HUD_H - 4, PANE_W - 4, clampf(1.0f - gap_now() / gap_far, 0.0f, 1.0f), C_RED);
@@ -550,6 +583,9 @@ void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
         ui_rect(me, PANE_W - BANK_W - 6 - k * 6, PANE_H - 7, 4, 4, C_PURPLE);
     if (!caught && touching && (tick_no / 2) % 2 == 0)
         ui_text(me, (PANE_W - ui_text_w("붙었다!")) / 2, PANE_H - 26, "붙었다!", C_BAD);
+    /* 빠져나옴은 "붙었다!" 자리에 띄운다. 위쪽 안내는 다음 노질의 "좋아요!"가 곧 덮어서 따로 둔다 */
+    if (phew_shown(14))
+        ui_text(me, (PANE_W - ui_text_w("휴! 빠져나옴")) / 2, PANE_H - 26, "휴! 빠져나옴", C_GOOD);
 
     if (!caught && tick_no < msg_until) {
         static const char *const text[] = { "", "좋아요!", "엇박!", "넘김", "시간 초과", "바위!", "강둑!",
@@ -564,11 +600,24 @@ void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
 
 void stage_result(stage_result_t *out)
 {
-    /* 협동이라 모두 같은 점수다. 끝까지 달아나면 100, 잡히면 버틴 시간만큼(99 이하).
-     * 초파리는 잡으면 100, 못 잡으면 얼마나 가까이 왔는지(99 이하). 그래서 달아나면 이기고 잡히면 진다. */
-    float team = caught ? 99.0f * (float)caught_tick / (float)(n_ticks > 0 ? n_ticks : 1)
-                        : 100.0f * (float)tick_no / (float)(n_ticks > 0 ? n_ticks : 1);
+    /* 협동이라 모두 같은 점수다. 잡히면 버틴 시간만큼(99 미만)이고 초파리는 100이다.
+     * 끝까지 달아나면 초파리와 벌린 거리 g(gap_far에 대한 비율)만큼 팀은 safe_base~safe_base+safe_far,
+     * 초파리는 fly_miss_max~0이다. fly_miss_max < safe_base라서 달아나면 늘 이기고 잡히면 늘 진다.
+     * 판 도중(아래 띠에 보이는 값)에는 팀은 지난 시간만큼, 초파리는 얼마나 가까이 왔는지(99 이하)다. */
+    float total = (float)(n_ticks > 0 ? n_ticks : 1);
+    float g = clampf(gap_now() / gap_far, 0.0f, 1.0f);
+    float team, fly;
+    if (caught) {
+        team = 99.0f * (float)caught_tick / total;
+        fly  = 100.0f;
+    } else if (tick_no >= n_ticks) {
+        team = safe_base + safe_far * g;
+        fly  = fly_miss_max * (1.0f - g);
+    } else {
+        team = 100.0f * (float)tick_no / total;
+        fly  = 99.0f * (1.0f - g);
+    }
     for (int p = 0; p < n_players; p++)
         out->score[p] = clampf(team, 0.0f, 100.0f);
-    out->fly_score = caught ? 100.0f : 99.0f * clampf(1.0f - gap_now() / gap_far, 0.0f, 1.0f);
+    out->fly_score = fly;
 }
