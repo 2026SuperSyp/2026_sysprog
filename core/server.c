@@ -1201,6 +1201,10 @@ static void on_join(const event_t *e)
     for (int s = 0; s < PROTO_SEATS && e->claim != 0 && phase != PH_LOBBY; s++) {
         if (!seats[s].used || seats[s].token != e->claim) continue;
         if (seats[s].connected) {
+            /* 기다려 주지 않기로 했으면(--rejoin-ms=0) 자리를 돌려주지 않는다. 다시 붙는 쪽이 새 접속을 먼저 열고 옛 접속을
+             * 닫으므로, 끊긴 것을 알기 전에 새 접속의 인사가 먼저 올 때가 있다. 그때 여기서 자리를 돌려주면 "끊기는 즉시
+             * 나간 것으로 한다"가 어느 쪽이 먼저 왔느냐에 따라 달라진다 */
+            if (opt.rejoin_ms <= 0) break;
             int old = seats[s].conn;
             members[old].in = 0;
             members[old].seat = -1;
