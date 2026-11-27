@@ -845,6 +845,10 @@ static void draw(canvas_t *full)
     }
     case PH_CARD:
         scene_card(full, ph->title, ph->rule, ph->controls, (int)(t * 20.0));
+        if (ph->me >= 0 && ph->pane_of[ph->me] >= 0) {               /* 이번 판에 뛰는 사람에게만 알린다 */
+            static const char skip[] = "스페이스: 건너뛰기";
+            ui_text(full, SCREEN_W - 4 - ui_text_w(skip), SCREEN_H - 14, skip, C_GRAY3);
+        }
         break;
     case PH_READY:
         scene_count(full, (int)(t * 20.0));
@@ -870,7 +874,6 @@ static void draw(canvas_t *full)
             .fly_score = S.head.fly_score,
             .lives = (ph->me >= 0) ? ph->lives[ph->me] : 0,
             .controls = ph->controls,
-            .tick = S.head.tick,
             .watch = S.watch,
             .brain_stim = stim,
             .brain_rate = rate,
@@ -1304,6 +1307,7 @@ static int run_bot(int wait_players, int drop_at)
         memcpy(&ph, body, sizeof ph);
         if (ph.phase != last_phase) {
             if (ph.phase == PH_LOBBY) sent_ready = sent_start = 0;
+            if (ph.phase == PH_CARD) send_key(' ');          /* 봇은 규칙 설명을 기다리지 않는다(모두 누르면 건너뛴다) */
             if (ph.phase == PH_VERDICT) rounds++;
             if (ph.phase == PH_BOSS) boss_seen = 1;
             last_phase = ph.phase;

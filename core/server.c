@@ -98,7 +98,7 @@ static struct {
     float phase2;                    /* 2페이즈로 넘어가는 초파리 체력의 비율. 음수이면 boss/config.ini의 값(phase2_hp), 0이면 2페이즈가 없다 */
     int idle_ms;                     /* 말이 없는 접속을 끊는 시간. 검사에서 --idle-ms=N 으로 줄인다 */
     int rejoin_ms;                   /* 끊긴 사람의 자리를 남겨 두는 시간. 0이면 끊기는 즉시 나간 것으로 한다(--rejoin-ms=N) */
-} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 5000, 2000, 2000, 6000, 0, 0, -1, -1.0f, IDLE_WAIT_MS, REJOIN_WAIT_MS };
+} opt = { PROTO_PORT, 4, 0, 0, 0, "fast", {{0}}, 0, 3000, 2000, 2000, 6000, 0, 0, -1, -1.0f, IDLE_WAIT_MS, REJOIN_WAIT_MS };
 
 static int64_t now_ms(void)
 {
@@ -667,6 +667,7 @@ static int stage_spawn(const char *name, uint32_t seed, int n_players)
 /* ---- 게임 마스터 -------------------------------------------------------------- */
 typedef struct {
     int used, conn, gen, connected, ready, lives, total, pane, passed, score;
+    int skip;                        /* 규칙 설명에서 스페이스를 눌렀다(다 읽었다) */
     long join_no;
     uint64_t token;                  /* 이 자리의 세션 토큰. 다시 들어오는 접속이 이것을 대면 자리를 돌려준다 */
     int64_t away_until;              /* 접속이 끊겼다: 이 시각(ms)까지 자리를 남겨 둔다. 0이면 기다리지 않는다 */
@@ -857,6 +858,7 @@ static void start_round(void)
         return;
     }
     fly_score = 0;
+    for (int s = 0; s < PROTO_SEATS; s++) seats[s].skip = 0;
     phase = PH_CARD;
     deadline = now_ms() + opt.card_ms;
     send_phase();
@@ -1047,6 +1049,7 @@ static void start_phase2(void)
     fprintf(stderr, "서버: 보스전 2페이즈 시작 (참가자 %d명, 초파리 체력 %d/%d)\n", n, boss.fly.hp, boss.fly.hp_max);
     phase2_on = 1;
     fly_score = 0;
+    for (int s = 0; s < PROTO_SEATS; s++) seats[s].skip = 0;
     phase = PH_CARD;
     deadline = now_ms() + opt.card_ms;
     send_phase();
@@ -1312,6 +1315,14 @@ static void on_input(const event_t *e)
                 if (seats[k].used && seats[k].connected && !seats[k].ready) all = 0;
             if (all) start_game();
         }
+    } else if (phase == PH_CARD && ie.kind == IN_KEY && seats[s].pane >= 0 && input_stage_key(&ie) == SK_ACT) {
+        /* 규칙 설명 건너뛰기: 이번 판에 뛰는 사람(접속해 있는 사람)이 모두 스페이스를 누르면 바로 준비로 넘어간다.
+         * 한 사람이라도 아직 읽고 있으면 정해진 시간을 다 기다린다 */
+        seats[s].skip = 1;
+        int all = 1;
+        for (int k = 0; k < PROTO_SEATS; k++)
+            if (seats[k].used && seats[k].connected && seats[k].pane >= 0 && !seats[k].skip) all = 0;
+        if (all) deadline = now_ms();
     } else if (phase == PH_PLAY && seats[s].pane >= 0 && st.open) {
         input_msg_t out = { .kind = ie.kind, .flags = ie.flags, .player = (uint8_t)seats[s].pane };
         if (ie.kind == IN_KEY) {

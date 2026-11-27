@@ -84,8 +84,7 @@ typedef struct {
     int my_score;                /* 아래 띠 */
     int fly_score;               /* 아래 띠 */
     int lives;                   /* 아래 띠: 남은 기회 */
-    const char *controls;        /* 아래 띠: 조작 키 한 줄. 판이 시작하고 몇 초 동안 점수 자리에 보여 준다. 없으면 NULL */
-    int tick;                    /* 판이 시작하고 지난 틱 */
+    const char *controls;        /* 위 띠: 조작 키 한 줄. 있으면 게임 이름 자리에 판 내내 보여 준다. 없으면 NULL */
     int watch;                   /* 오른쪽 위에 보여 줄 다른 참가자. 없으면 -1, 키보드 치는 초파리는 WATCH_FLY */
     const float *brain_stim;     /* 오른쪽 아래 뇌 표시: 집단별 자극(BRAIN_GROUP_COUNT개). 없으면 NULL */
     const float *brain_rate;     /* 오른쪽 아래 뇌 표시: 집단별 반응 */
