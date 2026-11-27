@@ -17,6 +17,8 @@
 #   make test-stage STAGE=이름   그 스테이지가 서버에서도 도는지 봄(서버 + 봇 2명으로 2라운드). BRAIN=real도 됨
 #   make brain-table [BRAIN=real] 자극의 세기별로 뇌의 반응을 표로 봄(스테이지 수치를 정할 때)
 #   make bossbot [BRAIN=real]    보스전 계산부를 화면 없이 여러 판 돌려 전략별 승률을 표로 봄
+#   make boss-train [BRAIN=real] 보스전의 수치를 봇과의 대전으로 맞춤(CPU 수만큼 프로세스를 띄움. 결과는 boss/trained.ini)
+#   make brain-figs              문서에 넣는 뇌 그림을 다시 만듦 (docs/img/brain_*.png. 뇌 자료 필요)
 #   make brain-compare           대조 실험: 진짜 배선과 섞은 배선의 반응을 나란히 봄 (BRAIN=shuffled로 실행도 됨)
 #   make release                 발표용 빌드를 build/release/ 에 만듦 (make MODE=release 와 같다)
 #
