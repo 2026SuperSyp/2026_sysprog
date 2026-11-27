@@ -3,6 +3,8 @@
  * 참가자는 저절로 앞으로 달린다. A, D로 차선을 옮기고 W(또는 스페이스)로 뛰고 S로 미끄러진다.
  * 장애물은 넷이다. 기둥(차선을 옮겨 피한다), 가로대(뛰어넘는다), 들보(밑으로 미끄러진다), 끈끈이(밟으면 느려진다).
  * 부딪히면 잠깐 느려지고 그만큼 초파리가 다가온다. 초파리는 장애물에 걸리지 않는다.
+ * 시간이 갈수록 참가자도 초파리도 빨라진다(speed_up). 장애물이 더 자주 오고 부딪혔을 때 잃는 거리도 커진다.
+ * 초파리와 차선이 다르면 물리지 않는다. 화면 아래의 뒤 거울이 초파리의 차선과 거리를 보여 준다.
  *
  * 초파리는 한 마리이고 모두를 쫓는다. 뇌가 정하는 것은 둘이다.
  *  - 쫓기: 앞에 있는 가장 가까운 참가자를 물체 자극(BR_OBJECT_L/R)으로 준다. 걷기 반응(BR_WALK)이 빠르기이고
@@ -10,7 +12,8 @@
  *  - 물기: 초파리가 참가자에게 닿으면 단맛 자극(BR_SUGAR)을 준다. 먹기 반응(BR_FEED)이 feed_level 이상이면
  *          물린 것이고 그 참가자는 바로 탈락한다. 반응은 몇 틱 늦게 오므로 닿은 직후에 벌어지면 살 수 있다.
  *
- * 화면: 내 칸은 내 캐릭터의 뒤에서 본 통로다. 초파리 칸은 초파리의 자리에서 본 통로와 달아나는 참가자들이고,
+ * 화면: 내 칸은 내 캐릭터의 뒤에서 본 통로다. 초파리가 가까워지면 가장자리가 붉어지고 바닥에 그림자가 드리운다.
+ *       초파리 칸은 초파리의 자리에서 본 통로와 달아나는 참가자들이고,
  *       그 위에 겹눈의 벌집 무늬를 얹는다.
  *
  * 다른 스테이지와 다른 점: 초파리 한 마리가 모두를 쫓으므로 한 사람의 결과가 다른 사람의 입력에 따라 달라진다
@@ -31,6 +34,7 @@
 #define HALF      1.6f               /* 통로의 반폭 */
 #define CEIL      3.2f               /* 천장 높이 */
 #define VIEW_FAR  44.0f
+#define MIR_H     12                 /* 뒤 거울의 높이(칸의 맨 아래) */
 
 enum { OB_PILLAR, OB_BAR, OB_BEAM, OB_GOO };
 enum { MSG_NONE, MSG_HIT, MSG_GOO, MSG_TOUCH };
@@ -56,6 +60,7 @@ static int   n_players, n_ticks, tick_no;
 static float run_speed, jump_height, stumble_keep, goo_keep, start_gap, gap_far;
 static float fly_speed, fly_strafe, pursue_turn, see_level, center_band, contact_z, contact_x, sugar_level, feed_level;
 static int   lane_ticks, jump_ticks, slide_ticks, stumble_ticks, goo_ticks, eat_ticks, side_hold_ticks;
+static float speed_up, warn_gap;     /* 끝날 때 빠르기가 처음의 (1 + speed_up)배. 초파리가 warn_gap 안으로 오면 피하라고 알린다 */
 static float hint_dist;              /* 장애물이 이 거리 안으로 오면 무엇을 할지 화면에 적는다. 0이면 적지 않는다 */
 
 static const stage_info_t info = {
@@ -98,12 +103,15 @@ void stage_start(const stage_ctx_t *ctx)
     eat_ticks     = (int)cfg_get("eat_ticks", 24.0f);
     side_hold_ticks = (int)cfg_get("side_hold_ticks", 12.0f);
     hint_dist     = cfg_get("hint_dist", 8.0f);
+    speed_up      = cfg_get("speed_up", 0.0f);
+    warn_gap      = cfg_get("warn_gap", 3.0f);
     float first   = cfg_get("first_obstacle", 14.0f);
     float gap_min = cfg_get("gap_min", 8.0f), gap_max = cfg_get("gap_max", 13.0f);
     if (lane_ticks < 1) lane_ticks = 1;
     if (jump_ticks < 2) jump_ticks = 2;
     if (slide_ticks < 2) slide_ticks = 2;
     if (gap_far < 1.0f) gap_far = 1.0f;
+    if (speed_up < 0.0f) speed_up = 0.0f;
     if (gap_min < 3.0f) gap_min = 3.0f;
     if (gap_max < gap_min) gap_max = gap_min;
 
@@ -154,6 +162,18 @@ static int in_air(const runner_t *r)  { int t = tick_no - r->jump_at;  return t 
 
 static void say(runner_t *r, int m) { r->msg = m; r->msg_until = tick_no + 12; }
 
+/* 지금의 빠르기 배율. 처음 1에서 끝날 때 1 + speed_up까지 고르게 오른다. 참가자와 초파리에 똑같이 곱한다 */
+static float pace(void) { return 1.0f + speed_up * clampf((float)tick_no / (float)(n_ticks > 0 ? n_ticks : 1), 0.0f, 1.0f); }
+
+/* 초파리가 이 참가자를 앞질러 갔는가. 그러면 초파리는 이 사람을 쫓지 않는다(fly_think가 고르는 기준과 같다) */
+static int passed(const runner_t *r) { return r->z < fz - contact_z; }
+
+/* 초파리가 참가자의 바로 뒤, 같은 차선에 붙었는가(이대로면 물린다) */
+static int on_tail(const runner_t *r)
+{
+    return r->alive && !passed(r) && r->z - fz < warn_gap && fabsf(r->x - fx) <= contact_x;
+}
+
 void stage_input(int player, int key, double t)
 {
     runner_t *r = &pl[player];
@@ -164,9 +184,11 @@ void stage_input(int player, int key, double t)
         r->from_lane = r->lane;
         r->lane = to;
         r->lane_at = tick_no;
-    } else if ((key == SK_UP || key == SK_ACT) && !in_air(r) && !sliding(r)) {
+    } else if ((key == SK_UP || key == SK_ACT) && !in_air(r)) {
+        r->slide_at = -1000;                                 /* 미끄러지다가도 바로 뛴다 */
         r->jump_at = tick_no;
-    } else if (key == SK_DOWN && !in_air(r) && !sliding(r)) {
+    } else if (key == SK_DOWN && !sliding(r)) {
+        r->jump_at = -1000;                                  /* 공중에서 누르면 바로 내려와 미끄러진다 */
         r->slide_at = tick_no;
     }
 }
@@ -174,7 +196,7 @@ void stage_input(int player, int key, double t)
 /* 참가자 하나를 한 틱 달리게 한다. */
 static void run_one(runner_t *r, int pane)
 {
-    float v = run_speed;
+    float v = run_speed * pace();
     if (tick_no <= r->stumble_until) v *= stumble_keep;
     else if (tick_no <= r->goo_until) v *= goo_keep;
     float z0 = r->z;
@@ -254,7 +276,7 @@ static void fly_think(void)
     if (tick_no <= fly_eat_until) return;
 
     fx = clampf(fx + fly_strafe * clampf(turn, -1.0f, 1.0f), -1.2f, 1.2f);
-    float step = fly_speed * walk_now;
+    float step = fly_speed * walk_now * pace();
     /* 쫓는 사람을 뚫고 지나가지 않는다 */
     if (fabsf(r->x - fx) <= contact_x) {
         float room = dz - contact_z * 0.5f;
@@ -269,6 +291,8 @@ void stage_tick(double dt)
     for (int p = 0; p < n_players; p++)
         if (pl[p].alive) run_one(&pl[p], p);
     fly_think();
+    for (int p = 0; p < n_players; p++)                      /* 초파리가 바로 뒤에 오면 날갯짓에 화면이 떨린다 */
+        if (pl[p].alive && !passed(&pl[p]) && pl[p].z - fz < warn_gap && tick_no % 4 == 0) fx_shake(p, 1, 100);
     tick_no++;
 }
 
@@ -375,6 +399,62 @@ static void draw_fly_back(canvas_t *cv, const cam_t *c)
     box(cv, c, fx - 0.5f, fx + 0.5f, 0.62f, 0.75f, dz, C_BLACK);
 }
 
+/* 초파리가 가까운 정도. 0이면 멀고(gap_far의 0.4배 밖) 1이면 닿았다. 앞질러 간 초파리는 위협이 아니다 */
+static float nearness(const runner_t *r)
+{
+    return passed(r) ? 0.0f : clampf(1.0f - (r->z - fz) / (gap_far * 0.4f), 0.0f, 1.0f);
+}
+
+/* 뒤에서 드리우는 초파리의 그림자: 가까울수록 바닥을 타고 올라온다. 초파리가 있는 쪽으로 치우친다 */
+static void draw_shadow(canvas_t *cv, const cam_t *c, const runner_t *r)
+{
+    float n = nearness(r);
+    int ry = (int)(n * 30.0f), base = PANE_H - MIR_H, cxs = CX + (int)lroundf((fx - c->x) * 26.0f);
+    if (!r->alive || ry < 2) return;
+    for (int y = base - ry; y < base; y++)
+        for (int x = 0; x < PANE_W; x++) {
+            float dx = (float)(x - cxs) / 36.0f, dy = (float)(base - y) / (float)ry;
+            if (((x + y) & 1) && dx * dx + dy * dy < 1.0f) ui_px(cv, x, y, C_BLACK);
+        }
+}
+
+/* 가장자리의 붉은 기운: 가까울수록 넓고, 날갯짓에 맞춰 떨린다 */
+static void draw_alarm(canvas_t *cv, const runner_t *r)
+{
+    float n = nearness(r);
+    if (!r->alive || n <= 0.0f) return;
+    int w = 1 + (int)(n * 9.0f) + (tick_no / 2) % 2;
+    for (int y = HUD_H; y < PANE_H - MIR_H; y++)
+        for (int i = 0; i < w; i++) {
+            if (i > w / 3 && ((i + y + tick_no / 2) & 1)) continue;          /* 안쪽은 성기게 */
+            ui_px(cv, i, y, C_RED);
+            ui_px(cv, PANE_W - 1 - i, y, C_RED);
+        }
+}
+
+/* 뒤 거울: 위에서 내려다본 띠. 윗줄이 참가자들이고 그 아래가 초파리다(다가올수록 위로 올라온다).
+ * 초파리가 내 차선에 바짝 붙으면 테두리가 붉게 깜빡인다. 차선을 바꾸면 물리지 않는다 */
+static int mir_x(float w) { return CX + (int)lroundf(clampf(w, -1.2f, 1.2f) * 24.0f); }
+static void draw_mirror(canvas_t *cv, const runner_t *r, int who)
+{
+    int y0 = PANE_H - MIR_H;
+    ui_rect(cv, 0, y0, PANE_W, MIR_H, C_BLACK);
+    ui_rect(cv, 0, y0, PANE_W, 1, on_tail(r) && (tick_no / 2) % 2 ? C_RED : C_GRAY2);
+    for (int s = -1; s <= 1; s += 2)                         /* 차선의 경계 */
+        for (int y = y0 + 2; y < PANE_H; y += 2) ui_px(cv, mir_x((float)s * 0.5f), y, C_GRAY1);
+    for (int p = 0; p < n_players; p++)
+        if (pl[p].alive && p != who) ui_rect(cv, mir_x(pl[p].x) - 1, y0 + 2, 3, 2, BODY[p % 3]);
+    if (r->alive) ui_rect(cv, mir_x(r->x) - 2, y0 + 2, 5, 2, BODY[who % 3]);
+    if (passed(r)) return;                                   /* 앞질러 간 초파리는 거울에 없다(앞에 보인다) */
+    float gap = r->z - fz;
+    int fy = y0 + 5 + (int)(clampf(gap / gap_far, 0.0f, 1.0f) * 4.0f), m = mir_x(fx);
+    ui_rect(cv, m - 1, fy, 3, 2, C_GRAY3);                   /* 초파리: 몸, 붉은 눈 둘, 날개 */
+    ui_px(cv, m - 2, fy, C_FLY_EYE);
+    ui_px(cv, m + 2, fy, C_FLY_EYE);
+    ui_rect(cv, m - 4, fy + 1, 2, 1, C_WING);
+    ui_rect(cv, m + 3, fy + 1, 2, 1, C_WING);
+}
+
 /* 겹눈의 벌집 무늬. (x, y)에서 가장 가까운 낱눈의 가운데와 둘째로 가까운 가운데까지의 거리 차를 돌려준다.
  * 0에 가까우면 두 낱눈의 경계 위에 있다. (*hx, *hy)에는 그 픽셀이 든 낱눈의 가운데를 넣는다 */
 #define HEX 5.2f                     /* 낱눈의 크기(가운데에서 꼭짓점까지, 픽셀) */
@@ -465,7 +545,7 @@ static const char *hint_for(const runner_t *r, color_t *col)
 {
     if (hint_dist <= 0.0f || r->next_ob >= n_ob) return NULL;
     int k = r->next_ob;
-    if (ob[k].z - r->z > hint_dist) return NULL;
+    if (ob[k].z - r->z > hint_dist * pace()) return NULL;    /* 빨라져도 안내 뒤에 남는 틱 수는 같다 */
     if (!(ob[k].lanes & (1 << (r->lane + 1)))) return NULL;          /* 내 차선은 비어 있다 */
     switch (ob[k].kind) {
     case OB_BAR:  *col = C_YELLOW; return in_air(r) ? NULL : "점프!";
@@ -504,10 +584,12 @@ void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
         if (ob[k].z > r->z + 0.2f) draw_obstacle(me, &c, k);
     for (int p = 0; p < n_players; p++)
         if (p != view && pl[p].alive && pl[p].z > r->z) draw_runner(me, &c, &pl[p], p);
+    draw_shadow(me, &c, r);
     draw_fly_back(me, &c);
     if (r->alive) draw_runner(me, &c, r, view);
     for (int p = 0; p < n_players; p++)
         if (p != view && pl[p].alive && pl[p].z <= r->z) draw_runner(me, &c, &pl[p], p);
+    draw_alarm(me, r);
 
     /* 위 띠: 초파리와의 거리. 막대가 찰수록 가깝다 */
     float gap = r->z - fz;
@@ -517,22 +599,23 @@ void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
         ui_text(me, 2, 1, view != player ? "물렸다 관전" : "물렸다!", C_BAD);
         if (view == player) ui_sprite(me, SPR_FLY_EAT, (PANE_W - ui_sprite_w(SPR_FLY_EAT)) / 2, 56, tick_no / 3);
     } else {
-        ui_text(me, 2, 1, danger ? "뒤에 있다!" : "달려!", danger && (tick_no / 3) % 2 ? C_BAD : C_TEXT);
+        /* 같은 차선으로 바짝 붙었으면 피하라고 알린다. 차선을 바꾸거나 뛰어 있는 동안에는 물리지 않는다 */
+        const char *head = on_tail(self) ? "옆으로 피해!" : (danger ? "뒤에 있다!" : "달려!");
+        ui_text(me, 2, 1, head, danger && (tick_no / 3) % 2 ? C_BAD : C_TEXT);
         snprintf(buf, sizeof buf, "%d", gap > 0.0f ? (int)gap : 0);
         ui_text(me, PANE_W - 2 - ui_text_w(buf), 3, buf, danger ? C_BAD : C_GRAY3);
     }
     if (r->alive)
         ui_bar(me, 2, HUD_H - 4, PANE_W - 4, clampf(1.0f - gap / gap_far, 0.0f, 1.0f), danger ? C_RED : C_ORANGE);
     if (self->alive) {
-        /* 띠 바로 아래 한 줄: 방금 일어난 일(쿵, 끈적, 붙었다)이 먼저이고, 없으면 다가오는 장애물에 할 일 */
+        /* 띠 바로 아래 한 줄: 방금 일어난 일(쿵, 끈적, 붙었다)을 6틱 보여 주고, 그 뒤로는 다가오는 장애물에
+         * 할 일이 먼저다(안내가 없으면 일어난 일을 12틱까지 마저 보여 준다) */
         color_t col = C_BAD;
-        const char *line = NULL;
-        if (tick_no < r->msg_until) {
+        const char *line = tick_no < r->msg_until - 6 ? NULL : hint_for(r, &col);
+        if (!line && tick_no < r->msg_until) {
             static const char *const text[] = { "", "쿵!", "끈적!", "붙었다!" };
             line = text[r->msg];
-            if (r->msg == MSG_GOO) col = C_GREEN;
-        } else {
-            line = hint_for(r, &col);
+            col = r->msg == MSG_GOO ? C_GREEN : C_BAD;
         }
         if (line) {
             int w = ui_text_w(line);
@@ -540,6 +623,7 @@ void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
             ui_text(me, (PANE_W - w) / 2, HUD_H + 2, line, col);
         }
     }
+    draw_mirror(me, r, view);
 }
 
 void stage_result(stage_result_t *out)
@@ -551,7 +635,7 @@ void stage_result(stage_result_t *out)
     for (int p = 0; p < n_players; p++) {
         out->score[p] = pl[p].alive ? 100.0f * (float)tick_no / total : 99.0f * (float)pl[p].out_tick / total;
         if (out->score[p] > 100.0f) out->score[p] = 100.0f;
-        if (pl[p].alive && pl[p].z - fz < nearest) nearest = pl[p].z - fz;
+        if (pl[p].alive && !passed(&pl[p]) && pl[p].z - fz < nearest) nearest = pl[p].z - fz;
     }
     out->fly_score = fly_bites > 0 ? 100.0f : 99.0f * clampf(1.0f - nearest / gap_far, 0.0f, 1.0f);
 }
