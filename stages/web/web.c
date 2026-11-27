@@ -3,7 +3,8 @@
  * SUPER SYP PARTY - Spider Web Escape
  *
  * Player: W/A/S/D movement.
- * Fly: route planning + brain-controlled turning.
+ * Fly: route planning + brain-controlled turning
+ * and climbing speed.
  *
  * Three deterministic maps:
  * 0 = original map
@@ -133,11 +134,18 @@ static float fly_goal;
 static int fly_escape_last_tick;
 
 /*
+ * Climbing comes from the walk reaction.
+ * The open way up is given as an object on the right.
+ */
+static float see_level;
+
+/*
  * Brain display for the fly pane.
  * Written in fly_tick, only read while drawing.
  */
 static int stim_side;          /* -1 left, +1 right, 0 none */
-static float stim_level;       /* loom level given this tick */
+static float stim_level;       /* loom or object level given this tick */
+static float walk_now;         /* walk reaction read this tick */
 static int escape_act_tick;    /* escape fired and the fly jumped */
 static int escape_miss_tick;   /* escape fired but a web blocked it */
 
@@ -367,7 +375,7 @@ void stage_start(const stage_ctx_t *ctx)
     );
 
     fly_speed = limit(
-        cfg_get("fly_speed", 1.5f),
+        cfg_get("fly_speed", 1.8f),
         0.0f, 4.0f
     );
 
@@ -427,6 +435,11 @@ void stage_start(const stage_ctx_t *ctx)
         0.0f, 1.0f
     );
 
+    see_level = limit(
+        cfg_get("see_level", 1.0f),
+        0.0f, 1.0f
+    );
+
     finish_base = limit(
         cfg_get("finish_base", 75.0f),
         0.0f, 100.0f
@@ -449,6 +462,7 @@ void stage_start(const stage_ctx_t *ctx)
 
     stim_side = 0;
     stim_level = 0.0f;
+    walk_now = 0.0f;
     escape_act_tick = -100;
     escape_miss_tick = -100;
 
@@ -510,12 +524,20 @@ void stage_input(int player, int key, double t)
 
 /* ---------- Fly Route Prediction ---------- */
 
+/*
+ * Counts the climbing ticks that stay clear on the way
+ * to column x. The fly does not climb while it steps
+ * sideways, so those ticks are not counted.
+ */
 static int fly_clear_ticks(float x)
 {
     float fx = fly.x;
     float fy = fly.y;
+    int k = 0;
 
-    for (int k = 0; k < LOOK_TICKS; k++) {
+    for (int n = 0;
+         n < LOOK_TICKS * 2 && k < LOOK_TICKS;
+         n++) {
         float off = x - fx;
 
         if (absv(off) > STEER_BAND) {
@@ -524,6 +546,8 @@ static int fly_clear_ticks(float x)
 
             if (hits_web(fx, fy))
                 return k;
+
+            continue;
         }
 
         fy = limit(
@@ -539,9 +563,11 @@ static int fly_clear_ticks(float x)
             (fx < 31.0f || fx > 63.0f)) {
             return k;
         }
+
+        k++;
     }
 
-    return LOOK_TICKS;
+    return k;
 }
 
 static float fly_target(void)
@@ -582,6 +608,14 @@ static void fly_tick(void)
     stim_side = 0;
     stim_level = 0.0f;
 
+    /*
+     * Brain outputs reflect prior stimulation.
+     */
+    float wl = brain_rate(BR_WALK_L);
+    float wr = brain_rate(BR_WALK_R);
+
+    walk_now = limit(wl > wr ? wl : wr, 0.0f, 1.0f);
+
     if (fly.lives <= 0 ||
         fly.finished ||
         tick_no < fly.stun_until) {
@@ -591,16 +625,40 @@ static void fly_tick(void)
     float target = fly_target();
     float off = target - fly.x;
 
-    /*
-     * Brain outputs reflect prior stimulation.
-     */
     float turn =
         brain_rate(BR_TURN_R) -
         brain_rate(BR_TURN_L);
 
     int escape = brain_fired(BR_ESCAPE);
 
-    if (absv(off) > STEER_BAND) {
+    if (absv(off) <= STEER_BAND) {
+        /*
+         * The way up is open: show it as an object on
+         * the right only. Both sides at once wake only the
+         * left walk in the real brain, and a left object
+         * also raises the right turn there (DNa01), which
+         * steps the fly right into a web when it next has
+         * to go left. The way up is straight ahead here,
+         * so the side does not matter for the route.
+         */
+        brain_stimulate(BR_OBJECT_R, see_level);
+
+        stim_side = 1;
+        stim_level = see_level;
+
+        /*
+         * Climbing speed is the walk reaction. The fly
+         * only climbs here, never while stepping sideways,
+         * so it follows the path fly_clear_ticks checked.
+         */
+        step_actor(
+            &fly,
+            PANE_FLY,
+            0.0f,
+            -fly_speed * walk_now
+        );
+    }
+    else {
         float intensity = limit(
             absv(off) / sense_range,
             0.0f, 1.0f
@@ -677,13 +735,6 @@ static void fly_tick(void)
             escape_miss_tick = tick_no;
         }
     }
-
-    step_actor(
-        &fly,
-        PANE_FLY,
-        0.0f,
-        -fly_speed
-    );
 }
 
 /* ---------- Stage Tick ---------- */
@@ -864,7 +915,8 @@ static void draw_actor(
 /* ---------- Fly Brain Display ---------- */
 
 /*
- * Stimulus bar on the side the loom came from,
+ * Stimulus bar on the side the loom or the object
+ * was given, walk reaction bar under the feet,
  * and "!" (jumped) or "?" (blocked) above the head
  * for a few ticks after the escape reaction.
  */
@@ -887,6 +939,8 @@ static void draw_fly_brain(canvas_t *c)
 
         ui_rect(c, bx, sy - h / 2, 2, h, C_WARN);
     }
+
+    ui_bar(c, fx - hw, sy + hh + 1, hw * 2, walk_now, C_CYAN);
 
     int since_act = tick_no - escape_act_tick;
     int since_miss = tick_no - escape_miss_tick;
