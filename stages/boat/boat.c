@@ -11,6 +11,10 @@
  *  - 물기: 초파리가 보트에 닿으면 단맛 자극을 준다. 먹기 반응이 feed_level 이상이면 물린 것이고 판이 끝난다.
  *          반응은 몇 틱 늦게 오므로 닿은 직후에 한 번 더 저으면 빠져나올 수 있다.
  *          쓴 열매(F, 팀에 bitter_count개)를 쓰면 bitter_ticks 동안 쓴맛을 같이 준다. 뇌가 먹기를 끄면 초파리는 물지 않고 물러난다.
+ * 급류: 강의 한 구간(rapid_at부터 rapid_len)은 물살이 빠르다. 보트가 저절로 앞으로 흘러가서 초파리와 벌어지지만,
+ * 한쪽 강둑으로도 밀린다(어느 쪽인지는 씨앗이 정한다). 밀리는 반대쪽 노를 한 번 더 저어야 강둑을 피한다.
+ * 차례의 제한 시간도 짧아진다. 초파리는 날아오므로 물살을 타지 않는다.
+ *
  *  - 놀라기: 차례에 W를 누르면 젓는 대신 노로 물을 뒤로 튀긴다(splash_ticks 동안 다가옴 자극). 뇌의 달아남 반응이
  *          켜지면 초파리가 뒤로 튄다. 왼쪽 노로 튀기면 왼쪽에서 다가오는 것이라 초파리는 오른쪽으로 꺾인다.
  *
@@ -33,12 +37,13 @@
 #define HUD_H      17            /* 위쪽 안내 띠의 높이 */
 #define PI_F       3.14159265f
 
-enum { MSG_NONE, MSG_GOOD, MSG_EARLY, MSG_WRONG, MSG_PASS, MSG_TIMEOUT, MSG_ROCK, MSG_BANK, MSG_SPLASH, MSG_BITTER, MSG_SPIT, MSG_STARTLE };
+enum { MSG_NONE, MSG_GOOD, MSG_EARLY, MSG_WRONG, MSG_PASS, MSG_TIMEOUT, MSG_ROCK, MSG_BANK, MSG_SPLASH, MSG_BITTER, MSG_SPIT, MSG_STARTLE, MSG_RAPID };
 
 /* 보트와 초파리. 방향은 0이 상류(화면 위쪽)이고 오른쪽으로 돌수록 커진다. y는 상류로 갈수록 커진다. */
 static float bx, by, bh, bv;
 static float fx, fy, fh;
 static int   fly_side;           /* 마지막으로 물체 자극을 준 쪽. 0 왼쪽, 1 오른쪽 */
+static int   fly_side_at = -1000, side_hold_ticks;       /* 쪽을 바꾼 틱, 바꾼 뒤 유지하는 틱 수 */
 static int   fly_moving;
 static int   turn_no, turn_start, last_stroke, last_side;
 static int   last_wrong[STAGE_MAX_PLAYERS];
@@ -59,6 +64,8 @@ static int   cooldown_ticks, wrong_gap_ticks, turn_limit_ticks;
 static float contact_dist, sugar_level, feed_level, bitter_level, bitter_push;
 static float splash_range, splash_level, escape_push, escape_turn;
 static int   bitter_count, bitter_ticks, spit_ticks, splash_ticks, splash_cooldown, hop_cooldown;
+static float rapid_at, rapid_len, rapid_flow, rapid_drift;
+static int   rapid_limit_ticks, rapid_dir, was_in_rapid;   /* rapid_dir: 밀리는 쪽. -1 왼쪽 강둑, 1 오른쪽 강둑 */
 
 static const stage_info_t info = {
     .title    = "보트 탈출",
@@ -116,6 +123,13 @@ void stage_start(const stage_ctx_t *ctx)
     escape_push      = cfg_get("escape_push", 16.0f);
     escape_turn      = cfg_get("escape_turn", 0.6f);
     hop_cooldown     = (int)cfg_get("hop_cooldown_ticks", 12.0f);
+    side_hold_ticks  = (int)cfg_get("side_hold_ticks", 12.0f);
+    rapid_at         = cfg_get("rapid_at", 150.0f);
+    rapid_len        = cfg_get("rapid_len", 90.0f);
+    rapid_flow       = cfg_get("rapid_flow", 0.3f);
+    rapid_drift      = cfg_get("rapid_drift", 0.14f);
+    rapid_limit_ticks = (int)cfg_get("rapid_limit_ticks", 16.0f);
+    if (rapid_limit_ticks < 1) rapid_limit_ticks = 1;
     float rock_first = cfg_get("rock_first", 70.0f);
     float rock_every = cfg_get("rock_every", 75.0f);
     if (turn_limit_ticks < 1) turn_limit_ticks = 1;
@@ -131,6 +145,7 @@ void stage_start(const stage_ctx_t *ctx)
         rock_y[i] = rock_first + rock_every * (float)i;
     }
     fly_side = (int)(stage_rng_u32(&rng) & 1u);
+    rapid_dir = (stage_rng_u32(&rng) & 1u) ? 1 : -1;
 
     bx = PANE_W / 2.0f;
     by = 0.0f;
@@ -146,6 +161,8 @@ void stage_start(const stage_ctx_t *ctx)
     splash_until = -1;
     for (int p = 0; p < STAGE_MAX_PLAYERS; p++) last_wrong[p] = -1000;
 }
+
+static int in_rapid(float y) { return rapid_len > 0.0f && y >= rapid_at && y < rapid_at + rapid_len; }
 
 static void pass_turn(void)
 {
@@ -222,14 +239,18 @@ static void fly_think(void)
 
     /* 물체: 한쪽에만 준다. 진짜 뇌는 양쪽에 같이 주면 왼쪽 걷기만 켜진다(docs/brain-notes.md 6절).
      * 정면 근처에서는 주던 쪽에 계속 줘서 틱마다 뒤집히지 않게 한다. */
-    if (bearing > center_band)       fly_side = 1;
-    else if (bearing < -center_band) fly_side = 0;
-    brain_stimulate(fly_side ? BR_OBJECT_R : BR_OBJECT_L, see_level);
+    /* 쪽을 바꾼 뒤 side_hold_ticks 동안은 다시 바꾸지 않는다. 진짜 뇌는 반응이 2~3틱 늦어서 자주 바꾸면 방향 반응이
+     * 엇박이 되어 반대쪽으로 돈다(docs/guide.md의 11/27) */
+    int want = bearing > center_band ? 1 : (bearing < -center_band ? 0 : fly_side);
+    if (want != fly_side && tick_no - fly_side_at >= side_hold_ticks) { fly_side = want; fly_side_at = tick_no; }
 
-    /* 맛: 닿아 있는 동안 단맛. 쓴 열매가 남아 있으면 쓴맛도 같이 */
+    /* 맛: 닿아 있는 동안 단맛. 쓴 열매가 남아 있으면 쓴맛도 같이.
+     * 닿아 있는 동안에는 물체 자극을 주지 않는다. 둘을 같이 오래 주면 진짜 뇌의 먹기 반응이 기준 언저리에 머물고,
+     * 폭주한 판이 있었다(한 틱에 41,022번 발화) */
     int bitter_on = tick_no <= bitter_until;
     touching = d <= contact_dist;
     touch_ticks = touching ? touch_ticks + 1 : 0;
+    if (!touching) brain_stimulate(fly_side ? BR_OBJECT_R : BR_OBJECT_L, see_level);
     if (touching) {
         brain_stimulate(BR_SUGAR, sugar_level);
         if (bitter_on) brain_stimulate(BR_BITTER, bitter_level);
@@ -293,11 +314,21 @@ static void fly_think(void)
 void stage_tick(double dt)
 {
     if (!caught) {
-        if (tick_no - turn_start >= turn_limit_ticks) { pass_turn(); say(MSG_TIMEOUT); }
+        int rapid = in_rapid(by);
+        if (rapid && !was_in_rapid) {
+            say(MSG_RAPID);
+            for (int p = 0; p < n_players; p++) fx_flash(p, C_CYAN, 100);
+        }
+        was_in_rapid = rapid;
+        if (tick_no - turn_start >= (rapid ? rapid_limit_ticks : turn_limit_ticks)) { pass_turn(); say(MSG_TIMEOUT); }
 
         bv *= drag_keep;
         bx += sinf(bh) * bv;
         by += cosf(bh) * bv;
+        if (rapid) {                                 /* 물살: 앞으로 흘러가고 한쪽 강둑으로 밀린다 */
+            by += rapid_flow;
+            bx += rapid_drift * (float)rapid_dir;
+        }
 
         float lo = BANK_W + 5.0f, hi = PANE_W - BANK_W - 5.0f;
         if (bx < lo || bx > hi) {
@@ -341,6 +372,18 @@ static void draw_river(canvas_t *c, float cam, int row)
         int k = ((wy / 12) % 5 + 5) % 5;             /* 물결. 보트가 가면 아래로 흘러서 속도가 보인다 */
         for (int x = BANK_W + 4 + k * 5; x < PANE_W - BANK_W - 6; x += 26)
             ui_rect(c, x, y, 6, 1, C_CYAN);
+    }
+    /* 급류: 흰 물줄기가 밀리는 쪽으로 비스듬히 흐른다. 틱마다 움직여서 물살이 보인다 */
+    for (int y = 0; y < PANE_H; y++) {
+        int wy = (int)floorf(cam) + (row - y);
+        if (!in_rapid((float)wy)) continue;
+        int m = (((wy + tick_no) % 6) + 6) % 6;
+        if (m > 1) continue;
+        int shift = ((wy * rapid_dir) % 14 + 14) % 14;
+        for (int x = BANK_W + 1 + shift; x < PANE_W - BANK_W - 4; x += 14)
+            ui_rect(c, x, y, 3, 1, C_WHITE);
+        if (wy == (int)rapid_at || wy == (int)(rapid_at + rapid_len) - 1)
+            ui_rect(c, BANK_W, y, PANE_W - 2 * BANK_W, 1, C_WHITE);
     }
     ui_rect(c, 0, 0, BANK_W, PANE_H, C_GREEN);
     ui_rect(c, PANE_W - BANK_W, 0, BANK_W, PANE_H, C_GREEN);
@@ -435,10 +478,14 @@ void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
         } else {
             ui_text(me, 2, 1, "기다려요", C_GRAY3);
         }
-        float left = 1.0f - (float)(tick_no - turn_start) / (float)turn_limit_ticks;
+        float left = 1.0f - (float)(tick_no - turn_start) / (float)(in_rapid(by) ? rapid_limit_ticks : turn_limit_ticks);
         ui_bar(me, 2, HUD_H - 4, PANE_W - 4, clampf(left, 0.0f, 1.0f), rower == player ? C_YELLOW : C_GRAY2);
     }
 
+    if (!caught && in_rapid(by)) {                   /* 급류: 밀리는 쪽의 강둑을 깜빡인다 */
+        if ((tick_no / 3) % 2 == 0)
+            ui_rect(me, rapid_dir > 0 ? PANE_W - BANK_W : 0, HUD_H, BANK_W, PANE_H - HUD_H, C_WARN);
+    }
     for (int k = 0; k < bitter_left; k++)            /* 남은 쓴 열매 */
         ui_rect(me, PANE_W - BANK_W - 6 - k * 6, PANE_H - 7, 4, 4, C_PURPLE);
     if (!caught && touching && (tick_no / 2) % 2 == 0)
@@ -446,9 +493,9 @@ void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
 
     if (!caught && tick_no < msg_until) {
         static const char *const text[] = { "", "좋아요!", "엇박!", "차례 아님", "넘김", "시간 초과", "바위!", "강둑!",
-                                            "물 튀김!", "쓴 열매!", "퉤! 물러남", "놀랐다!" };
+                                            "물 튀김!", "쓴 열매!", "퉤! 물러남", "놀랐다!", "급류다!" };
         color_t col = (msg == MSG_GOOD || msg == MSG_SPIT || msg == MSG_STARTLE) ? C_GOOD
-                    : (msg == MSG_PASS || msg == MSG_SPLASH ? C_TEXT : (msg == MSG_BITTER ? C_PURPLE : C_WARN));
+                    : (msg == MSG_PASS || msg == MSG_SPLASH ? C_TEXT : (msg == MSG_BITTER ? C_PURPLE : (msg == MSG_RAPID ? C_CYAN : C_WARN)));
         ui_text(me, (PANE_W - ui_text_w(text[msg])) / 2, HUD_H + 2, text[msg], col);
     }
 }

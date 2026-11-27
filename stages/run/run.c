@@ -55,6 +55,7 @@ static int   n_players, n_ticks, tick_no;
 static float run_speed, jump_height, stumble_keep, goo_keep, start_gap, gap_far;
 static float fly_speed, fly_strafe, pursue_turn, see_level, center_band, contact_z, contact_x, sugar_level, feed_level;
 static int   lane_ticks, jump_ticks, slide_ticks, stumble_ticks, goo_ticks, eat_ticks, side_hold_ticks;
+static float hint_dist;              /* 장애물이 이 거리 안으로 오면 무엇을 할지 화면에 적는다. 0이면 적지 않는다 */
 
 static const stage_info_t info = {
     .title    = "초파리 추격",
@@ -95,6 +96,7 @@ void stage_start(const stage_ctx_t *ctx)
     feed_level    = cfg_get("feed_level", 0.5f);
     eat_ticks     = (int)cfg_get("eat_ticks", 24.0f);
     side_hold_ticks = (int)cfg_get("side_hold_ticks", 12.0f);
+    hint_dist     = cfg_get("hint_dist", 8.0f);
     float first   = cfg_get("first_obstacle", 14.0f);
     float gap_min = cfg_get("gap_min", 8.0f), gap_max = cfg_get("gap_max", 13.0f);
     if (lane_ticks < 1) lane_ticks = 1;
@@ -418,10 +420,39 @@ static void draw_fly_eye(canvas_t *cv)
     }
 }
 
+/* 다가오는 장애물에 무엇을 해야 하는지. 내 차선에서 걸리는 것만 알려 준다. 없으면 NULL */
+static const char *hint_for(const runner_t *r, color_t *col)
+{
+    if (hint_dist <= 0.0f || r->next_ob >= n_ob) return NULL;
+    int k = r->next_ob;
+    if (ob[k].z - r->z > hint_dist) return NULL;
+    if (!(ob[k].lanes & (1 << (r->lane + 1)))) return NULL;          /* 내 차선은 비어 있다 */
+    switch (ob[k].kind) {
+    case OB_BAR:  *col = C_YELLOW; return in_air(r) ? NULL : "점프!";
+    case OB_BEAM: *col = C_ORANGE; return sliding(r) ? NULL : "숙여!";
+    case OB_GOO:  *col = C_GREEN;  return in_air(r) ? NULL : "끈끈이!";
+    default: {                                                        /* 기둥: 가까운 빈 차선 쪽을 알려 준다 */
+        *col = C_WHITE;
+        int left_open  = r->lane > -1 && !(ob[k].lanes & (1 << r->lane));
+        int right_open = r->lane < 1  && !(ob[k].lanes & (1 << (r->lane + 2)));
+        if (left_open && right_open) return "옆으로!";
+        if (left_open)  return "왼쪽으로!";
+        if (right_open) return "오른쪽으로!";
+        return r->lane > 0 ? "왼쪽 끝으로!" : "오른쪽 끝으로!";       /* 두 칸을 가야 한다 */
+    }
+    }
+}
+
 void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
 {
     char buf[24];
-    const runner_t *r = &pl[player];
+    const runner_t *self = &pl[player];
+    /* 물린 사람은 살아 있는 사람을 따라가며 본다(관전). 아무도 없으면 물린 자리에 머문다 */
+    int view = player;
+    if (!self->alive)
+        for (int p = 0; p < n_players; p++)
+            if (pl[p].alive) { view = p; break; }
+    const runner_t *r = &pl[view];
     cam_t c = { r->x * 0.6f, r->z - CAM_BACK, CAM_H };
 
     draw_fly_eye(fly_canvas);
@@ -432,27 +463,41 @@ void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
     for (int k = n_ob - 1; k >= 0; k--)
         if (ob[k].z > r->z + 0.2f) draw_obstacle(me, &c, k);
     for (int p = 0; p < n_players; p++)
-        if (p != player && pl[p].alive && pl[p].z > r->z) draw_runner(me, &c, &pl[p], p);
+        if (p != view && pl[p].alive && pl[p].z > r->z) draw_runner(me, &c, &pl[p], p);
     draw_fly_back(me, &c);
-    if (r->alive) draw_runner(me, &c, r, player);
+    if (r->alive) draw_runner(me, &c, r, view);
     for (int p = 0; p < n_players; p++)
-        if (p != player && pl[p].alive && pl[p].z <= r->z) draw_runner(me, &c, &pl[p], p);
+        if (p != view && pl[p].alive && pl[p].z <= r->z) draw_runner(me, &c, &pl[p], p);
 
     /* 위 띠: 초파리와의 거리. 막대가 찰수록 가깝다 */
     float gap = r->z - fz;
+    int danger = gap < gap_far * 0.25f;
     ui_rect(me, 0, 0, PANE_W, HUD_H, C_BLACK);
-    if (!r->alive) {
-        ui_text(me, 2, 1, "물렸다!", C_BAD);
-        ui_sprite(me, SPR_FLY_EAT, (PANE_W - ui_sprite_w(SPR_FLY_EAT)) / 2, 56, tick_no / 3);
+    if (!self->alive) {
+        ui_text(me, 2, 1, view != player ? "물렸다 관전" : "물렸다!", C_BAD);
+        if (view == player) ui_sprite(me, SPR_FLY_EAT, (PANE_W - ui_sprite_w(SPR_FLY_EAT)) / 2, 56, tick_no / 3);
     } else {
-        int danger = gap < gap_far * 0.25f;
         ui_text(me, 2, 1, danger ? "뒤에 있다!" : "달려!", danger && (tick_no / 3) % 2 ? C_BAD : C_TEXT);
         snprintf(buf, sizeof buf, "%d", gap > 0.0f ? (int)gap : 0);
         ui_text(me, PANE_W - 2 - ui_text_w(buf), 3, buf, danger ? C_BAD : C_GRAY3);
+    }
+    if (r->alive)
         ui_bar(me, 2, HUD_H - 4, PANE_W - 4, clampf(1.0f - gap / gap_far, 0.0f, 1.0f), danger ? C_RED : C_ORANGE);
+    if (self->alive) {
+        /* 띠 바로 아래 한 줄: 방금 일어난 일(쿵, 끈적, 붙었다)이 먼저이고, 없으면 다가오는 장애물에 할 일 */
+        color_t col = C_BAD;
+        const char *line = NULL;
         if (tick_no < r->msg_until) {
             static const char *const text[] = { "", "쿵!", "끈적!", "붙었다!" };
-            ui_text(me, (PANE_W - ui_text_w(text[r->msg])) / 2, HUD_H + 2, text[r->msg], r->msg == MSG_GOO ? C_GREEN : C_BAD);
+            line = text[r->msg];
+            if (r->msg == MSG_GOO) col = C_GREEN;
+        } else {
+            line = hint_for(r, &col);
+        }
+        if (line) {
+            int w = ui_text_w(line);
+            ui_rect(me, (PANE_W - w) / 2 - 2, HUD_H + 1, w + 4, 14, C_BLACK);
+            ui_text(me, (PANE_W - w) / 2, HUD_H + 2, line, col);
         }
     }
 }
