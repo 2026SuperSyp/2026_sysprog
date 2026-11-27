@@ -212,14 +212,17 @@ client: all
 	@$(B)/client --host=$(or $(HOST),127.0.0.1) --port=$(or $(PORT),4620) --name=$(or $(NAME),PLAYER); \
 	 st=$$?; $(RESTORE); exit $$st
 
+# 봇은 서버가 꺼져도 얼마 동안 다시 붙으려 한다. 남은 봇이 다음에 띄운 서버의 자리를 차지하면 사람이 관전으로 밀리므로,
+# 시작할 때 지난번의 봇을 치우고 끝날 때 봇도 같이 끈다.
 demo-local: all brain-check
 	@mkdir -p build/logs
-	@$(B)/server --port=$(or $(PORT),4620) $(if $(ORDER),--order=$(ORDER)) --brain=$(or $(BRAIN),fast) \
+	@pkill -f "client --bot --wait=3 --port=$(or $(PORT),4620) " 2>/dev/null; \
+	 $(B)/server --port=$(or $(PORT),4620) $(if $(ORDER),--order=$(ORDER)) --brain=$(or $(BRAIN),fast) \
 	    > build/logs/server.log 2>&1 & sv=$$!; sleep 0.5; \
-	 $(B)/client --bot --wait=3 --port=$(or $(PORT),4620) --name=BOT1 > build/logs/bot1.log 2>&1 & \
-	 sleep 0.2; $(B)/client --bot --wait=3 --port=$(or $(PORT),4620) --name=BOT2 > build/logs/bot2.log 2>&1 & \
+	 $(B)/client --bot --wait=3 --port=$(or $(PORT),4620) --name=BOT1 > build/logs/bot1.log 2>&1 & b1=$$!; \
+	 sleep 0.2; $(B)/client --bot --wait=3 --port=$(or $(PORT),4620) --name=BOT2 > build/logs/bot2.log 2>&1 & b2=$$!; \
 	 sleep 0.2; $(B)/client --port=$(or $(PORT),4620) --name=$(or $(NAME),YOU); st=$$?; $(RESTORE); \
-	 kill $$sv 2>/dev/null; exit $$st
+	 kill $$sv $$b1 $$b2 2>/dev/null; exit $$st
 
 # 서버와 클라이언트가 고장 상황을 버티는지 본다. 포트 4720~4729를 쓴다.
 test-fail: all
