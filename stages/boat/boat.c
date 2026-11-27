@@ -37,7 +37,7 @@
 #define HUD_H      17            /* 위쪽 안내 띠의 높이 */
 #define PI_F       3.14159265f
 
-enum { MSG_NONE, MSG_GOOD, MSG_EARLY, MSG_WRONG, MSG_PASS, MSG_TIMEOUT, MSG_ROCK, MSG_BANK, MSG_SPLASH, MSG_BITTER, MSG_SPIT, MSG_STARTLE, MSG_RAPID };
+enum { MSG_NONE, MSG_GOOD, MSG_EARLY, MSG_PASS, MSG_TIMEOUT, MSG_ROCK, MSG_BANK, MSG_SPLASH, MSG_BITTER, MSG_SPIT, MSG_STARTLE, MSG_RAPID };
 
 /* 보트와 초파리. 방향은 0이 상류(화면 위쪽)이고 오른쪽으로 돌수록 커진다. y는 상류로 갈수록 커진다. */
 static float bx, by, bh, bv;
@@ -46,7 +46,8 @@ static int   fly_side;           /* 마지막으로 물체 자극을 준 쪽. 0 
 static int   fly_side_at = -1000, side_hold_ticks;       /* 쪽을 바꾼 틱, 바꾼 뒤 유지하는 틱 수 */
 static int   fly_moving;
 static int   turn_no, turn_start, last_stroke, last_side;
-static int   last_wrong[STAGE_MAX_PLAYERS];
+static int   last_wrong[STAGE_MAX_PLAYERS];  /* 참가자마다 차례가 아닌데 눌러 감속된 틱 */
+static int   last_early = -1000;             /* 엇박으로 감속된 틱 */
 static int   caught, caught_tick, hit_rock = -1;
 static int   touching, touch_ticks;          /* 초파리가 보트에 닿아 있다, 닿은 뒤 지난 틱 */
 static float feed_now;                       /* 이번 틱의 먹기 반응(그리기용) */
@@ -54,6 +55,10 @@ static int   splash_until, splash_side, splash_ready_at;   /* 물을 튀기는 �
 static int   bitter_left, bitter_until;      /* 남은 쓴 열매, 쓴맛이 남아 있는 마지막 틱 */
 static int   fly_hop_at = -1000, fly_spit_at = -1000;      /* 초파리가 놀라 튄 틱, 뱉고 물러난 틱 */
 static int   msg, msg_until;
+/* 뇌 표시(그리기용): 이번 틱에 준 자극의 세기(좌우가 있는 물체와 다가옴, 좌우가 없는 맛),
+ * 반응이 행동이 된 틱, 반응은 켜졌는데 막혀 행동하지 못한 틱 */
+static float stim_l, stim_r, stim_sugar, stim_bitter;
+static int   react_at = -1000, block_at = -1000;
 static int   n_players, n_ticks, tick_no;
 static float rock_x[MAX_ROCKS], rock_y[MAX_ROCKS];
 static int   n_rocks;
@@ -204,17 +209,21 @@ void stage_input(int player, int key, double t)
     if (key != SK_LEFT && key != SK_RIGHT) return;
 
     if (player != rower || (key == SK_RIGHT) != (side == 1)) {
-        /* 차례가 아니거나 반대쪽 노다. 키를 누르고 있어도 한 번씩만 깎이게 간격을 둔다. */
+        /* 차례가 아니거나 반대쪽 노다. 키를 누르고 있어도 한 번씩만 깎이게 간격을 둔다.
+         * 안내는 누른 사람의 칸에만 띄운다(다른 사람의 안내를 지우지 않는다). */
         if (tick_no - last_wrong[player] >= wrong_gap_ticks) {
             bv *= wrong_keep;
             last_wrong[player] = tick_no;
-            say(MSG_WRONG);
+            fx_shake(player, 1, 100);
         }
         return;
     }
-    if (tick_no - last_stroke < cooldown_ticks) {    /* 엇박: 너무 빨리 저었다 */
-        bv *= early_keep;
-        say(MSG_EARLY);
+    if (tick_no - last_stroke < cooldown_ticks) {    /* 엇박: 너무 빨리 저었다. 위와 같이 한 번씩만 깎는다 */
+        if (tick_no - last_early >= wrong_gap_ticks) {
+            bv *= early_keep;
+            last_early = tick_no;
+            say(MSG_EARLY);
+        }
         return;
     }
 
@@ -255,25 +264,33 @@ static void fly_think(void)
         brain_stimulate(BR_SUGAR, sugar_level);
         if (bitter_on) brain_stimulate(BR_BITTER, bitter_level);
     }
+    if (!touching) { if (fly_side) stim_r = see_level; else stim_l = see_level; }
+    if (touching) { stim_sugar = sugar_level; stim_bitter = bitter_on ? bitter_level : 0.0f; }
 
     /* 다가옴: 튄 물. 가까울수록 세다. 노가 있는 쪽에서 온다(초파리는 보트 쪽을 보고 있어서 좌우가 같다) */
     int splashing = tick_no <= splash_until && d < splash_range;
-    if (splashing)
-        brain_stimulate(splash_side == 0 ? BR_LOOM_L : BR_LOOM_R, splash_level * (0.5f + 0.5f * (1.0f - d / splash_range)));
+    if (splashing) {
+        float loom = splash_level * (0.5f + 0.5f * (1.0f - d / splash_range));
+        brain_stimulate(splash_side == 0 ? BR_LOOM_L : BR_LOOM_R, loom);
+        if (splash_side == 0) stim_l = loom > stim_l ? loom : stim_l;
+        else                  stim_r = loom > stim_r ? loom : stim_r;
+    }
 
     /* 반응 읽기 */
     feed_now = brain_rate(BR_FEED);
     if (touching && feed_now >= feed_level) {        /* 물었다 */
         caught = 1;
         caught_tick = tick_no;
+        react_at = tick_no;
         bv = 0.0f;
         for (int p = 0; p < n_players; p++) {
             fx_shake(p, 3, 300);
             fx_flash(p, C_BAD, 100);
         }
-        fx_shockwave(PANE_FLY, PANE_W / 2, FLY_ROW);
+        fx_shockwave(PANE_FLY, (int)fx, FLY_ROW);
         return;
     }
+    if (!touching && feed_now >= feed_level) block_at = tick_no;   /* 먹으려 했는데 보트가 이미 떨어졌다 */
     if (touching && bitter_on && touch_ticks >= spit_ticks) {
         /* 쓴맛이라 먹기 반응이 기준에 못 미쳤다. 뱉고 물러난다(물러나는 거리는 게임 규칙이다) */
         fx -= sinf(fh) * bitter_push;
@@ -284,19 +301,24 @@ static void fly_think(void)
         fx_flash(PANE_FLY, C_PURPLE, 100);
         return;
     }
-    if (brain_fired(BR_ESCAPE) && tick_no - fly_hop_at >= hop_cooldown) {
-        /* 놀랐다. 뒤로 튀고, 뇌가 돌려는 쪽으로 꺾인다 */
-        float turn = brain_rate(BR_TURN_R) - brain_rate(BR_TURN_L);
-        fx -= sinf(fh) * escape_push;
-        fy -= cosf(fh) * escape_push;
-        if (turn > 0.1f)       fh += escape_turn;
-        else if (turn < -0.1f) fh -= escape_turn;
-        fly_hop_at = tick_no;
-        say(MSG_STARTLE);
-        fx_shockwave(PANE_FLY, PANE_W / 2, FLY_ROW);
-        return;
+    if (brain_fired(BR_ESCAPE)) {
+        if (tick_no - fly_hop_at >= hop_cooldown) {
+            /* 놀랐다. 뒤로 튀고, 뇌가 돌려는 쪽으로 꺾인다 */
+            float turn = brain_rate(BR_TURN_R) - brain_rate(BR_TURN_L);
+            fx -= sinf(fh) * escape_push;
+            fy -= cosf(fh) * escape_push;
+            if (turn > 0.1f)       fh += escape_turn;
+            else if (turn < -0.1f) fh -= escape_turn;
+            fly_hop_at = tick_no;
+            react_at = tick_no;
+            say(MSG_STARTLE);
+            fx_shockwave(PANE_FLY, (int)fx, FLY_ROW);
+            return;
+        }
+        block_at = tick_no;                          /* 놀랐지만 방금 튀어서 아직 다시 튀지 못한다 */
     }
 
+    int was_moving = fly_moving;
     float wl = brain_rate(BR_WALK_L), wr = brain_rate(BR_WALK_R);
     float walk = wl > wr ? wl : wr;
     float turn = (brain_rate(BR_STEER_R) - brain_rate(BR_STEER_L)) + (wr - wl) * pursue_turn;
@@ -309,10 +331,13 @@ static void fly_think(void)
     fx += sinf(fh) * step;
     fy += cosf(fh) * step;
     fly_moving = walk > 0.05f;
+    if (fly_moving && !was_moving && step > 0.0f) react_at = tick_no;   /* 걷기 시작 */
+    else if (fly_moving && step <= 0.0f)          block_at = tick_no;   /* 걸으려는데 보트에 막혔다 */
 }
 
 void stage_tick(double dt)
 {
+    stim_l = stim_r = stim_sugar = stim_bitter = 0.0f;    /* 자극은 그 틱에만 있다. fly_think가 다시 적는다 */
     if (!caught) {
         int rapid = in_rapid(by);
         if (rapid && !was_in_rapid) {
@@ -396,6 +421,13 @@ static void draw_river(canvas_t *c, float cam, int row)
     }
 }
 
+/* 젓기 준비: 앞 노질에서 cooldown_ticks가 지났으면 노랗게 깜빡이고, 아직이면(지금 저으면 엇박) 회색이다 */
+static color_t ready_color(void)
+{
+    if (tick_no - last_stroke < cooldown_ticks) return C_GRAY3;
+    return (tick_no / 2) % 2 == 0 ? C_YELLOW : C_WHITE;
+}
+
 static void draw_boat(canvas_t *c, int cx, int cy)
 {
     float fxv = sinf(bh), fyv = -cosf(bh);           /* 앞쪽(화면 좌표) */
@@ -406,7 +438,7 @@ static void draw_boat(canvas_t *c, int cx, int cy)
     for (int s = 0; s < 2; s++) {                    /* 노: 0 왼쪽, 1 오른쪽 */
         float sg = s == 0 ? -1.0f : 1.0f;
         float back = (rowing && last_side == s) ? 5.0f : 0.0f;    /* 방금 저은 노는 뒤로 젖힌다 */
-        color_t col = (!caught && side == s) ? C_YELLOW : C_GRAY3;
+        color_t col = (!caught && side == s) ? ready_color() : C_GRAY3;   /* 차례인 노는 저을 수 있을 때 깜빡인다 */
         ui_line(c, cx + (int)lroundf(px * sg * 3), cy + (int)lroundf(py * sg * 3),
                 cx + (int)lroundf(px * sg * 10 - fxv * back), cy + (int)lroundf(py * sg * 10 - fyv * back), col);
     }
@@ -436,6 +468,31 @@ static void draw_fly(canvas_t *c, int cx, int cy)
     ui_sprite(c, id, cx - ui_sprite_w(id) / 2, cy - ui_sprite_h(id) / 2, tick_no / 3);
 }
 
+/* 뇌 표시(초파리 칸): 이번 틱에 준 자극과 그 반응.
+ * 물체, 다가옴 자극은 그 쪽 옆의 세로 막대(높이 = 세기 x 12), 맛 자극은 머리 위의 가로 막대(단맛 위에 쓴맛).
+ * 반응이 행동이 된 틱부터 6틱 동안 머리 위에 "!", 반응은 켜졌는데 막혔으면 "?" */
+static void draw_brain(canvas_t *c, int cx, int cy)
+{
+    int hw = ui_sprite_w(SPR_FLY_IDLE) / 2, hh = ui_sprite_h(SPR_FLY_IDLE) / 2;
+    int foot = cy - hh + ui_sprite_h(SPR_FLY_IDLE);  /* 초파리 그림의 아래 끝 바로 밑 */
+    if (stim_l > 0.0f) {
+        int h = (int)lroundf(stim_l * 12.0f);
+        if (h < 1) h = 1;
+        ui_rect(c, cx - hw - 4, foot - h, 2, h, C_WARN);
+    }
+    if (stim_r > 0.0f) {
+        int h = (int)lroundf(stim_r * 12.0f);
+        if (h < 1) h = 1;
+        ui_rect(c, cx + hw + 2, foot - h, 2, h, C_WARN);
+    }
+    if (stim_sugar > 0.0f)  ui_bar(c, cx - hw, cy - hh - 5, 2 * hw, stim_sugar, C_WARN);
+    if (stim_bitter > 0.0f) ui_bar(c, cx - hw, cy - hh - 10, 2 * hw, stim_bitter, C_PURPLE);
+
+    const char *mark = tick_no - react_at <= 6 ? "!" : (tick_no - block_at <= 6 ? "?" : NULL);
+    if (mark)
+        ui_text(c, cx - ui_text_w(mark) / 2, cy - hh - 19, mark, mark[0] == '!' ? C_WARN : C_GRAY3);
+}
+
 void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
 {
     char buf[32];
@@ -444,6 +501,7 @@ void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
     draw_river(fly_canvas, fy, FLY_ROW);
     draw_boat(fly_canvas, (int)bx, to_row(by, fy, FLY_ROW));
     draw_fly(fly_canvas, (int)fx, FLY_ROW);
+    draw_brain(fly_canvas, (int)fx, FLY_ROW);
     ui_rect(fly_canvas, 0, 0, PANE_W, HUD_H, C_BLACK);
     /* 위 띠: 닿기 전에는 거리, 닿으면 뇌의 먹기 반응. 세로줄(기준)을 넘으면 문 것이다 */
     if (caught)        ui_text(fly_canvas, 2, 1, "먹이 잡음!", C_GOOD);
@@ -472,9 +530,11 @@ void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
         ui_text(me, 2, 1, "잡혔다!", C_BAD);
     } else {
         int rower = turn_no % n_players, side = turn_no % 2;
-        if (rower == player) {
+        if (rower == player) {                       /* A/D 글자는 저을 수 있을 때 깜빡이고, 아직이면 회색이다 */
             ui_text(me, 2, 1, "내 차례", C_YELLOW);
-            ui_text(me, 2 + ui_text_w("내 차례") + 6, 3, side == 0 ? "A" : "D", C_WHITE);
+            ui_text(me, 2 + ui_text_w("내 차례") + 6, 3, side == 0 ? "A" : "D", ready_color());
+        } else if (n_players > 1 && (turn_no + 1) % n_players == player) {
+            ui_text(me, 2, 1, "다음!", C_TEXT);      /* 다음 차례다. 미리 손을 준비한다 */
         } else {
             ui_text(me, 2, 1, "기다려요", C_GRAY3);
         }
@@ -492,12 +552,14 @@ void stage_draw(int player, canvas_t *fly_canvas, canvas_t *me)
         ui_text(me, (PANE_W - ui_text_w("붙었다!")) / 2, PANE_H - 26, "붙었다!", C_BAD);
 
     if (!caught && tick_no < msg_until) {
-        static const char *const text[] = { "", "좋아요!", "엇박!", "차례 아님", "넘김", "시간 초과", "바위!", "강둑!",
+        static const char *const text[] = { "", "좋아요!", "엇박!", "넘김", "시간 초과", "바위!", "강둑!",
                                             "물 튀김!", "쓴 열매!", "퉤! 물러남", "놀랐다!", "급류다!" };
         color_t col = (msg == MSG_GOOD || msg == MSG_SPIT || msg == MSG_STARTLE) ? C_GOOD
                     : (msg == MSG_PASS || msg == MSG_SPLASH ? C_TEXT : (msg == MSG_BITTER ? C_PURPLE : (msg == MSG_RAPID ? C_CYAN : C_WARN)));
         ui_text(me, (PANE_W - ui_text_w(text[msg])) / 2, HUD_H + 2, text[msg], col);
     }
+    if (!caught && tick_no - last_wrong[player] < 14)    /* 내가 차례가 아닌데 눌렀다. 내 칸에만 띄운다 */
+        ui_text(me, (PANE_W - ui_text_w("차례 아님!")) / 2, HUD_H + 16, "차례 아님!", C_WARN);
 }
 
 void stage_result(stage_result_t *out)
